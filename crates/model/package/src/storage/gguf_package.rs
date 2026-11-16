@@ -1,8 +1,8 @@
 //! Native GGUF text package: synthesized assets plus raw tensor blocks.
 //!
-//! The package keeps GGUF blocks in place. `Q4_K`/`Q6_K` tensors are repacked into the host layouts
-//! the grouped-int kernels consume; dense tensors are decoded on demand for reference or small
-//! auxiliary tensors. No intermediate safetensors package is written.
+//! The package keeps GGUF blocks in place and hands grouped-int tensors to the backend as raw
+//! blocks; each backend packs them for its own kernels. Dense tensors are decoded on demand for
+//! reference or small auxiliary tensors. No intermediate safetensors package is written.
 use crate::providers::qwen::gguf::config as gguf_config;
 use crate::providers::qwen::gguf::config_text;
 use crate::providers::qwen::gguf::text_tensor;
@@ -10,8 +10,6 @@ use crate::providers::qwen::gguf::tokenizer::{tokenizer_config, tokenizer_json};
 use crate::providers::qwen::gguf::validate::{TensorSpec, validate_text};
 use crate::storage::gguf_requirements::encoding_for;
 use crate::storage::gguf_vision::GgufVisionPackage;
-use crate::storage::grouped_int::Q4KDevice;
-use crate::storage::grouped_int6::Q6KTiled;
 use infer_core::{Error, Result};
 use infer_format::{GgufFile, GgufType, dequantize};
 use infer_ir::ExecutableEncoding;
@@ -156,40 +154,6 @@ impl GgufPackage {
             .ok_or_else(|| Error::invalid(format!("missing GGUF slot {slot}")))?
             .source;
         self.file.read_tensor(source, budget)
-    }
-
-    /// Repack one `Q4_K` matrix into the grouped-int4 host layout.
-    /// # Errors
-    /// Rejects a non-`Q4_K`/rank-2 slot or an exceeded budget.
-    pub fn q4k(&self, slot: &str, budget: u64) -> Result<Q4KDevice> {
-        let header = self
-            .slots
-            .get(slot)
-            .ok_or_else(|| Error::invalid(format!("missing GGUF slot {slot}")))?;
-        if header.dtype != GgufType::Q4K {
-            return Err(Error::unsupported(format!("{slot} is not Q4_K")));
-        }
-        let [rows, columns] = header.shape.as_slice() else {
-            return Err(Error::unsupported("Q4_K slot rank"));
-        };
-        Q4KDevice::from_blocks(*rows, *columns, &self.blocks(slot, budget)?)
-    }
-
-    /// Repack one `Q6_K` matrix into the grouped-int6 host layout.
-    /// # Errors
-    /// Rejects a non-`Q6_K`/rank-2 slot or an exceeded budget.
-    pub fn q6k(&self, slot: &str, budget: u64) -> Result<Q6KTiled> {
-        let header = self
-            .slots
-            .get(slot)
-            .ok_or_else(|| Error::invalid(format!("missing GGUF slot {slot}")))?;
-        if header.dtype != GgufType::Q6K {
-            return Err(Error::unsupported(format!("{slot} is not Q6_K")));
-        }
-        let [rows, columns] = header.shape.as_slice() else {
-            return Err(Error::unsupported("Q6_K slot rank"));
-        };
-        Q6KTiled::from_blocks(*rows, *columns, &self.blocks(slot, budget)?)
     }
 
     /// Decode one dense slot to F32.

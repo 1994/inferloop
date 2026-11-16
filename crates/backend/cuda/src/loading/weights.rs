@@ -12,8 +12,7 @@ use infer_cuda_kernels::runtime::bf16;
 use infer_cuda_kernels::runtime::{f4e2m1fnx2, f8e4m3fn};
 use infer_ir::DType;
 use infer_models::{
-    DeviceWeight, GroupedIntKind, QuantizedPackage, WeightEncoding, WeightSource, WeightView,
-    convert_float_bytes,
+    DeviceWeight, QuantizedPackage, WeightEncoding, WeightSource, WeightView, convert_float_bytes,
 };
 use std::cmp::Ordering;
 
@@ -182,9 +181,7 @@ impl ProjectionWeight {
                 ))
             }
             WeightEncoding::Nvfp4 => Self::load_nvfp4(device, package, weight),
-            WeightEncoding::GroupedInt4 | WeightEncoding::GroupedInt6 => {
-                Self::load_grouped_int(device, package, weight)
-            }
+            WeightEncoding::GroupedInt(_) => Self::load_grouped_int(device, package, weight),
             WeightEncoding::Fp8Block => {
                 let values = codes(package, weight.data())?;
                 let shape = weight.shape();
@@ -282,12 +279,11 @@ impl ProjectionWeight {
                     device.runtime().upload(scaling)?,
                 ))
             }
-            WeightEncoding::Nvfp4
-            | WeightEncoding::Fp8Block
-            | WeightEncoding::GroupedInt4
-            | WeightEncoding::GroupedInt6 => Err(Error::unsupported(
-                "padded CUDA attention heads need dense or per-channel FP8 projections",
-            )),
+            WeightEncoding::Nvfp4 | WeightEncoding::Fp8Block | WeightEncoding::GroupedInt(_) => {
+                Err(Error::unsupported(
+                    "padded CUDA attention heads need dense or per-channel FP8 projections",
+                ))
+            }
         }
     }
 
@@ -296,7 +292,7 @@ impl ProjectionWeight {
         package: &mut QuantizedPackage,
         weight: &DeviceWeight,
     ) -> Result<Self> {
-        let DeviceWeight::GroupedInt { data, kind } = weight else {
+        let DeviceWeight::GroupedInt { data, format } = weight else {
             return Err(Error::invalid("grouped-int weight descriptor"));
         };
         let shape = weight.shape();
@@ -304,25 +300,22 @@ impl ProjectionWeight {
             return Err(Error::invalid("grouped-int weight must be a matrix"));
         };
         let raw = package.read(data, STAGING)?;
-        let layout = GroupedIntTiled::from_blocks(*kind, *rows, *columns, &raw)?;
+        let layout = GroupedIntTiled::from_blocks(*format, *rows, *columns, &raw)
+            .map_err(|error| Error::invalid(format!("{}: {error}", data.name)))?;
+        // The raw blocks drop before upload and the packed parts move into it, so the host peak
+        // holds at most the stored and the packed copy of one weight.
         drop(raw);
-        if layout.rows() != *rows || layout.columns() != *columns {
-            return Err(Error::invalid("grouped-int layout shape"));
-        }
         let code_shape = layout.code_shape();
-        let codes = Matrix::upload(device, layout.codes().to_vec(), &code_shape)
-            .map_err(|error| Error::invalid(format!("{} grouped-int codes: {error}", data.name)))?;
-        let factors = device.runtime().upload(layout.factors().to_vec())?;
-        let biases = if kind.has_biases() {
-            Some(device.runtime().upload(layout.biases().to_vec())?)
-        } else {
-            None
-        };
+        let (codes, factors, biases) = layout.into_parts();
         Ok(Self::GroupedInt {
-            codes,
-            factors,
-            biases,
-            kind: *kind,
+            codes: Matrix::upload(device, codes, &code_shape).map_err(|error| {
+                Error::invalid(format!("{} grouped-int codes: {error}", data.name))
+            })?,
+            factors: device.runtime().upload(factors)?,
+            biases: biases
+                .map(|biases| device.runtime().upload(biases))
+                .transpose()?,
+            format: *format,
         })
     }
 

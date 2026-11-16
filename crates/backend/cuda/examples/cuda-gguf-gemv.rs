@@ -1,8 +1,9 @@
-//! Native GGUF tensor GEMV: read real blocks, pack, run the projection kernel, compare.
+//! Native GGUF tensor GEMV for any grouped-int format: read real blocks, pack, run the
+//! projection kernel and compare with the reference decode.
 use infer_backend_cuda::device::CudaDevice;
-use infer_cuda_kernels::contract::{GroupedIntPlan, WeightRef};
-use infer_format::GgufType;
-use infer_models::{GgufPackage, Q4KTiled};
+use infer_backend_cuda::loading::GroupedIntTiled;
+use infer_cuda_kernels::contract::{GroupedIntPlan, GroupedIntWeight};
+use infer_models::GgufPackage;
 use std::env::args;
 use std::error::Error;
 use std::time::Instant;
@@ -43,56 +44,36 @@ fn main() -> Result<(), Box<dyn Error>> {
         columns: *columns,
     };
     let kernels = device.kernels();
-    let (graph, bytes) = match slot.dtype {
-        GgufType::Q4K => {
-            let device_layout = package.q4k(&slot_name, u64::MAX)?;
-            let layout = Q4KTiled::from_device(&device_layout)?;
-            if layout.rows() != *rows || layout.columns() != *columns {
-                return Err("Q4_K layout shape".into());
-            }
-            let codes = runtime.upload(layout.codes().to_vec())?;
-            let factors = runtime.upload(layout.factors().to_vec())?;
-            let biases = runtime.upload(layout.biases().to_vec())?;
-            let bytes = codes.len() + (factors.len() + biases.len()) * size_of::<f32>();
-            let graph = device.tile().capture(|scope| {
-                kernels.projection.grouped_int_row(
-                    scope,
-                    &plan,
-                    out_alloc.buffer(),
-                    x_alloc.buffer(),
-                    WeightRef::GroupedInt {
-                        codes: codes.buffer(),
-                        factors: factors.buffer(),
-                        biases: biases.buffer(),
-                    },
-                )
-            })?;
-            (graph, bytes)
-        }
-        GgufType::Q6K => {
-            let layout = package.q6k(&slot_name, u64::MAX)?;
-            if layout.rows() != *rows || layout.columns() != *columns {
-                return Err("Q6_K layout shape".into());
-            }
-            let codes = runtime.upload(layout.codes().to_vec())?;
-            let factors = runtime.upload(layout.factors().to_vec())?;
-            let bytes = codes.len() + factors.len() * size_of::<f32>();
-            let graph = device.tile().capture(|scope| {
-                kernels.projection.grouped_int6_row(
-                    scope,
-                    &plan,
-                    out_alloc.buffer(),
-                    x_alloc.buffer(),
-                    WeightRef::GroupedInt6 {
-                        codes: codes.buffer(),
-                        factors: factors.buffer(),
-                    },
-                )
-            })?;
-            (graph, bytes)
-        }
-        other => return Err(format!("unsupported type {}", other.name()).into()),
-    };
+    let format = slot
+        .dtype
+        .grouped_int()
+        .ok_or_else(|| format!("{} is not a grouped-int type", slot.dtype.name()))?;
+    let layout = GroupedIntTiled::from_blocks(
+        format,
+        *rows,
+        *columns,
+        &package.blocks(&slot_name, u64::MAX)?,
+    )?;
+    let (codes, factors, biases) = layout.into_parts();
+    let codes = runtime.upload(codes)?;
+    let factors = runtime.upload(factors)?;
+    let biases = biases.map(|biases| runtime.upload(biases)).transpose()?;
+    let bytes = codes.len()
+        + (factors.len() + biases.as_ref().map_or(0, |biases| biases.len())) * size_of::<f32>();
+    let graph = device.tile().capture(|scope| {
+        kernels.projection.grouped_int(
+            scope,
+            &plan,
+            out_alloc.buffer(),
+            x_alloc.buffer(),
+            GroupedIntWeight {
+                format,
+                codes: codes.buffer(),
+                factors: factors.buffer(),
+                biases: biases.as_ref().map(|biases| biases.buffer()),
+            },
+        )
+    })?;
     device.tile().sync(graph.launch())?;
     let actual = runtime.read(&out_alloc)?;
     let max_relative = check(&actual, &expected)?;

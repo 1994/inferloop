@@ -1,9 +1,10 @@
 use super::CudaBackend;
 use crate::executor::{CudaTicket, submission::TicketState, validation::check_program};
 use infer_core::{Error, ErrorCode, Result, StateId};
+use infer_ir::ExecutableEncoding::GroupedInt;
 use infer_ir::{
-    DeviceCapabilities, ExecutionProgram, ExecutionTask, ExecutionTiming, ModelIr, OutputReadout,
-    PageGrowth, PrefillGeometry, StepPlan, TaskOutput, TimingSource,
+    DeviceCapabilities, ExecutionProgram, ExecutionTask, ExecutionTiming, GroupedIntFormat,
+    ModelIr, OutputReadout, PageGrowth, PrefillGeometry, StepPlan, TaskOutput, TimingSource,
 };
 use infer_spi::BackendProvider;
 use std::collections::BTreeSet;
@@ -19,8 +20,14 @@ impl CudaBackend {
             infer_ir::ExecutableEncoding::Dense,
             infer_ir::ExecutableEncoding::Fp8,
             infer_ir::ExecutableEncoding::Nvfp4,
-            infer_ir::ExecutableEncoding::GroupedInt4,
-            infer_ir::ExecutableEncoding::GroupedInt6,
+            GroupedInt(GroupedIntFormat::Q4_0),
+            GroupedInt(GroupedIntFormat::Q4_1),
+            GroupedInt(GroupedIntFormat::Q5_0),
+            GroupedInt(GroupedIntFormat::Q5_1),
+            GroupedInt(GroupedIntFormat::Q8_0),
+            GroupedInt(GroupedIntFormat::Q4K),
+            GroupedInt(GroupedIntFormat::Q5K),
+            GroupedInt(GroupedIntFormat::Q6K),
         ],
     };
 }

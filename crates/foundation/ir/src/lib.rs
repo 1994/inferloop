@@ -32,7 +32,8 @@ pub use execution::{
 };
 pub use hardware::{
     BackendFormats, BackendKind, BackendRequirements, CapabilityRequirements, CheckpointFormat,
-    CudaRequirements, DeviceBackend, DeviceCapabilities, ExecutableEncoding, MetalCapabilities,
+    CodeOffset, CudaRequirements, DeviceBackend, DeviceCapabilities, ExecutableEncoding,
+    GROUPED_INT_MAX_GROUPS, GROUPED_INT_SPAN, GroupedIntFormat, MetalCapabilities,
     MetalRequirements, NvidiaArchitecture, NvidiaCapabilities, SpeculationCapability,
 };
 pub use image::{
