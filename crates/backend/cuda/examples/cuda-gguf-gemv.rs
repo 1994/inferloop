@@ -6,7 +6,7 @@ use infer_backend_cuda::loading::GroupedIntTiled;
 use infer_cuda_kernels::contract::{
     GROUPED_INT_TILE_ROWS, GroupedIntPlan, GroupedIntWeight, RowsKernel, RowsPlan, WeightRef,
 };
-use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::{Allocation, Graph};
 use infer_models::GgufPackage;
 use std::env::args;
 use std::error::Error;
@@ -14,6 +14,8 @@ use std::time::Instant;
 
 const REPLAYS: usize = 50;
 const HBM_GBPS: f64 = 1792.0;
+/// Weight bytes the replays rotate over, past the L2 so every launch reads from DRAM.
+const COLD_BYTES: usize = 256 << 20;
 const USAGE: &str = "usage: cuda-gguf-gemv <model.gguf> <hf-slot> [rows]";
 /// Largest relative error accepted against the reference.
 const TOLERANCE: f64 = 2e-3;
@@ -40,18 +42,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err(format!("rows {rows} is not a multiple of {GROUPED_INT_TILE_ROWS}").into());
     }
     let x = inputs(batch, *columns);
-    let mut values = package.dense(&slot_name, u64::MAX)?;
-    let expected = if batch == 1 {
-        reference(&values, *rows, *columns, &x)
-    } else {
-        let x = x.iter().copied().map(to_bf16).collect::<Vec<_>>();
-        for value in &mut values {
-            *value = to_bf16(*value);
-        }
-        x.chunks_exact(*columns)
-            .flat_map(|x| reference(&values, *rows, *columns, x))
-            .collect()
-    };
+    let expected = expected(package.dense(&slot_name, u64::MAX)?, *columns, &x, batch);
 
     let device = CudaDevice::new(0)?;
     let runtime = device.runtime();
@@ -73,41 +64,55 @@ fn main() -> Result<(), Box<dyn Error>> {
         &package.blocks(&slot_name, u64::MAX)?,
     )?;
     let (codes, factors, biases) = layout.into_parts();
-    let codes = runtime.upload(codes)?;
-    let factors = runtime.upload(factors)?;
-    let biases = biases.map(|biases| runtime.upload(biases)).transpose()?;
-    let bytes = codes.len()
-        + (factors.len() + biases.as_ref().map_or(0, Allocation::len)) * size_of::<f32>();
-    let weight = GroupedIntWeight {
-        format,
-        codes: codes.buffer(),
-        factors: factors.buffer(),
-        biases: biases.as_ref().map(|biases| biases.buffer()),
+    let bytes =
+        codes.len() + (factors.len() + biases.as_ref().map_or(0, Vec::len)) * size_of::<f32>();
+    // Rotate over enough weight copies that each launch reads from DRAM, as decode does.
+    let copies = COLD_BYTES.div_ceil(bytes).max(1);
+    let weights = (0..copies)
+        .map(|_| {
+            Ok((
+                runtime.upload(codes.clone())?,
+                runtime.upload(factors.clone())?,
+                biases
+                    .clone()
+                    .map(|biases| runtime.upload(biases))
+                    .transpose()?,
+            ))
+        })
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+    let rows_plan = RowsPlan {
+        kernel: RowsKernel::GroupedInt,
+        rows: batch,
+        outputs: *rows,
+        columns: *columns,
     };
     let graph = device.tile().capture(|scope| {
-        if batch == 1 {
-            kernels.projection.grouped_int(
-                scope,
-                &plan,
-                out_alloc.buffer(),
-                x_alloc.buffer(),
-                weight,
-            )
-        } else {
-            let plan = RowsPlan {
-                kernel: RowsKernel::GroupedInt,
-                rows: batch,
-                outputs: *rows,
-                columns: *columns,
+        for (codes, factors, biases) in &weights {
+            let weight = GroupedIntWeight {
+                format,
+                codes: codes.buffer(),
+                factors: factors.buffer(),
+                biases: biases.as_ref().map(Allocation::buffer),
             };
-            kernels.projection.rows(
-                scope,
-                &plan,
-                out_alloc.buffer(),
-                x_alloc.buffer(),
-                WeightRef::GroupedInt(weight),
-            )
+            if batch == 1 {
+                kernels.projection.grouped_int(
+                    scope,
+                    &plan,
+                    out_alloc.buffer(),
+                    x_alloc.buffer(),
+                    weight,
+                )?;
+            } else {
+                kernels.projection.rows(
+                    scope,
+                    &rows_plan,
+                    out_alloc.buffer(),
+                    x_alloc.buffer(),
+                    WeightRef::GroupedInt(weight),
+                )?;
+            }
         }
+        Ok(())
     })?;
     device.tile().sync(graph.launch())?;
     let actual = runtime.read(&out_alloc)?;
@@ -116,12 +121,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "native {} {batch}x{rows}x{columns} correctness max relative {max_relative:.3e}",
         slot.dtype.name(),
     );
-    let started = Instant::now();
-    for _ in 0..REPLAYS {
-        device.tile().sync(graph.launch())?;
-    }
-    report(bytes, started.elapsed().as_secs_f64());
-    Ok(())
+    time(&device, &graph, bytes, copies)
 }
 
 /// `rows` activation rows; each row shifts the pattern so rows differ.
@@ -150,6 +150,24 @@ fn check(actual: &[f32], expected: &[f32]) -> Result<f64, Box<dyn Error>> {
     Ok(max_relative)
 }
 
+/// Replay `graph`, whose launches each project one of `copies` weight copies of `bytes`.
+fn time(
+    device: &CudaDevice,
+    graph: &Graph,
+    bytes: usize,
+    copies: usize,
+) -> Result<(), Box<dyn Error>> {
+    let started = Instant::now();
+    for _ in 0..REPLAYS {
+        device.tile().sync(graph.launch())?;
+    }
+    report(
+        bytes,
+        started.elapsed().as_secs_f64() / f64::from(u32::try_from(copies)?),
+    );
+    Ok(())
+}
+
 fn report(bytes: usize, elapsed: f64) {
     let bytes = f64::from(u32::try_from(bytes / 1024).unwrap_or(u32::MAX)) * 1024.0;
     let replays = f64::from(u32::try_from(REPLAYS).unwrap_or(u32::MAX));
@@ -166,6 +184,22 @@ const fn to_bf16(value: f32) -> f32 {
     let bits = value.to_bits();
     let rounding = (1 << (BF16_SHIFT - 1)) - 1 + ((bits >> BF16_SHIFT) & 1);
     f32::from_bits(bits.wrapping_add(rounding) & !((1 << BF16_SHIFT) - 1))
+}
+
+/// The reference outputs of `batch` rows of `x`; more than one row runs the BF16 rows kernel, so
+/// its reference rounds both operands to BF16.
+fn expected(mut values: Vec<f32>, columns: usize, x: &[f32], batch: usize) -> Vec<f32> {
+    let rows = values.len() / columns;
+    if batch == 1 {
+        return reference(&values, rows, columns, x);
+    }
+    for value in &mut values {
+        *value = to_bf16(*value);
+    }
+    let x = x.iter().copied().map(to_bf16).collect::<Vec<_>>();
+    x.chunks_exact(columns)
+        .flat_map(|x| reference(&values, rows, columns, x))
+        .collect()
 }
 
 fn reference(values: &[f32], rows: usize, columns: usize, x: &[f32]) -> Vec<f32> {

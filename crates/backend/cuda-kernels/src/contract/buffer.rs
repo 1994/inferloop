@@ -157,6 +157,28 @@ impl<'a, T> Buffer<'a, T> {
     }
 }
 
+impl<'a> Buffer<'a, u8> {
+    /// The same bytes as 32-bit words, so a kernel can load four codes per element.
+    /// # Errors
+    /// Rejects memory that is not word aligned or not a whole number of words.
+    pub fn words(self) -> Result<Buffer<'a, u32>> {
+        let width = <u32 as Width>::BYTES;
+        let aligned = u64::try_from(width).is_ok_and(|width| self.address.is_multiple_of(width));
+        if !aligned || !self.len.is_multiple_of(width) {
+            return Err(Error::invalid(format!(
+                "{} bytes at {:#x} are not whole aligned words",
+                self.len, self.address
+            )));
+        }
+        Ok(Buffer {
+            address: self.address,
+            len: self.len / width,
+            owner: self.owner,
+            element: PhantomData,
+        })
+    }
+}
+
 impl<T: Width> Buffer<'_, T> {
     /// Elements `range` of this memory, kept alive by the same owner.
     /// # Errors

@@ -22,13 +22,25 @@ use crate::tile::{backend_error, borrowed, capture_scope};
 use cuda_core::{DType, f4e2m1fnx2, f8e4m3fn};
 use cutile::half::bf16;
 use cutile::prelude::*;
+use cutile::tile_kernel::CompileOptions;
 use infer_core::{Error, Result};
 use infer_ir::{CodeOffset, GROUPED_INT_SPAN};
 
 /// Columns one channel-scale tile covers.
 const SCALE_COLUMNS: usize = 256;
-/// Spans one nibble GEMV iteration decodes.
-const NIBBLE_SPANS: usize = 4;
+/// Spans one grouped-int GEMV step decodes when the span count is even; one otherwise. Two spans
+/// (a 512-value step) measured fastest for both packings on RTX 5090 across the Qwen3-VL-2B
+/// projections; one 1024-value nibble step left the 6144-column down projection 2x slower.
+const GEMV_SPANS: usize = 2;
+/// 64-value nibble groups in one 256-value span.
+const NIBBLE_GROUPS: usize = 4;
+/// Code words of one 64-value nibble group: 32 lanes of sixteen row bytes.
+const NIBBLE_GROUP_WORDS: usize = 128;
+/// Code words of one 256-value byte span: sixteen row bytes per value.
+const BYTE_SPAN_WORDS: usize = 1024;
+/// Compiler occupancy hint of the nibble GEMV: two CTAs per SM, 1.1x on the 384-tile gate and up
+/// projections, neutral elsewhere (RTX 5090).
+const NIBBLE_GEMV_OCCUPANCY: i32 = 2;
 
 /// Elements of an embedding row a tile covers.
 const EMBEDDING_TILE: usize = 256;
@@ -275,6 +287,42 @@ fn validate_grouped_int(
         )));
     }
     Ok(())
+}
+
+/// Stringified generics of one grouped-int GEMV over `columns` that decodes `spans` spans per
+/// step: the reduction length and step count, the byte packing's per-step groups, the zero
+/// point, then the per-step word, activation and term counts the entry partitions by.
+fn gemv_generics(weight: &GroupedIntWeight<'_>, columns: usize, spans: usize) -> Vec<String> {
+    let format = weight.format;
+    let values = GROUPED_INT_SPAN * spans;
+    let terms = format.span_groups() * spans * GROUPED_INT_TILE_ROWS;
+    let mut generics = vec![columns.to_string(), (columns / values).to_string()];
+    match CodePacking::of(format) {
+        CodePacking::Nibble => {
+            if let CodeOffset::Zero(zero) = format.offset() {
+                generics.push(zero.to_string());
+            }
+            let groups = NIBBLE_GROUPS * spans;
+            generics.extend([
+                groups.to_string(),
+                (groups * NIBBLE_GROUP_WORDS).to_string(),
+                values.to_string(),
+                terms.to_string(),
+            ]);
+        }
+        CodePacking::Byte => {
+            generics.extend([
+                (format.span_groups() * spans).to_string(),
+                format.group_values().to_string(),
+                terms.to_string(),
+            ]);
+            if let CodeOffset::Zero(zero) = format.offset() {
+                generics.push(zero.to_string());
+            }
+            generics.extend([values.to_string(), (BYTE_SPAN_WORDS * spans).to_string()]);
+        }
+    }
+    generics
 }
 
 /// Stringified generics of one grouped-int launch over `columns` that decodes `spans_per_step`
@@ -1135,9 +1183,11 @@ impl Projection for TileProjection {
         let format = weight.format;
         let columns = plan.columns;
         let packing = CodePacking::of(format);
-        let spans_per_step = match packing {
-            CodePacking::Nibble => NIBBLE_SPANS,
-            CodePacking::Byte => 1,
+        let spans = columns / GROUPED_INT_SPAN;
+        let spans_per_step = if spans.is_multiple_of(GEMV_SPANS) {
+            GEMV_SPANS
+        } else {
+            1
         };
         if plan.tile_rows != GROUPED_INT_TILE_ROWS || x.len() != columns {
             return Err(Error::unsupported(format!(
@@ -1146,16 +1196,17 @@ impl Projection for TileProjection {
             )));
         }
         validate_grouped_int(&weight, out.len(), columns, spans_per_step)?;
-        let generics = grouped_int_generics(&weight, columns, spans_per_step);
+        let generics = gemv_generics(&weight, columns, spans_per_step);
         let mut out = self.flat(recording, out)?;
         let x = self.flat(recording, x)?;
-        let codes = self.flat(recording, weight.codes)?;
+        let codes = self.flat(recording, weight.codes.words()?)?;
         let factors = self.flat(recording, weight.factors)?;
         let biases = weight
             .biases
             .map(|biases| self.flat(recording, biases))
             .transpose()?;
         let tile = (&mut out).partition([GROUPED_INT_TILE_ROWS]);
+        let nibble_options = || CompileOptions::default().occupancy(NIBBLE_GEMV_OCCUPANCY);
         match (packing, biases) {
             (CodePacking::Nibble, Some(biases)) => scope
                 .record(
@@ -1165,7 +1216,9 @@ impl Projection for TileProjection {
                 .map(drop),
             (CodePacking::Nibble, None) => scope
                 .record(
-                    grouped_int_nibble::gemv_zero(tile, &x, &codes, &factors).generics(generics),
+                    grouped_int_nibble::gemv_zero(tile, &x, &codes, &factors)
+                        .generics(generics)
+                        .compile_options(nibble_options()),
                 )
                 .map(drop),
             (CodePacking::Byte, Some(biases)) => scope
