@@ -148,10 +148,7 @@ pub fn node_eligible(
         // MTP proposals already use the BF16 profile for both FP8 and F32 KV.
         return true;
     }
-    let fp8 = node
-        .states
-        .first()
-        .is_some_and(|id| weights.kv_scales.contains_key(id));
+    let fp8 = node.states.first().is_some_and(|id| weights.fp8_kv(id));
     match weights.attention_profile {
         AttentionProfile::Canonical => false,
         AttentionProfile::Bf16 => fp8,

@@ -5,7 +5,7 @@ use super::{
     batch::{BatchBuilder, BatchReadout, Dispatch32, States, dispatch32, take_result},
     buffers::buffer,
     capture::{Capture, CaptureMode, error},
-    fp8_cache::Fp8Caches,
+    narrow_kv::NarrowCaches,
     profile,
     slot_commit::CapturedCommit,
 };
@@ -342,7 +342,7 @@ impl BatchBuilder<'_> {
     fn capture_slot_verify(
         &mut self,
         lane_states: &mut [States],
-        lane_fp8: &mut [Fp8Caches],
+        lane_fp8: &mut [NarrowCaches],
         geometry: (
             usize,
             &[Allocation<i32>],
@@ -469,7 +469,7 @@ impl BatchBuilder<'_> {
     pub fn build_slot_verify(
         &mut self,
         lane_states: &mut super::slot_states::SlotStates,
-        lane_fp8: &mut [Fp8Caches],
+        lane_fp8: &mut [NarrowCaches],
         verify: usize,
     ) -> Result<SlotVerifyGraph> {
         self.build_slot_verify_parts(lane_states.parts(), lane_fp8, verify, None)
@@ -499,7 +499,7 @@ impl BatchBuilder<'_> {
     pub(super) fn build_slot_verify_parts(
         &mut self,
         (lane_states, roots): (&mut [States], &mut States),
-        lane_fp8: &mut [Fp8Caches],
+        lane_fp8: &mut [NarrowCaches],
         verify: usize,
         full: Option<&SlotVerifyGraph>,
     ) -> Result<SlotVerifyGraph> {

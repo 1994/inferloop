@@ -91,6 +91,7 @@ fn load_once(
             },
             attention_profile: summary.attention_profile.into(),
             vision: !selection.text_only,
+            kv_cache: selection.kv_cache_dtype,
             ..LoadOptions::default()
         },
     )
@@ -417,15 +418,22 @@ fn preflight(
         attention_profile,
         payload_bytes: minimum,
         native_fp4,
-        kv_cache: kv_cache_label(&package),
+        kv_cache: kv_cache_label(&package, selection.kv_cache_dtype),
     })
 }
 
-/// KV storage the checkpoint declares, in operator terms.
-const fn kv_cache_label(package: &infer_models::QuantizedPackage) -> &'static str {
-    match package.kv_cache_dtype {
-        Some(infer_models::TensorDtype::F8E4m3) => "fp8",
-        Some(_) => "declared",
-        None => "model default",
+/// KV storage the load selects, in operator terms: the explicit `--kv-cache-dtype`, else the
+/// package's declaration, else F32.
+const fn kv_cache_label(
+    package: &infer_models::QuantizedPackage,
+    explicit: Option<infer_ir::KvCacheEncoding>,
+) -> &'static str {
+    use infer_models::TensorDtype;
+    match (explicit, package.kv_cache_dtype) {
+        (Some(encoding), _) => encoding.label(),
+        (None, Some(TensorDtype::F8E4m3)) => "fp8",
+        (None, Some(TensorDtype::F16)) => "f16",
+        (None, None | Some(TensorDtype::F32)) => "f32",
+        (None, Some(_)) => "declared",
     }
 }

@@ -1,6 +1,6 @@
 //! Same-weight checkpoint model gate for serial state-writer snapshot fusion.
 use super::LEGACY_FLAT_CAPTURE;
-use crate::resident::fp8_cache::KvState;
+use crate::resident::narrow_kv::KvState;
 use crate::{
     device::CudaDevice,
     loading::{LoadOptions, LoadedModel},
@@ -60,13 +60,16 @@ fn compare_states(
             values: actual_values,
             ..
         },
-    ) in candidate.fp8_states()
+    ) in candidate
+        .fp8_states()
+        .iter()
+        .map(|(id, state)| (id, state.as_fp8().expect("an FP8 cache")))
     {
         let KvState {
             keys: expected_keys,
             values: expected_values,
             ..
-        } = &legacy.fp8_states()[id];
+        } = legacy.fp8_states()[id].as_fp8().expect("an FP8 cache");
         for (actual, expected) in [
             (actual_keys, expected_keys),
             (actual_values, expected_values),

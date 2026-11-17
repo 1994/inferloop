@@ -8,6 +8,7 @@ mod rounded_projection;
 use cutile::half::bf16;
 use cutile::jit_cache::enable_default;
 use infer_backend_cuda::mlp::ProjectionWeight;
+use infer_backend_cuda::resident::NarrowElement;
 use infer_backend_cuda::tuning::resident_gemm::ResidentTuningSession;
 use infer_backend_cuda::{
     device::CudaDevice,
@@ -76,6 +77,7 @@ fn check_projection(
         attention_profile: infer_backend_cuda::AttentionProfile::Canonical,
         recurrent_profile: infer_backend_cuda::RecurrentProfile::F32,
         kv_scales: BTreeMap::new(),
+        kv_element: NarrowElement::default(),
         tiling: BTreeMap::new(),
         fusion: None,
         fp8_inputs: BTreeSet::new(),

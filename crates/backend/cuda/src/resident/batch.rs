@@ -10,7 +10,7 @@ use super::{
     ActivationArena, ProgramWeights,
     buffers::RowMajor,
     capture::{Capture, CaptureMode, error},
-    fp8_cache::Fp8Caches,
+    narrow_kv::NarrowCaches,
     profile,
     prompt_scratch::{Partials, PromptScratch},
 };
@@ -172,7 +172,7 @@ pub(super) struct BatchBuilder<'a> {
     pub delegated: Option<&'a mut Support>,
     pub attention: &'a mut super::attention_decode::Workspace,
     pub states: &'a mut States,
-    pub fp8_states: &'a mut Fp8Caches,
+    pub fp8_states: &'a mut NarrowCaches,
     pub external: &'a Allocation<f32>,
     pub lane_external: &'a mut Vec<Allocation<f32>>,
     /// Contiguous storage behind `lane_external`, one external hidden row per prompt lane.
@@ -278,7 +278,7 @@ impl BatchBuilder<'_> {
     pub fn build_slots(
         &mut self,
         lane_states: &mut [States],
-        lane_fp8: &mut [Fp8Caches],
+        lane_fp8: &mut [NarrowCaches],
     ) -> Result<SlotDecodeGraph> {
         let width = lane_states.len();
         // A one-lane rung is valid: it replays exactly one busy slot, and the pool itself keeps
@@ -346,7 +346,7 @@ impl BatchBuilder<'_> {
         scope: &Recording<'_>,
         node: &TensorNode,
         arena: &mut ActivationArena,
-        caches: &[Fp8Caches],
+        caches: &[NarrowCaches],
         metadata: &Allocation<i32>,
     ) -> Result<bool> {
         if self.record_lanes_attention(scope, node, arena, caches, (metadata, 1))? {
@@ -408,7 +408,7 @@ impl BatchBuilder<'_> {
             &Allocation<i32>,
             &mut Option<super::fusion_batch::Workspace>,
         ),
-        states: (&mut [States], &mut [Fp8Caches]),
+        states: (&mut [States], &mut [NarrowCaches]),
         profile: &mut Option<profile::SlotProfile>,
         read_logits: bool,
     ) -> Result<Graph> {

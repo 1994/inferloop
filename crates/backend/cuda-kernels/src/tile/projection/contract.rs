@@ -4,7 +4,7 @@ use super::{
     grouped_int_nibble, linear, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm, prompt_logits,
     small_gemm, swizzle, vendor_fp8,
 };
-use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
+use crate::contract::buffer::{Bf16, Buffer, F16, Fp4Pair, Fp8};
 use crate::contract::grouped_int::{
     CodePacking, GROUPED_INT_TILE_ROWS, GroupedIntLayout, GroupedIntPlan, GroupedIntWeight,
 };
@@ -19,7 +19,7 @@ use crate::contract::recording::Recording;
 use crate::tile::attention::attention as attention_model;
 use crate::tile::{backend_error, borrowed, capture_scope};
 use cuda_core::{DType, f4e2m1fnx2, f8e4m3fn};
-use cutile::half::bf16;
+use cutile::half::{bf16, f16};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_ir::{CodeOffset, GROUPED_INT_SPAN};
@@ -177,6 +177,16 @@ pub(in crate::tile) const fn retyped_bf16(buffer: Buffer<'_, Bf16>) -> Buffer<'_
 )]
 pub(in crate::tile) const fn retyped_fp8(buffer: Buffer<'_, Fp8>) -> Buffer<'_, f8e4m3fn> {
     // SAFETY: `Fp8` marks `f8e4m3fn` memory.
+    unsafe { buffer.retyped() }
+}
+
+/// The same memory, typed for cuTile.
+#[expect(
+    unsafe_code,
+    reason = "Each marker is declared for exactly this element's size and layout"
+)]
+pub(in crate::tile) const fn retyped_f16(buffer: Buffer<'_, F16>) -> Buffer<'_, f16> {
+    // SAFETY: `F16` marks `f16` memory.
     unsafe { buffer.retyped() }
 }
 

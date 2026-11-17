@@ -5,7 +5,7 @@
 //! record once per segment, against that segment's rows and the resident slot's own state, so no
 //! state moves through a worker. A segment with a zero token count writes nothing.
 use super::batch::{BatchBuilder, States};
-use super::fp8_cache::Fp8Caches;
+use super::narrow_kv::NarrowCaches;
 use super::prompt_scratch::{Partials, PromptScratch};
 use super::{ActivationArena, ProgramWeights};
 use crate::constants::METADATA_FIELDS;
@@ -89,7 +89,7 @@ pub struct Shared<'a> {
 pub(super) struct Segment<'a> {
     pub arena: ActivationArena,
     pub states: &'a mut States,
-    pub fp8: &'a mut Fp8Caches,
+    pub fp8: &'a mut NarrowCaches,
     pub table: &'a Allocation<i32>,
     pub info: &'a Allocation<i32>,
     /// Per-row `(t, h, w)` when the graph's `RoPE` reads absolute coordinates.
@@ -145,7 +145,7 @@ struct Retained {
     _recurrent: super::recurrent_prefill::Workspace,
     _attention: super::attention_decode::Workspace,
     _placeholder_states: States,
-    _placeholder_fp8: Fp8Caches,
+    _placeholder_fp8: NarrowCaches,
 }
 
 /// Device tensors the graph addresses and nothing reads through this struct.
@@ -380,7 +380,7 @@ impl PromptBurst {
         let views = storage.segment_views(graph, segments)?;
         let bound = bind_segments(programs, views, (&storage.info_rows, &storage.rotary_rows));
         let mut placeholder_states = States::new();
-        let mut placeholder_fp8 = Fp8Caches::new();
+        let mut placeholder_fp8 = NarrowCaches::new();
         let tables = [super::metadata::identity_table(device, capacity)?];
         let binding = Binding {
             segments: bound,

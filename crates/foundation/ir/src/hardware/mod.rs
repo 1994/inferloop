@@ -1,10 +1,12 @@
 pub mod cuda;
 pub mod grouped_int;
+pub mod kv_cache;
 pub mod metal;
 use crate::DType;
 pub use cuda::{CudaRequirements, NvidiaArchitecture, NvidiaCapabilities};
 pub use grouped_int::{CodeOffset, GROUPED_INT_MAX_GROUPS, GROUPED_INT_SPAN, GroupedIntFormat};
 use infer_core::{DeviceId, Error, Result};
+pub use kv_cache::KvCacheEncoding;
 pub use metal::{MetalCapabilities, MetalRequirements};
 use serde::{Deserialize, Serialize};
 

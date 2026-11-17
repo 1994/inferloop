@@ -69,6 +69,11 @@ pub struct Cli {
     /// an explicit override keeps the other option at canonical/depth0.
     #[arg(long, global = true, value_enum)]
     pub(super) cuda_attention_profile: Option<backend::CudaAttentionProfile>,
+    /// KV cache storage, as llama.cpp's `--cache-type-k/v`: `f32`, `f16` or `fp8` (FP8 needs the
+    /// checkpoint's static scales). Omitted, the checkpoint's declaration applies; GGUF packages
+    /// declare `f16` and the rest default to `f32`. A backend that cannot store it fails to load.
+    #[arg(long, global = true, value_name = "DTYPE")]
+    pub(super) kv_cache_dtype: Option<infer_ir::KvCacheEncoding>,
     /// Per-prompt multimodal item limits as JSON, as in vLLM (for example
     /// `{"image":1,"video":1}`). All-zero limits serve text only and skip loading the vision
     /// tower; media inputs are then rejected.

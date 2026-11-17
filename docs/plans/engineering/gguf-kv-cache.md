@@ -1,6 +1,6 @@
 # GGUF KV cache design
 
-状态：**设计评审稿**。本文件先定义 GGUF 模型的 KV cache 策略；实现分阶段落地，避免把 KV 编码塞进 GGUF 权重编码或 CUDA 专属逻辑。
+状态：**第一阶段已实现**（F16 KV、`--kv-cache-dtype`、GGUF 默认 F16，见文末“实现记录”）；Q8_0/Q4_0、inspection 字段与 Metal 仍是方案。本文件定义 GGUF 模型的 KV cache 策略，避免把 KV 编码塞进 GGUF 权重编码或 CUDA 专属逻辑。
 
 ## 既有设计基线
 
@@ -159,3 +159,24 @@ attention kernel 按 tile 解码；append kernel 写入时量化；prefix copy �
 2. scale 用 f16 还是 f32？先按 GGML f16，后续按精度/性能决定。
 3. GGUF 默认是否直接 F16，还是保留 F32 由 CLI 选择？建议默认 F16，与 llama.cpp 对齐。
 4. Q8_0 KV 是否作为第一阶段唯一 quantized 编码，Q4_0 后置。
+
+## 实现记录（第一阶段）
+
+- `infer-ir::KvCacheEncoding { F32, F16, Fp8E4m3 }`：运行时策略类型，带 `label()`、`element_bytes()`、`FromStr`。
+- 选择顺序按本设计：`--kv-cache-dtype` > 包声明（checkpoint 的 `kv_cache_scheme`；GGUF provider 声明 F16）> F32。
+  CUDA `LoadOptions::kv_cache` 取代原 `fp8_kv: Option<bool>`；包声明了 backend 存不了的 dtype 时加载前报错。
+- CUDA 不新建平行的 KV 管理：原先的 FP8 “窄 KV” 通道（有 scale 的 attention state）推广为
+  `narrow_kv::{NarrowElement, NarrowState}`，F16 state 用单位 scale 走同一条分页、slot 绑定、导出、
+  prefix 复制和预算路径；`kv_block_bytes`/pool 报价按元素宽度计。
+- attention kernel 本来就对元素类型泛型（`E: ElementType`），新增 `KvBuffers::F16` 分派；只读 FP8 页的
+  MMA/SIMT/pooled-page kernel 通过 `ProgramWeights::fp8_kv` 显式不选 F16，F16 走 cuTile 通用 kernel。
+
+验证（RTX 5090）：
+- Qwen3-VL-2B Q4_K_M：F16 与 `--kv-cache-dtype f32` 的贪心输出 7/8 完全一致（第 8 条在后段因舍入分叉）；
+  pooled 报价下 KV 容量 98 304 → 221 184 token（宽度 12 → 27）。pooled serving 需要 #276 的 grouped-int
+  pooled rows 才能构造，本分支基于 main，单请求走私有程序。
+- FP8 回归：Qwen3.8-27B NVFP4（checkpoint FP8 KV）main 与本分支 8/8 贪心输出一致，TPOT 6.97 / 6.93 ms。
+- 单测：F16 页字节是 FP8 的 2 倍；F16 不进入 FP8-only attention；F16 prefix 复制逐元素一致，跨元素复制报错。
+
+后续：Q8_0/Q4_0 append + attention（块量化）、`KvCacheInspection` 增加 `key_encoding`/`value_encoding`、
+K/V 分别选择、Metal 契约。

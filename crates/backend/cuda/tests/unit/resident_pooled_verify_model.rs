@@ -1,4 +1,4 @@
-use crate::resident::fp8_cache::KvState;
+use crate::resident::narrow_kv::KvState;
 use crate::tuning::pool_dense;
 use crate::{
     device::CudaDevice,
@@ -163,12 +163,15 @@ fn compare_states(device: &CudaDevice, a: &SlotPool, b: &SlotPool, width: usize)
             a_packed.keys().collect::<Vec<_>>(),
             b_packed.keys().collect::<Vec<_>>()
         );
-        for (id, KvState { keys, values, .. }) in a_packed {
+        for (id, KvState { keys, values, .. }) in a_packed
+            .iter()
+            .map(|(id, state)| (id, state.as_fp8().expect("an FP8 cache")))
+        {
             let KvState {
                 keys: expected_keys,
                 values: expected_values,
                 ..
-            } = &b_packed[id];
+            } = b_packed[id].as_fp8().expect("an FP8 cache");
             for (actual, expected) in [(keys, expected_keys), (values, expected_values)] {
                 assert_eq!(
                     actual.len(),

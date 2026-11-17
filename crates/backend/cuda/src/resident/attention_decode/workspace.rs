@@ -183,9 +183,7 @@ impl Workspace {
                 else {
                     return false;
                 };
-                node.states
-                    .first()
-                    .is_some_and(|id| weights.kv_scales.contains_key(id))
+                node.states.first().is_some_and(|id| weights.fp8_kv(id))
                     && super::super::attention_mma::f16::supported(
                         &architecture,
                         query_heads,
@@ -268,7 +266,7 @@ impl Workspace {
             let Some(state) = node.states.first() else {
                 continue;
             };
-            let fp8 = weights.kv_scales.contains_key(state);
+            let fp8 = weights.fp8_kv(state);
             let f16_route = weights.fusion.is_none()
                 && weights.attention_profile.is_fp16()
                 && fp8

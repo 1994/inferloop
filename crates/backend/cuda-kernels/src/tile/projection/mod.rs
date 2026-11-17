@@ -19,7 +19,7 @@ mod vendor_fp8_kernels;
 
 pub use compensated_gemm_kernels::kernels as compensated_gemm;
 pub use contract::TileProjection;
-pub(in crate::tile) use contract::{retyped_bf16, retyped_fp8};
+pub(in crate::tile) use contract::{retyped_bf16, retyped_f16, retyped_fp8};
 pub use fp8_gemm_kernels::kernels as fp8_gemm;
 pub use fp8_quant_reduction_kernels::kernels as fp8_quant_reduction;
 pub(in crate::tile) use grouped_int_byte_kernels::byte as grouped_int_byte;

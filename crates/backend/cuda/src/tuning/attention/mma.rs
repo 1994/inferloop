@@ -242,10 +242,7 @@ fn prepared_shapes(
                     window.unwrap_or(0),
                 )
             {
-                let fp8 = node
-                    .states
-                    .first()
-                    .is_some_and(|id| weights.kv_scales.contains_key(id));
+                let fp8 = node.states.first().is_some_and(|id| weights.fp8_kv(id));
                 let f16_eligible = target_f16
                     && fp8
                     && attention_mma::f16::supported(

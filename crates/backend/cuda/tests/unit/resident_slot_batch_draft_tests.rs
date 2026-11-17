@@ -1,6 +1,7 @@
 use super::*;
 use crate::mlp::Matrix;
 use crate::mlp::ProjectionWeight;
+use crate::resident::NarrowElement;
 use crate::resident::attention_lanes;
 use crate::resident::{DeviceProgram, FusionWeights, PromptScratchRegistry};
 use crate::strategy::default_tiling;
@@ -115,6 +116,7 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
         fp8_inputs: BTreeSet::new(),
         input_scales: BTreeMap::new(),
         kv_scales: BTreeMap::new(),
+        kv_element: NarrowElement::default(),
         tiling: BTreeMap::new(),
         rope_axes: BTreeMap::new(),
         rope_frequencies: BTreeMap::new(),
