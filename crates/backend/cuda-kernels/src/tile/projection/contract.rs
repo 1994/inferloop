@@ -6,7 +6,8 @@ use super::{
 };
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::grouped_int::{
-    CodePacking, GROUPED_INT_TILE_ROWS, GroupedIntLayout, GroupedIntPlan, GroupedIntWeight,
+    CodePacking, GROUPED_INT_GEMM_ROWS, GROUPED_INT_TILE_ROWS, GroupedIntLayout, GroupedIntPlan,
+    GroupedIntWeight,
 };
 use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
@@ -190,6 +191,9 @@ const fn retyped_fp4(buffer: Buffer<'_, Fp4Pair>) -> Buffer<'_, f4e2m1fnx2> {
     unsafe { buffer.retyped() }
 }
 
+/// A `[rows, outputs]` grouped-int projection. One row takes the GEMV; more rows take one launch
+/// in which each CTA decodes a sixteen-output tile once per span and multiplies up to
+/// `GROUPED_INT_GEMM_ROWS` activation rows, a partial row block predicated out.
 fn grouped_int_rows(
     projection: &TileProjection,
     recording: &Recording<'_>,
@@ -204,32 +208,93 @@ fn grouped_int_rows(
         columns,
         ..
     } = *plan;
-    let row_plan = GroupedIntPlan {
-        tile_rows: GROUPED_INT_TILE_ROWS,
-        columns,
-    };
-    for row in 0..rows {
-        let out_row = out.slice(row * outputs..(row + 1) * outputs)?;
-        let x_row = x.slice(row * columns..(row + 1) * columns)?;
-        projection.grouped_int(recording, &row_plan, out_row, x_row, weight)?;
+    if rows == 1 {
+        let plan = GroupedIntPlan {
+            tile_rows: GROUPED_INT_TILE_ROWS,
+            columns,
+        };
+        return projection.grouped_int(recording, &plan, out, x, weight);
+    }
+    let format = weight.format;
+    validate_grouped_int(&weight, outputs, columns, 1)?;
+    if rows == 0 {
+        return Err(Error::unsupported(format!(
+            "{} rows kernel over zero rows",
+            format.label()
+        )));
+    }
+    let scope = capture_scope(recording)?;
+    let mut generics = grouped_int_generics(&weight, columns, 1);
+    generics.insert(0, GROUPED_INT_GEMM_ROWS.to_string());
+    let mut out = projection.matrix(recording, out, "projection output", (rows, outputs))?;
+    let x = projection.matrix(recording, x, "projection input", (rows, columns))?;
+    let codes = projection.flat(recording, weight.codes)?;
+    let factors = projection.flat(recording, weight.factors)?;
+    let biases = weight
+        .biases
+        .map(|biases| projection.flat(recording, biases))
+        .transpose()?;
+    let tile = (&mut out).partition([GROUPED_INT_GEMM_ROWS, GROUPED_INT_TILE_ROWS]);
+    match (CodePacking::of(format), biases) {
+        (CodePacking::Nibble, Some(biases)) => scope
+            .record(
+                grouped_int_nibble::gemm(tile, &x, &codes, &factors, &biases).generics(generics),
+            )
+            .map(drop),
+        (CodePacking::Nibble, None) => scope
+            .record(grouped_int_nibble::gemm_zero(tile, &x, &codes, &factors).generics(generics))
+            .map(drop),
+        (CodePacking::Byte, Some(biases)) => scope
+            .record(grouped_int_byte::gemm(tile, &x, &codes, &factors, &biases).generics(generics))
+            .map(drop),
+        (CodePacking::Byte, None) => scope
+            .record(grouped_int_byte::gemm_zero(tile, &x, &codes, &factors).generics(generics))
+            .map(drop),
+    }
+    .map_err(backend_error)
+}
+
+/// Check `weight` holds an `[outputs, columns]` matrix whose spans a kernel decoding
+/// `spans_per_step` spans per iteration can walk.
+fn validate_grouped_int(
+    weight: &GroupedIntWeight<'_>,
+    outputs: usize,
+    columns: usize,
+    spans_per_step: usize,
+) -> Result<()> {
+    let format = weight.format;
+    let layout = GroupedIntLayout::new(format, outputs, columns)?;
+    if !columns.is_multiple_of(GROUPED_INT_SPAN * spans_per_step)
+        || weight.codes.len() != layout.codes
+        || weight.factors.len() != layout.terms
+        || weight.biases.map(Buffer::len) != format.has_biases().then_some(layout.terms)
+    {
+        return Err(Error::unsupported(format!(
+            "{} projection shape or layout",
+            format.label()
+        )));
     }
     Ok(())
 }
 
-/// Stringified generics of one grouped-int launch over `columns`.
-fn grouped_int_generics(weight: &GroupedIntWeight<'_>, columns: usize) -> Vec<String> {
+/// Stringified generics of one grouped-int launch over `columns` that decodes `spans_per_step`
+/// spans per iteration.
+fn grouped_int_generics(
+    weight: &GroupedIntWeight<'_>,
+    columns: usize,
+    spans_per_step: usize,
+) -> Vec<String> {
     let format = weight.format;
-    let mut generics = vec![columns.to_string()];
-    match CodePacking::of(format) {
-        CodePacking::Nibble => {
-            generics.push((columns / (GROUPED_INT_SPAN * NIBBLE_SPANS)).to_string());
-        }
-        CodePacking::Byte => generics.extend([
-            (columns / GROUPED_INT_SPAN).to_string(),
+    let mut generics = vec![
+        columns.to_string(),
+        (columns / (GROUPED_INT_SPAN * spans_per_step)).to_string(),
+    ];
+    if CodePacking::of(format) == CodePacking::Byte {
+        generics.extend([
             format.span_groups().to_string(),
             format.group_values().to_string(),
             (format.span_groups() * GROUPED_INT_TILE_ROWS).to_string(),
-        ]),
+        ]);
     }
     if let CodeOffset::Zero(zero) = format.offset() {
         generics.push(zero.to_string());
@@ -1070,24 +1135,18 @@ impl Projection for TileProjection {
         let format = weight.format;
         let columns = plan.columns;
         let packing = CodePacking::of(format);
-        let layout = GroupedIntLayout::new(format, out.len(), columns)?;
         let spans_per_step = match packing {
             CodePacking::Nibble => NIBBLE_SPANS,
             CodePacking::Byte => 1,
         };
-        if plan.tile_rows != GROUPED_INT_TILE_ROWS
-            || x.len() != columns
-            || !columns.is_multiple_of(GROUPED_INT_SPAN * spans_per_step)
-            || weight.codes.len() != layout.codes
-            || weight.factors.len() != layout.terms
-            || weight.biases.map(Buffer::len) != format.has_biases().then_some(layout.terms)
-        {
+        if plan.tile_rows != GROUPED_INT_TILE_ROWS || x.len() != columns {
             return Err(Error::unsupported(format!(
                 "{} GEMV shape or layout",
                 format.label()
             )));
         }
-        let generics = grouped_int_generics(&weight, columns);
+        validate_grouped_int(&weight, out.len(), columns, spans_per_step)?;
+        let generics = grouped_int_generics(&weight, columns, spans_per_step);
         let mut out = self.flat(recording, out)?;
         let x = self.flat(recording, x)?;
         let codes = self.flat(recording, weight.codes)?;
