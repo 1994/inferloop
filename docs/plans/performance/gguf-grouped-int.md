@@ -1,6 +1,6 @@
 # GGUF grouped-int 性能：问题记录与修复方案
 
-状态：P1、P2 已修复（本 PR）；P3–P6 为方案。格式与 kernel 家族的结构见
+状态：P1、P2 已修复；P3 第一步（word-load GEMV）已修复（本 PR）；P3 余项、P4–P6 为方案。格式与 kernel 家族的结构见
 [grouped-int kernel family](../engineering/grouped-int-kernels.md)。
 
 测量环境：RTX 5090，Qwen3-VL-2B 由 BF16 HF 权重经 `convert_hf_to_gguf.py` + `llama-quantize`
@@ -90,9 +90,50 @@ serving：
   Q4_1 17.5 → 19.8、Q8_0 20.5 → 22.6，其余格式持平；与各自 BF16 的一致性 Q8_0 23.0 → 21.0、
   Q5_0 9.9 → 11.2，其余持平。
 
+## P3 第一步：word-load GEMV
+
+nsys（`--cuda-graph-trace=node`）分解 Q4_0 单请求 decode：GEMV 占每 token 2.46 ms（gate/up 0.93、
+q/o/down 0.63、lm_head 0.59、k/v 0.31），其余 kernel 合计约 0.5 ms。`cuda-gguf-gemv` 原来重复同一份权重、
+命中 96 MB L2，测到的时间比 serving 短（gate 10.5 vs 16.6 µs）；现在轮换足够多的权重副本（≥ 256 MB），
+每次 launch 都从 DRAM 读，与 serving 一致。
+
+逐项消融（冷 L2，Q4_0 gate）：只 load+convert+reduce 的下限就有 10.2 µs（≈ 620 GB/s），把 code 当
+`u32` 读后降到 6.0 µs —— u8 tile 的 load 本身是瓶颈。占用率提示、每步 reduce 改为最后一次 reduce、
+split-K 都只有小幅收益；先按组求和再乘 scale（中间轴 reduce）、用 `extract` 拆激活在 cuTile 里反而更慢。
+
+修复：两种 packing 的 GEMV 都把 code 读成 `u32`；字节位 `b` 各用一个累加器（行 `4w + b`），code 通过
+`2^23` 尾数技巧精确转成浮点，不做整数转换；K 循环结束后才 reduce；每步 2 个 span（span 数为奇数时 1 个）；
+nibble 的 bias 格式按组减 `bias · Σx`，不逐元素减。数值仍是 F32 GEMV，8 种格式对 F32 参考的最大相对误差
+≤ 2.4e-5。
+
+kernel（冷 L2，µs，旧 → 新）：
+
+| 格式 | gate 6144×2048 | k 1024×2048 | q 2048×2048 | down 2048×6144 | lm_head 151936×2048 |
+|---|---:|---:|---:|---:|---:|
+| Q4_0 | 16.4 → 12.1 | 6.1 → 4.3 | 6.3 → 4.9 | 11.6 → 8.8 | 600 → 261（Q6_K） |
+| Q4_K_M | 17.1 → 14.5 | 6.3 → 5.0 | 6.6 → 5.7 | 20.7 → 12.9（Q6_K） | 601 → 261 |
+| Q5_K_M | 28.2 → 16.9 | 10.0 → 5.2 | 10.1 → 6.6 | 20.7 → 13.1 | 600 → 261 |
+| Q6_K | 32.7 → 15.8 | 11.7 → 4.9 | 12.0 → 6.1 | 20.7 → 13.1 | 596 → 262 |
+| Q8_0 | 31.8 → 15.7 | 11.3 → 4.8 | 11.4 → 5.8 | 24.0 → 12.2 | 580 → 262 |
+
+lm_head 现在 ≈ 1.5 TB/s；层内 GEMV 仍只有 0.6–0.9 TB/s。
+
+serving（同一环境与脚本，32 token prompt 的 TPOT，`gemv.jsonl`）：
+
+| 格式 | 上一步 | 本步 | llama.cpp |
+|---|---:|---:|---:|
+| BF16 | 3.30 ms | 3.35 ms | 3.20 ms |
+| Q4_0 | 3.20 ms | 2.47 ms | 1.78 ms |
+| Q4_K_M | 3.58 ms | 2.74 ms | 1.89 ms |
+| Q5_K_M | 4.75 ms | 2.94 ms | 1.98 ms |
+| Q6_K | 5.14 ms | 2.82 ms | 2.09 ms |
+| Q8_0 | 5.08 ms | 2.78 ms | 2.27 ms |
+
+BF16 路径代码未变，+1.5% 在单轮噪声内（上一步 A/B 的同格式波动 ±4%）。prompt 时延不变（P5）。
+
 ## 后续方案
 
-**P3 decode GEMV 占用率（优先）。** 目标：单请求 TPOT 4-bit ≤ 2.0 ms、5/6/8-bit ≤ 2.5 ms。
+**P3 余项（优先）。** 目标：单请求 TPOT 4-bit ≤ 2.0 ms、5/6/8-bit ≤ 2.5 ms。剩余差距约 0.7 ms：层内 GEMV 到 ≥ 1.2 TB/s 约省 0.4 ms，非 GEMV kernel（norm、rope、attention 的 split/merge）约 0.5 ms，与 BF16 路径共有。
 1. split-K：每个 16 行 tile 的 span 分给 `S` 个 CTA，`S` 由输出 tile 数与 SM 数推导
    （`S = ceil(2 · SMs / tiles)`，上限为 span 数），部分和写到 workspace，由一个 reduce 或 atomic 合并；
    workspace 在 program 构建时按最大 `outputs · S` 预留，不在 decode 中分配。
