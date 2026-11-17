@@ -1,6 +1,6 @@
 # GGUF grouped-int 性能：问题记录与修复方案
 
-状态：P1、P2 已修复；P3 第一步（word-load GEMV）已修复（本 PR）；P3 余项、P4–P6 为方案。格式与 kernel 家族的结构见
+状态：P1、P2 已修复；P3 前两步（word-load GEMV、tile 按行拆给多个 CTA）已修复（本 PR）；P3 余项、P4–P6 为方案。格式与 kernel 家族的结构见
 [grouped-int kernel family](../engineering/grouped-int-kernels.md)。
 
 测量环境：RTX 5090，Qwen3-VL-2B 由 BF16 HF 权重经 `convert_hf_to_gguf.py` + `llama-quantize`
@@ -131,9 +131,39 @@ serving（同一环境与脚本，32 token prompt 的 TPOT，`gemv.jsonl`）：
 
 BF16 路径代码未变，+1.5% 在单轮噪声内（上一步 A/B 的同格式波动 ±4%）。prompt 时延不变（P5）。
 
+## P3 第二步：tile 按行拆给多个 CTA
+
+16 行 tile 的每个字节串是 4 个 code word（各 4 行），所以一个 CTA 可以只取其中 `W` 个 word，
+不需要跨 CTA reduce。GEMV 改为用 2-D 视图读 code 和 term：K ≤ 4096 时 `W = 2`（64/128/384 tile 的投影
+grid 翻倍），更长的 K 上 nibble 保持整 tile；byte 在长 K 上每步 4 个 span。两种 packing 都加两 CTA/SM 的
+占用率提示；nibble bias 格式按组累加 `bias · Σx`，最后减一次。
+
+kernel（冷 L2，µs，第一步 → 第二步）：
+
+| 格式 | gate | k | q | down | lm_head |
+|---|---:|---:|---:|---:|---:|
+| Q4_0 | 12.1 → 10.1 | 4.3 → 3.3 | 4.9 → 4.7 | 8.8 → 9.7 | 261 → 247 |
+| Q4_K_M | 14.5 → 10.9 | 5.0 → 3.5 | 5.7 → 5.0 | 12.9 → 13.8 | 261 → 246 |
+| Q5_K_M | 16.9 → 16.2 | 5.2 → 4.2 | 6.6 → 6.6 | 13.1 → 13.7 | 261 → 247 |
+| Q6_K | 15.8 → 15.0 | 4.9 → 3.9 | 6.1 → 6.1 | 13.1 → 13.7 | 262 → 246 |
+| Q8_0 | 15.7 → 14.0 | 4.8 → 3.8 | 5.8 → 6.0 | 12.2 → 13.0 | 262 → 225 |
+
+6144 列的 down 在所有格式上慢 0.6–1.1 µs（2-D 视图下整 tile 比原 1-D 读法慢）；每层合计快 2.7–10.8 µs。
+
+serving TPOT（32 token prompt，`split.jsonl`）：
+
+| 格式 | 第一步 | 第二步 | llama.cpp |
+|---|---:|---:|---:|
+| BF16 | 3.35 ms | 3.28 ms | 3.20 ms |
+| Q4_0 | 2.47 ms | 2.21 ms | 1.78 ms |
+| Q4_K_M | 2.74 ms | 2.50 ms | 1.89 ms |
+| Q5_K_M | 2.94 ms | 2.85 ms | 1.98 ms |
+| Q6_K | 2.82 ms | 2.74 ms | 2.09 ms |
+| Q8_0 | 2.78 ms | 2.64 ms | 2.27 ms |
+
 ## 后续方案
 
-**P3 余项（优先）。** 目标：单请求 TPOT 4-bit ≤ 2.0 ms、5/6/8-bit ≤ 2.5 ms。剩余差距约 0.7 ms：层内 GEMV 到 ≥ 1.2 TB/s 约省 0.4 ms，非 GEMV kernel（norm、rope、attention 的 split/merge）约 0.5 ms，与 BF16 路径共有。
+**P3 余项（优先）。** 目标：单请求 TPOT 4-bit ≤ 2.0 ms、5/6/8-bit ≤ 2.5 ms。剩余差距 0.4–0.9 ms：5/6-bit 的设备字节数（P4，Q5_K/Q6_K 10 bits/值 vs 文件 5.5/6.56）、非 GEMV kernel（norm、rope、attention 的 split/merge，约 0.5 ms，与 BF16 路径共有）以及 kernel 间空隙（约 0.2 ms）。
 1. split-K：每个 16 行 tile 的 span 分给 `S` 个 CTA，`S` 由输出 tile 数与 SM 数推导
    （`S = ceil(2 · SMs / tiles)`，上限为 span 数），部分和写到 workspace，由一个 reduce 或 atomic 合并；
    workspace 在 program 构建时按最大 `outputs · S` 预留，不在 decode 中分配。
