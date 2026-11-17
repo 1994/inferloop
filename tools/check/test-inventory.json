@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 515
+      "tests": 517
     },
     "cuda-kernels": {
       "benches": 0,
@@ -46,7 +46,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 10
+      "tests": 14
     },
     "frontdoor": {
       "benches": 0,
@@ -88,7 +88,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 201
+      "tests": 194
     },
     "quality": {
       "benches": 0,
@@ -495,6 +495,11 @@
       "crate": "cuda",
       "file": "src/loading/concurrency.rs",
       "mount": "../../tests/unit/loading_concurrency.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/loading/grouped_int_tiled.rs",
+      "mount": "../../tests/unit/grouped_int_tiled.rs"
     },
     {
       "crate": "cuda",
@@ -1523,16 +1528,6 @@
     },
     {
       "crate": "package",
-      "file": "src/storage/grouped_int.rs",
-      "mount": "../../tests/unit/gguf_layout.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/storage/grouped_int6.rs",
-      "mount": "../../tests/unit/gguf_q6k_layout.rs"
-    },
-    {
-      "crate": "package",
       "file": "src/storage/mod.rs",
       "mount": "../../tests/unit/storage_shards_tests.rs"
     },
@@ -1743,11 +1738,11 @@
     }
   ],
   "totals": {
-    "all": 1353,
+    "all": 1352,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1353
+    "tests": 1352
   }
 }

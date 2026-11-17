@@ -1,8 +1,87 @@
 //! Grouped integer weight contracts.
 //!
-//! `Q4_K`/`Q6_K` are precision encodings, not a file format. They stay in the projection family
-//! and are selected by [`crate::contract::kernels::WeightRef::GroupedInt`].
+//! Every [`GroupedIntFormat`] shares one tile-major layout: rows are tiled by
+//! [`GROUPED_INT_TILE_ROWS`], and each 256-value span of a tile stores its codes followed by one
+//! factor (and bias) per group. Formats differ only in [`CodePacking`] and their
+//! [`infer_ir::CodeOffset`], so the host packer and the kernels branch on those two properties,
+//! never on a format name.
 use crate::contract::buffer::Buffer;
+use infer_core::{Error, Result};
+use infer_ir::{GROUPED_INT_SPAN, GroupedIntFormat};
+
+/// Output rows one grouped-int tile covers.
+pub const GROUPED_INT_TILE_ROWS: usize = 16;
+/// Widest code a nibble packing holds.
+const NIBBLE_BITS: u32 = 4;
+/// Values one nibble-packed 64-value group holds in each of its 32 code bytes.
+pub const NIBBLE_PAIR_STRIDE: usize = 32;
+
+/// How codes occupy device bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodePacking {
+    /// Two codes per byte: lane `l` of each 64-value group holds value `l` in the low nibble and
+    /// value `l + 32` in the high nibble.
+    Nibble,
+    /// One code per byte.
+    Byte,
+}
+
+impl CodePacking {
+    /// The packing the kernels use for `format`.
+    #[must_use]
+    pub const fn of(format: GroupedIntFormat) -> Self {
+        if format.code_bits() <= NIBBLE_BITS {
+            Self::Nibble
+        } else {
+            Self::Byte
+        }
+    }
+
+    /// Values stored per code byte.
+    #[must_use]
+    pub const fn values_per_byte(self) -> usize {
+        match self {
+            Self::Nibble => 2,
+            Self::Byte => 1,
+        }
+    }
+}
+
+/// Element counts of one grouped-int matrix in the tile-major layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupedIntLayout {
+    /// Code bytes.
+    pub codes: usize,
+    /// Factors, and biases when the format has them.
+    pub terms: usize,
+}
+
+impl GroupedIntLayout {
+    /// The layout of an `[outputs, columns]` matrix.
+    /// # Errors
+    /// Rejects outputs that do not fill whole tiles, columns that are not whole spans, or sizes
+    /// that overflow.
+    pub fn new(format: GroupedIntFormat, outputs: usize, columns: usize) -> Result<Self> {
+        if outputs == 0
+            || columns == 0
+            || !outputs.is_multiple_of(GROUPED_INT_TILE_ROWS)
+            || !columns.is_multiple_of(GROUPED_INT_SPAN)
+        {
+            return Err(Error::unsupported(format!(
+                "{} matrix [{outputs}, {columns}] needs {GROUPED_INT_TILE_ROWS}-row tiles and \
+                 {GROUPED_INT_SPAN}-value spans",
+                format.label()
+            )));
+        }
+        let values = outputs
+            .checked_mul(columns)
+            .ok_or_else(|| Error::invalid("grouped-int matrix size overflow"))?;
+        Ok(Self {
+            codes: values / CodePacking::of(format).values_per_byte(),
+            terms: values / format.group_values(),
+        })
+    }
+}
 
 /// Geometry of one grouped-integer GEMV launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,13 +92,15 @@ pub struct GroupedIntPlan {
     pub columns: usize,
 }
 
-/// A grouped-integer matrix in the tiled device layout.
+/// A grouped-integer matrix in the tile-major device layout.
 #[derive(Clone, Copy, Debug)]
 pub struct GroupedIntWeight<'a> {
-    /// Tile-major packed 4-bit codes.
+    /// Block family; selects the packing and offset.
+    pub format: GroupedIntFormat,
+    /// Tile-major codes.
     pub codes: Buffer<'a, u8>,
-    /// Tile-major per-group `d * scale`.
+    /// Tile-major per-group factors.
     pub factors: Buffer<'a, f32>,
-    /// Tile-major per-group `dmin * min`.
-    pub biases: Buffer<'a, f32>,
+    /// Tile-major per-group biases, present exactly when the format has them.
+    pub biases: Option<Buffer<'a, f32>>,
 }

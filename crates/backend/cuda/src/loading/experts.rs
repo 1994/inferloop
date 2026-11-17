@@ -83,7 +83,7 @@ pub(super) fn load(
             WeightEncoding::Fp8Channel | WeightEncoding::Fp8Block => {
                 fp8(device, package, &parts, rows, input, output)?
             }
-            WeightEncoding::GroupedInt4 | WeightEncoding::GroupedInt6 => {
+            WeightEncoding::GroupedInt(_) => {
                 return Err(Error::unsupported("grouped-int expert weight"));
             }
             WeightEncoding::Nvfp4 => {

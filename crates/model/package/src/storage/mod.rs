@@ -5,10 +5,6 @@ pub mod gguf_package;
 pub mod gguf_requirements;
 #[cfg(feature = "gguf")]
 pub mod gguf_vision;
-#[cfg(feature = "gguf")]
-pub mod grouped_int;
-#[cfg(feature = "gguf")]
-pub mod grouped_int6;
 pub mod index;
 pub mod loader;
 pub mod memory;
