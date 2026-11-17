@@ -1,7 +1,9 @@
 pub mod cuda;
+pub mod grouped_int;
 pub mod metal;
 use crate::DType;
 pub use cuda::{CudaRequirements, NvidiaArchitecture, NvidiaCapabilities};
+pub use grouped_int::{CodeOffset, GROUPED_INT_MAX_GROUPS, GROUPED_INT_SPAN, GroupedIntFormat};
 use infer_core::{DeviceId, Error, Result};
 pub use metal::{MetalCapabilities, MetalRequirements};
 use serde::{Deserialize, Serialize};
@@ -69,10 +71,8 @@ pub enum ExecutableEncoding {
     Fp8,
     /// NVFP4 block scales.
     Nvfp4,
-    /// GGML `Q4_K` grouped integers.
-    GroupedInt4,
-    /// GGML `Q6_K` grouped integers.
-    GroupedInt6,
+    /// GGML grouped integers of one block family.
+    GroupedInt(GroupedIntFormat),
     /// MLX affine quantization.
     MlxAffine,
 }
@@ -85,8 +85,7 @@ impl ExecutableEncoding {
             Self::Dense => "dense",
             Self::Fp8 => "fp8",
             Self::Nvfp4 => "nvfp4",
-            Self::GroupedInt4 => "grouped-int4",
-            Self::GroupedInt6 => "grouped-int6",
+            Self::GroupedInt(format) => format.label(),
             Self::MlxAffine => "mlx-affine",
         }
     }

@@ -199,7 +199,7 @@ impl Mlp for TileMlp {
                     .record(unsafe { launch.programmatic_dependent_launch() })
                     .map(drop)
             }
-            WeightRef::GroupedInt { .. } | WeightRef::GroupedInt6 { .. } => {
+            WeightRef::GroupedInt(_) => {
                 return Err(Error::unsupported("grouped-int weight in a dense MLP"));
             }
         }

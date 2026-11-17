@@ -4,7 +4,7 @@ use super::attention::Attention;
 use super::draft::Draft;
 use super::vision::Vision;
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
-use crate::contract::grouped_int::GroupedIntPlan;
+use crate::contract::grouped_int::{GroupedIntPlan, GroupedIntWeight};
 use crate::contract::plan::{
     BinaryOp, DeltaKernel, DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, ExpertPlan,
     Fp4QuantPlan, Fp4ScalePlan, Fp8QuantPlan, FusionNormPlan, GemmPlan, GreedyPlan, LastRowsPlan,
@@ -49,36 +49,20 @@ pub trait Projection: Send + Sync {
         Err(unsupported("Projection::row"))
     }
 
-    /// Project one flat row with grouped integer weights.
+    /// Project one flat row with grouped integer weights of any [`infer_ir::GroupedIntFormat`].
     /// # Errors
-    /// Fails when a buffer disagrees with the plan, the weight is not grouped integer, or the
-    /// launch is rejected.
-    fn grouped_int_row(
+    /// Fails when a buffer disagrees with the plan or the format's layout, or the launch is
+    /// rejected.
+    fn grouped_int(
         &self,
         recording: &Recording<'_>,
         plan: &GroupedIntPlan,
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
-        weight: WeightRef<'_>,
+        weight: GroupedIntWeight<'_>,
     ) -> Result<()> {
         let _ = (recording, plan, out, x, weight);
-        Err(unsupported("Projection::grouped_int_row"))
-    }
-
-    /// Project one flat row with grouped 6-bit weights.
-    /// # Errors
-    /// Fails when a buffer disagrees with the plan, the weight is not grouped 6-bit, or the
-    /// launch is rejected.
-    fn grouped_int6_row(
-        &self,
-        recording: &Recording<'_>,
-        plan: &GroupedIntPlan,
-        out: Buffer<'_, f32>,
-        x: Buffer<'_, f32>,
-        weight: WeightRef<'_>,
-    ) -> Result<()> {
-        let _ = (recording, plan, out, x, weight);
-        Err(unsupported("Projection::grouped_int6_row"))
+        Err(unsupported("Projection::grouped_int"))
     }
 
     /// Copy flat `input` into row `row` of `out`, whose shape is `[rows, columns]`.
@@ -584,17 +568,8 @@ pub enum WeightRef<'a> {
         scales: Buffer<'a, Fp8>,
         inverse_global: f32,
     },
-    /// Grouped 4-bit codes with precomputed per-group factors and biases.
-    GroupedInt {
-        codes: Buffer<'a, u8>,
-        factors: Buffer<'a, f32>,
-        biases: Buffer<'a, f32>,
-    },
-    /// Grouped 6-bit codes with precomputed per-group factors.
-    GroupedInt6 {
-        codes: Buffer<'a, u8>,
-        factors: Buffer<'a, f32>,
-    },
+    /// Grouped integer codes with precomputed per-group factors (and biases).
+    GroupedInt(GroupedIntWeight<'a>),
 }
 
 /// Operands of an activation product: `out = silu(gate) * up`.

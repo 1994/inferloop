@@ -1,9 +1,9 @@
 use super::*;
-use crate::constants::QUANT_GEMM_TILE;
 use crate::mlp::Matrix;
 use crate::resident::ProgramGeometry;
 use crate::strategy::LinearTiling;
 use crate::tuning::search::Evidence;
+use crate::tuning::tiles::QUANT_GEMM_TILE;
 use std::env::temp_dir;
 use std::fs::remove_file;
 use std::fs::write;

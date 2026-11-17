@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 464
+      "tests": 517
     },
     "cuda-kernels": {
       "benches": 0,
@@ -42,17 +42,23 @@
       "src_near": 0,
       "tests": 20
     },
+    "format": {
+      "benches": 0,
+      "src_inline": 0,
+      "src_near": 0,
+      "tests": 14
+    },
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 187
+      "tests": 197
     },
     "ir": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 19
+      "tests": 26
     },
     "kernel-api": {
       "benches": 0,
@@ -76,13 +82,13 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 8
+      "tests": 12
     },
     "package": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 168
+      "tests": 194
     },
     "quality": {
       "benches": 0,
@@ -100,13 +106,13 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 107
+      "tests": 114
     },
     "scheduler": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 58
+      "tests": 63
     },
     "spi": {
       "benches": 0,
@@ -124,7 +130,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 33
+      "tests": 34
     }
   },
   "executor_consumers": [
@@ -184,6 +190,7 @@
     "actual 27B checkpoint, CUDA, release and protected runner": 1,
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
     "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
+    "real CUDA checkpoint; INFER_TEST_MODEL, INFER_TEST_TRAJECTORIES, INFER_TEST_DRIFT_*": 1,
     "real CUDA checkpoint; run under safe-run with INFER_TEST_MODEL": 2,
     "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement": 1,
     "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture": 3,
@@ -197,6 +204,7 @@
     "real Qwen3-VL checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 1,
     "real Qwen3-VL text checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 1,
     "release CUDA performance diagnostic; run inside safe-run": 1,
+    "requires CUDA": 1,
     "requires CUDA and INFER_TEST_MODEL; run release inside safe-run": 3,
     "requires CUDA and INFER_TEST_MODEL; run release serially inside safe-run": 1,
     "requires CUDA and explicit target/draft checkpoints": 1,
@@ -204,7 +212,6 @@
     "requires CUDA and safe-run; AOT ABI, full BF16-profile F64 sanity and measured architecture/cluster selection": 1,
     "requires CUDA and safe-run; F32 paged KV, complete short F64 outputs, long F64 rows, paired cold/warm and cache reuse": 1,
     "requires CUDA and safe-run; exact full-output/KV and cold/warm AB/BA tuning": 1,
-    "requires CUDA and safe-run; gated complete GDN pipeline paired timing": 1,
     "requires CUDA hardware and a real FP8 channel checkpoint; root runs release serially": 1,
     "requires CUDA hardware and a writable tuning cache; run under safe-run": 1,
     "requires CUDA hardware and cuBLAS; run under safe-run": 1,
@@ -216,7 +223,7 @@
     "requires CUDA hardware; run explicitly inside tools/bench/safe-run.sh": 5,
     "requires CUDA hardware; run inside safe-run": 34,
     "requires CUDA hardware; run release inside safe-run": 1,
-    "requires CUDA hardware; run under safe-run": 29,
+    "requires CUDA hardware; run under safe-run": 30,
     "requires CUDA hardware; run under safe-run in release": 1,
     "requires CUDA hardware; weak decay and correlated K expose unstable inverse construction": 1,
     "requires CUDA release, 170-SM baseline; no serving acceptance from this operator screen": 1,
@@ -244,7 +251,7 @@
     "requires CUDA/checkpoint/frozen1025tokens/safe-run; default-width full chunks and state bits": 1,
     "requires CUDA/checkpoint/frozen1025tokens/safe-run; pooled physical KV stride and complete bits": 1,
     "requires CUDA/checkpoint/frozen511tokens/safe-run; actual parallel quantization and complete state equivalence": 1,
-    "requires CUDA/checkpoint/frozen511tokens/safe-run; complete model output and state equivalence": 2,
+    "requires CUDA/checkpoint/frozen511tokens/safe-run; complete model output and state equivalence": 1,
     "requires CUDA/checkpoint/frozen511tokens/safe-run; original private versus default pool full-model bits": 1,
     "requires CUDA/checkpoint/private cache; full small-pool model/commit/rebind states": 1,
     "requires CUDA/checkpoint/private tuning cache; actual geometry selection and complete outputs": 1,
@@ -262,7 +269,6 @@
     "requires CUDA/safe-run; complete private/pool state at extended protocol widths": 1,
     "requires CUDA/safe-run; exact finite row max and quantizer cost": 1,
     "requires CUDA/safe-run; exhaustive codes and full bits/F64 before any timing": 1,
-    "requires CUDA/safe-run; full original F32 state/output and independent F64": 1,
     "requires CUDA/safe-run; graph operand lifetime": 1,
     "requires CUDA/safe-run; shared KV graph operand lifetime": 1,
     "requires CUDA/safe-run; vector KV graph operand lifetime": 1,
@@ -281,7 +287,8 @@
     "requires GPU and INFER_ATTENTION_GATE; use make check-attention": 1,
     "requires Linux NUMA policy and move_pages query permission; make check-linux-numa": 1,
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
-    "requires a CUDA device": 10,
+    "requires a CUDA device": 14,
+    "requires a CUDA device and INFER_TEST_MODEL with gated-delta layers": 3,
     "requires a CUDA device; run inside safe-run": 5,
     "requires a CUDA device; timing": 1,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
@@ -333,6 +340,11 @@
       "crate": "cuda",
       "file": "src/device/cublaslt.rs",
       "mount": "../../tests/unit/device_cublaslt.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/device_timer.rs",
+      "mount": "../../tests/unit/device_timer.rs"
     },
     {
       "crate": "cuda",
@@ -406,6 +418,16 @@
     },
     {
       "crate": "cuda",
+      "file": "src/executor/admission_pool.rs",
+      "mount": "../../tests/unit/executor_recurrent_profile.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/executor/admission_pool.rs",
+      "mount": "../../tests/unit/executor_recurrent_drift.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/executor/execution.rs",
       "mount": "../../tests/unit/executor_execution.rs"
     },
@@ -473,6 +495,16 @@
       "crate": "cuda",
       "file": "src/loading/concurrency.rs",
       "mount": "../../tests/unit/loading_concurrency.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/loading/grouped_int_tiled.rs",
+      "mount": "../../tests/unit/grouped_int_tiled.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/loading/head_padding.rs",
+      "mount": "../../tests/unit/head_padding.rs"
     },
     {
       "crate": "cuda",
@@ -547,11 +579,6 @@
     {
       "crate": "cuda",
       "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/resident_recurrent_oxide_model.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
       "mount": "../../tests/unit/loading_gated_norm_model.rs"
     },
     {
@@ -621,6 +648,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/resident/attention_lowering.rs",
+      "mount": "../../tests/unit/attention_lowering.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/resident/attention_mma/catalog.rs",
       "mount": "../../../tests/unit/resident_attention_mma_catalog.rs"
     },
@@ -671,8 +703,23 @@
     },
     {
       "crate": "cuda",
+      "file": "src/resident/capture.rs",
+      "mount": "../../tests/unit/resident_elementwise_cell.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/resident/capture_checkpoint.rs",
       "mount": "../../tests/unit/resident_capture_checkpoint.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/capture_rope.rs",
+      "mount": "../../tests/unit/resident_rope_cell.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/capture_state.rs",
+      "mount": "../../tests/unit/resident_recurrent_cell.rs"
     },
     {
       "crate": "cuda",
@@ -736,6 +783,16 @@
     },
     {
       "crate": "cuda",
+      "file": "src/resident/norm_lowering.rs",
+      "mount": "../../tests/unit/norm_lowering.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/norm_lowering.rs",
+      "mount": "../../tests/unit/resident_norm_cell.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/resident/nvfp4_gemm/quant_reuse.rs",
       "mount": "../../../tests/unit/resident_quant_reuse_plan.rs"
     },
@@ -796,8 +853,18 @@
     },
     {
       "crate": "cuda",
+      "file": "src/resident/projection_lowering.rs",
+      "mount": "../../tests/unit/projection_lowering.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/resident/recurrent_checkpoint.rs",
       "mount": "../../tests/unit/resident_recurrent_checkpoint.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/recurrent_lowering.rs",
+      "mount": "../../tests/unit/recurrent_lowering.rs"
     },
     {
       "crate": "cuda",
@@ -823,11 +890,6 @@
       "crate": "cuda",
       "file": "src/resident/recurrent_prefill.rs",
       "mount": "../../tests/unit/resident_recurrent_prefill_model_check.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/recurrent_prefill.rs",
-      "mount": "../../tests/unit/resident_recurrent_oxide.rs"
     },
     {
       "crate": "cuda",
@@ -976,11 +1038,6 @@
     },
     {
       "crate": "cuda",
-      "file": "src/tuning/recurrent/exact.rs",
-      "mount": "../../../tests/unit/tuning_recurrent_exact.rs"
-    },
-    {
-      "crate": "cuda",
       "file": "src/tuning/recurrent.rs",
       "mount": "../../tests/unit/tuning_recurrent.rs"
     },
@@ -993,6 +1050,11 @@
       "crate": "cuda",
       "file": "src/tuning/resident_gemm.rs",
       "mount": "../../tests/unit/resident_gemm_tuning.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/tuning/search.rs",
+      "mount": "../../tests/unit/tuning_search.rs"
     },
     {
       "crate": "cuda",
@@ -1056,8 +1118,28 @@
     },
     {
       "crate": "cuda",
+      "file": "tests/unit/resident_elementwise_cell.rs",
+      "mount": "../../../cuda-kernels/acceptance/elementwise.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "tests/unit/resident_norm_cell.rs",
+      "mount": "../../../cuda-kernels/acceptance/norm.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "tests/unit/resident_pool_gemv_cell.rs",
       "mount": "../../../cuda-kernels/acceptance/pool_gemv.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "tests/unit/resident_recurrent_cell.rs",
+      "mount": "../../../cuda-kernels/acceptance/recurrent.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "tests/unit/resident_rope_cell.rs",
+      "mount": "../../../cuda-kernels/acceptance/rope.rs"
     },
     {
       "crate": "cuda",
@@ -1118,6 +1200,11 @@
       "crate": "metal",
       "file": "src/executor/submission.rs",
       "mount": "../../tests/unit/executor_submission.rs"
+    },
+    {
+      "crate": "observe",
+      "file": "src/device.rs",
+      "mount": "../tests/unit/device.rs"
     },
     {
       "crate": "observe",
@@ -1223,6 +1310,11 @@
       "crate": "scheduler",
       "file": "src/queue/ordered.rs",
       "mount": "../../tests/unit/ordered.rs"
+    },
+    {
+      "crate": "scheduler",
+      "file": "src/room.rs",
+      "mount": "../tests/unit/room.rs"
     },
     {
       "crate": "state",
@@ -1406,13 +1498,33 @@
     },
     {
       "crate": "package",
-      "file": "src/providers/qwen.rs",
-      "mount": "../../tests/unit/providers_qwen.rs"
+      "file": "src/providers/llama.rs",
+      "mount": "../../tests/unit/providers_llama.rs"
+    },
+    {
+      "crate": "package",
+      "file": "src/providers/qwen/gguf/mod.rs",
+      "mount": "../../../../tests/unit/providers_gguf.rs"
+    },
+    {
+      "crate": "package",
+      "file": "src/providers/qwen/gguf/tokenizer.rs",
+      "mount": "../../../../tests/unit/providers_gguf_tokenizer.rs"
+    },
+    {
+      "crate": "package",
+      "file": "src/providers/qwen/mod.rs",
+      "mount": "../../../tests/unit/providers_qwen.rs"
     },
     {
       "crate": "package",
       "file": "src/providers/registry.rs",
       "mount": "../../tests/unit/providers_registry.rs"
+    },
+    {
+      "crate": "package",
+      "file": "src/storage/gguf_requirements.rs",
+      "mount": "../../tests/unit/gguf_requirements.rs"
     },
     {
       "crate": "package",
@@ -1428,6 +1540,11 @@
       "crate": "package",
       "file": "src/storage/quantized.rs",
       "mount": "../../tests/unit/storage_quantized.rs"
+    },
+    {
+      "crate": "package",
+      "file": "src/storage/source.rs",
+      "mount": "../../tests/unit/source.rs"
     },
     {
       "crate": "recipes",
@@ -1506,6 +1623,11 @@
     },
     {
       "crate": "frontdoor",
+      "file": "src/http/logging.rs",
+      "mount": "../../tests/unit/http_logging.rs"
+    },
+    {
+      "crate": "frontdoor",
       "file": "src/http/mod.rs",
       "mount": "../../tests/unit/http.rs"
     },
@@ -1518,6 +1640,11 @@
       "crate": "frontdoor",
       "file": "src/http/openai/execution.rs",
       "mount": "../../../tests/unit/http_openai_execution.rs"
+    },
+    {
+      "crate": "frontdoor",
+      "file": "src/http/openai/ids.rs",
+      "mount": "../../../tests/unit/ids.rs"
     },
     {
       "crate": "frontdoor",
@@ -1611,11 +1738,11 @@
     }
   ],
   "totals": {
-    "all": 1225,
+    "all": 1352,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1225
+    "tests": 1352
   }
 }

@@ -45,9 +45,11 @@ pub fn encoding_for(ty: infer_format::GgufType) -> Result<ExecutableEncoding> {
         infer_format::GgufType::F32
         | infer_format::GgufType::F16
         | infer_format::GgufType::Bf16 => ExecutableEncoding::Dense,
-        infer_format::GgufType::Q4K => ExecutableEncoding::GroupedInt4,
-        infer_format::GgufType::Q6K => ExecutableEncoding::GroupedInt6,
-        other => return Err(Error::unsupported(other.name())),
+        other => ExecutableEncoding::GroupedInt(
+            other
+                .grouped_int()
+                .ok_or_else(|| Error::unsupported(other.name()))?,
+        ),
     })
 }
 

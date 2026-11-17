@@ -1,9 +1,10 @@
 //! Shape and evidence policy for the existing fused FP4 kernel.
 use super::super::{GemmConfig, MainLoop, ResidentGemmKey};
 use super::super::{TILE_M_SEARCH, TILE_N_SEARCH};
-use crate::constants::{NVFP4_GROUP_SIZE, PROMPT_GEMM_TILE_ROWS, QUANT_GEMM_TILE};
+use crate::constants::NVFP4_GROUP_SIZE;
 use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::search::{Protocol, Record};
+use crate::tuning::tiles::{PROMPT_GEMM_TILE_ROWS, QUANT_GEMM_TILE};
 
 /// Conservative tile whose arithmetic and complete-model path are already qualified.
 pub const fn baseline() -> GemmConfig {
