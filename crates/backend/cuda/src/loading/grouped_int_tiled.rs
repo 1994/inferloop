@@ -14,6 +14,14 @@ use infer_models::{GroupedSpan, decode_span, span_bytes};
 const NIBBLE_GROUP: usize = 2 * NIBBLE_PAIR_STRIDE;
 /// Width of one nibble.
 const NIBBLE_SHIFT: u32 = 4;
+/// Low bits of a code the nibble plane holds.
+const NIBBLE_MASK: u8 = 0x0f;
+/// Rows one code word carries, one per byte.
+const WORD_ROWS: usize = 4;
+/// Bytes of one code word.
+const WORD_BYTES: usize = 4;
+/// Bits of one byte.
+const BYTE_BITS: usize = 8;
 
 /// A grouped-int matrix in the tile-major layout the CUDA kernels read.
 #[derive(Debug, Clone, PartialEq)]
@@ -81,23 +89,42 @@ impl GroupedIntTiled {
                 biases[term] = span.biases[group];
             }
         }
-        match CodePacking::of(self.format) {
-            CodePacking::Byte => {
-                let base = tile_span * GROUPED_INT_SPAN * GROUPED_INT_TILE_ROWS;
-                for (value, code) in span.codes.iter().enumerate() {
-                    self.codes[base + value * GROUPED_INT_TILE_ROWS + lane_row] = *code;
-                }
+        let packing = CodePacking::of(self.format);
+        if packing == CodePacking::Byte {
+            let base = tile_span * GROUPED_INT_SPAN * GROUPED_INT_TILE_ROWS;
+            for (value, code) in span.codes.iter().enumerate() {
+                self.codes[base + value * GROUPED_INT_TILE_ROWS + lane_row] = *code;
             }
-            CodePacking::Nibble => {
-                let base = tile_span * GROUPED_INT_SPAN / 2 * GROUPED_INT_TILE_ROWS;
-                for (group, values) in span.codes.as_chunks::<NIBBLE_GROUP>().0.iter().enumerate() {
-                    let (low, high) = values.split_at(NIBBLE_PAIR_STRIDE);
-                    for (lane, (low, high)) in low.iter().zip(high).enumerate() {
-                        let byte = (group * NIBBLE_PAIR_STRIDE + lane) * GROUPED_INT_TILE_ROWS;
-                        self.codes[base + byte + lane_row] = low | (high << NIBBLE_SHIFT);
-                    }
-                }
+            return;
+        }
+        let base = tile_span * GROUPED_INT_SPAN / 2 * GROUPED_INT_TILE_ROWS;
+        for (group, values) in span.codes.as_chunks::<NIBBLE_GROUP>().0.iter().enumerate() {
+            let (low, high) = values.split_at(NIBBLE_PAIR_STRIDE);
+            for (lane, (low, high)) in low.iter().zip(high).enumerate() {
+                let byte = (group * NIBBLE_PAIR_STRIDE + lane) * GROUPED_INT_TILE_ROWS;
+                self.codes[base + byte + lane_row] =
+                    (low & NIBBLE_MASK) | ((high & NIBBLE_MASK) << NIBBLE_SHIFT);
             }
+        }
+        if let CodePacking::NibbleHigh { high_bits } = packing {
+            self.scatter_high(tile_span, lane_row, high_bits as usize, &span.codes);
+        }
+    }
+
+    /// Write the bits above the nibbles of one span's `codes` into the high plane, as
+    /// [`CodePacking::NibbleHigh`] lays them out.
+    fn scatter_high(&mut self, tile_span: usize, lane_row: usize, high_bits: usize, codes: &[u8]) {
+        let plane = self.rows * self.columns / 2;
+        let wide = NIBBLE_PAIR_STRIDE * high_bits;
+        let (word_column, row_bit) = (lane_row / WORD_ROWS, lane_row % WORD_ROWS * high_bits);
+        for (value, code) in codes.iter().enumerate() {
+            let (slot, lane) = (value / wide, value % wide);
+            let word = (tile_span * wide + lane) * WORD_ROWS + word_column;
+            let top = code >> NIBBLE_SHIFT;
+            let bit = slot * WORD_ROWS * high_bits + row_bit;
+            let byte = plane + word * WORD_BYTES + bit / BYTE_BITS;
+            // A row's bits never straddle a byte: `high_bits` divides the bit offset.
+            self.codes[byte] |= top << (bit % BYTE_BITS);
         }
     }
 
@@ -153,7 +180,7 @@ impl GroupedIntTiled {
 /// `[rows, code columns]` of an `[rows, columns]` matrix of `format`.
 #[must_use]
 pub const fn code_shape(format: GroupedIntFormat, rows: usize, columns: usize) -> [usize; 2] {
-    [rows, columns / CodePacking::of(format).values_per_byte()]
+    [rows, CodePacking::of(format).code_bytes(columns)]
 }
 
 #[cfg(test)]

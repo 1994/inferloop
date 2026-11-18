@@ -2,7 +2,8 @@
 //!
 //! Every [`GroupedIntFormat`] shares one tile-major layout: rows are tiled by
 //! [`GROUPED_INT_TILE_ROWS`], and each 256-value span of a tile stores its codes followed by one
-//! factor (and bias) per group. Formats differ only in [`CodePacking`] and their
+//! factor (and bias) per group; a [`CodePacking::NibbleHigh`] matrix stores the bits above the
+//! nibbles in a second plane after every span's nibbles. Formats differ only in [`CodePacking`] and their
 //! [`infer_ir::CodeOffset`], so the host packer and the kernels branch on those two properties,
 //! never on a format name.
 use crate::contract::buffer::Buffer;
@@ -16,6 +17,10 @@ pub const GROUPED_INT_TILE_ROWS: usize = 16;
 pub const GROUPED_INT_GEMM_ROWS: usize = 32;
 /// Widest code a nibble packing holds.
 const NIBBLE_BITS: u32 = 4;
+/// Width of a byte-per-code packing.
+const BYTE_BITS: u32 = 8;
+/// Code bits one device byte holds.
+const BYTE_WIDTH: usize = 8;
 /// Values one nibble-packed 64-value group holds in each of its 32 code bytes.
 pub const NIBBLE_PAIR_STRIDE: usize = 32;
 
@@ -25,6 +30,15 @@ pub enum CodePacking {
     /// Two codes per byte: lane `l` of each 64-value group holds value `l` in the low nibble and
     /// value `l + 32` in the high nibble.
     Nibble,
+    /// The low four bits of every code as in [`Self::Nibble`], and the `high_bits` above them in
+    /// a plane after the whole matrix's nibbles. Each 256-value span of a tile holds
+    /// `[32 * high_bits, 4]` little-endian `u32` words: with `slots = 8 / high_bits`, bit
+    /// `4 * high_bits * k + high_bits * b + i` of word `(j, w)` is bit `4 + i` of value
+    /// `32 * high_bits * k + j` in row `4w + b`.
+    NibbleHigh {
+        /// Code bits above the nibble: 1 or 2.
+        high_bits: u32,
+    },
     /// One code per byte.
     Byte,
 }
@@ -33,19 +47,47 @@ impl CodePacking {
     /// The packing the kernels use for `format`.
     #[must_use]
     pub const fn of(format: GroupedIntFormat) -> Self {
-        if format.code_bits() <= NIBBLE_BITS {
+        let bits = format.code_bits();
+        if bits <= NIBBLE_BITS {
             Self::Nibble
+        } else if bits < BYTE_BITS {
+            Self::NibbleHigh {
+                high_bits: bits - NIBBLE_BITS,
+            }
         } else {
             Self::Byte
         }
     }
 
-    /// Values stored per code byte.
+    /// Device bits of one code.
     #[must_use]
-    pub const fn values_per_byte(self) -> usize {
+    pub const fn code_bits(self) -> usize {
         match self {
-            Self::Nibble => 2,
-            Self::Byte => 1,
+            Self::Nibble => NIBBLE_BITS as usize,
+            Self::NibbleHigh { high_bits } => (NIBBLE_BITS + high_bits) as usize,
+            Self::Byte => BYTE_BITS as usize,
+        }
+    }
+
+    /// Code bytes of `values` codes; `values` is a whole number of spans.
+    #[must_use]
+    pub const fn code_bytes(self, values: usize) -> usize {
+        values / BYTE_WIDTH * self.code_bits()
+    }
+
+    /// Codes in `bytes` code bytes; the inverse of [`Self::code_bytes`].
+    #[must_use]
+    pub const fn code_values(self, bytes: usize) -> usize {
+        bytes * BYTE_WIDTH / self.code_bits()
+    }
+
+    /// Bytes of the nibble plane that leads the codes of `values` values, when the packing splits
+    /// its codes into two planes.
+    #[must_use]
+    pub const fn nibble_plane(self, values: usize) -> Option<usize> {
+        match self {
+            Self::NibbleHigh { .. } => Some(values / 2),
+            Self::Nibble | Self::Byte => None,
         }
     }
 }
@@ -80,7 +122,7 @@ impl GroupedIntLayout {
             .checked_mul(columns)
             .ok_or_else(|| Error::invalid("grouped-int matrix size overflow"))?;
         Ok(Self {
-            codes: values / CodePacking::of(format).values_per_byte(),
+            codes: CodePacking::of(format).code_bytes(values),
             terms: values / format.group_values(),
         })
     }

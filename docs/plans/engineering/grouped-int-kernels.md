@@ -11,26 +11,30 @@
 | GGUF 类型 → 格式 | `GgufType::grouped_int` |
 | 设备布局（packing、tile、term 下标） | `infer_cuda_kernels::contract::{CodePacking, GroupedIntLayout}` |
 | host 打包 | CUDA `loading::GroupedIntTiled`（按 packing 分支，不按格式） |
-| kernel | `nibble::{gemv, gemv_zero, gemm, gemm_zero}`、`byte::{…}`；group、zero point 与行块高度是 const generic |
+| kernel | `nibble::{gemv, gemv_zero, gemm, gemm_zero}`、`high::{…}`、`byte::{…}`；group、zero point、高位数与行块高度是 const generic |
 
 `ExecutableEncoding::GroupedInt(format)` / `WeightEncoding::GroupedInt(format)` / `WeightRef::GroupedInt(GroupedIntWeight)` 各只有一个变体，`Projection::grouped_int` 是唯一入口。新增一个与现有 packing 相容的格式只需：`GroupedIntFormat` 一个变体 + 几何、`decode_span` 一个分支、CUDA provider 声明一行。
 
 ### 设备存储代价
 
-所有格式共用 f32 factor（有 min 的格式另加 f32 bias）。5/6/8 bit 码按字节存放：
+所有格式共用 f32 factor（有 min 的格式另加 f32 bias）。4-bit 码两个一字节（`Nibble`）；5/6-bit 码的低 4 位
+同样两个一字节，其上 1/2 位放在整矩阵 nibble 之后的高位平面（`NibbleHigh`，每 span `[32·高位数, 4]` 个
+`u32`，位序见 `CodePacking::NibbleHigh`）；8-bit 码按字节存放：
 
 | 格式 | GGUF bits/值 | 设备 bits/值 |
 |---|---|---|
 | Q4_0 | 4.5 | 5 |
 | Q4_1 | 5 | 6 |
 | Q4_K | 4.5 | 6 |
-| Q5_0 | 5.5 | 9 |
-| Q5_1 | 6 | 10 |
-| Q5_K | 5.5 | 10 |
-| Q6_K | 6.56 | 10 |
+| Q5_0 | 5.5 | 6（字节存放时 9） |
+| Q5_1 | 6 | 7（10） |
+| Q5_K | 5.5 | 7（10） |
+| Q6_K | 6.56 | 8（10） |
 | Q8_0 | 8.5 | 9 |
 
-5-bit 格式的显存/带宽代价最大；需要时给它们加一个 nibble+高位平面的 packing（新 packer 分支 + kernel 变体），不改格式层。Q2_K/Q3_K/IQ 系列尚未接入，加载时显式 `Unsupported`。
+剩余差距来自 f32 term（每值 1–2 bits）；改 f16 需要先测 K-quant `d·sc` 的舍入，见性能文档 P4。
+
+Q2_K/Q3_K/IQ 系列尚未接入，加载时显式 `Unsupported`。
 
 ## 既有设计基线
 

@@ -268,7 +268,7 @@ impl ProjectionWeight {
             Self::Fp4(w, _, _) => w.shape(),
             Self::GroupedInt { codes, format, .. } => [
                 codes.rows(),
-                codes.columns() * CodePacking::of(*format).values_per_byte(),
+                CodePacking::of(*format).code_values(codes.columns()),
             ],
         }
     }

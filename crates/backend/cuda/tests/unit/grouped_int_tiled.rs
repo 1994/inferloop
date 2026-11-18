@@ -28,11 +28,17 @@ fn packed_value(tiled: &GroupedIntTiled, row: usize, column: usize) -> f32 {
     let code = match CodePacking::of(format) {
         CodePacking::Byte => tiled.codes()
             [(tile_span * GROUPED_INT_SPAN + within) * GROUPED_INT_TILE_ROWS + lane_row],
-        CodePacking::Nibble => {
-            let (group, offset) = (within / 64, within % 64);
-            let byte = tiled.codes()
-                [((tile_span * 4 + group) * 32 + offset % 32) * GROUPED_INT_TILE_ROWS + lane_row];
-            if offset < 32 { byte & 0xf } else { byte >> 4 }
+        CodePacking::Nibble => nibble(tiled.codes(), tile_span, lane_row, within),
+        CodePacking::NibbleHigh { high_bits } => {
+            let high_bits = high_bits as usize;
+            let plane = ROWS * COLUMNS / 2;
+            let wide = 32 * high_bits;
+            let word = (tile_span * wide + within % wide) * 4 + lane_row / 4;
+            let bytes = &tiled.codes()[plane + word * 4..plane + word * 4 + 4];
+            let bits = u32::from_le_bytes(bytes.try_into().unwrap());
+            let shift = within / wide * 4 * high_bits + lane_row % 4 * high_bits;
+            let top = (bits >> shift) & ((1 << high_bits) - 1);
+            nibble(tiled.codes(), tile_span, lane_row, within) | (u8::try_from(top).unwrap() << 4)
         }
     };
     let term = (tile_span * format.span_groups() + within / format.group_values())
@@ -40,6 +46,14 @@ fn packed_value(tiled: &GroupedIntTiled, row: usize, column: usize) -> f32 {
         + lane_row;
     let bias = tiled.biases().map_or(0.0, |biases| biases[term]);
     format.value(code, tiled.factors()[term], bias)
+}
+
+/// The nibble of `within` in its span, from the nibble plane at the head of `codes`.
+fn nibble(codes: &[u8], tile_span: usize, lane_row: usize, within: usize) -> u8 {
+    let (group, offset) = (within / 64, within % 64);
+    let byte =
+        codes[((tile_span * 4 + group) * 32 + offset % 32) * GROUPED_INT_TILE_ROWS + lane_row];
+    if offset < 32 { byte & 0xf } else { byte >> 4 }
 }
 
 #[test]
