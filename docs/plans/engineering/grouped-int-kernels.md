@@ -1,6 +1,6 @@
 # Grouped-int kernel family and kernel observability
 
-状态：**格式边界、packer、kernel 家族已实现**（第 1–3、7 步）；Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q4_K/Q5_K/Q6_K 走同一条路径。multi-row MMQ prefill、kernel manifest 与可选设备计时（第 4–6 步）尚未实现。
+状态：**格式边界、packer、kernel 家族、多行 rows kernel 已实现**（第 1–4、7 步）；Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q4_K/Q5_K/Q6_K 走同一条路径。kernel manifest 与可选设备计时（第 5–6 步）尚未实现。性能问题、测量与后续方案见 [GGUF grouped-int 性能](../performance/gguf-grouped-int.md)。
 
 ## 已实现的单一来源
 
@@ -11,7 +11,7 @@
 | GGUF 类型 → 格式 | `GgufType::grouped_int` |
 | 设备布局（packing、tile、term 下标） | `infer_cuda_kernels::contract::{CodePacking, GroupedIntLayout}` |
 | host 打包 | CUDA `loading::GroupedIntTiled`（按 packing 分支，不按格式） |
-| kernel | `nibble::{gemv, gemv_zero}`、`byte::{gemv, gemv_zero}`；group 与 zero point 是 const generic |
+| kernel | `nibble::{gemv, gemv_zero, gemm, gemm_zero}`、`byte::{…}`；group、zero point 与行块高度是 const generic |
 
 `ExecutableEncoding::GroupedInt(format)` / `WeightEncoding::GroupedInt(format)` / `WeightRef::GroupedInt(GroupedIntWeight)` 各只有一个变体，`Projection::grouped_int` 是唯一入口。新增一个与现有 packing 相容的格式只需：`GroupedIntFormat` 一个变体 + 几何、`decode_span` 一个分支、CUDA provider 声明一行。
 
@@ -135,12 +135,11 @@ grouped_int_mmq<BITS, TILE_N, TWO_TERM>(...) // M>=16
 ### 4. rows 路径
 
 ```text
-M == 1          -> grouped_int_gemv
-M >= 16         -> grouped_int_mmq
-1 < M < 16      -> pad 到 16 或回退到 GEMV（显式策略，不隐式逐行）
+M == 1          -> gemv / gemv_zero
+M >= 2          -> gemm / gemm_zero，[32, 16] 输出块，末块谓词化
 ```
 
-`Mode::Prompt` 不再产生 `PromptGrouped` 的逐行循环；没有 multi-row kernel 的格式在 load 阶段返回 `Unsupported`，而不是在 serving 中静默降级。
+`Mode::Prompt`、`Mode::Rows`、`Mode::Slots` 都走 `RowsKernel::GroupedInt`，一次 launch 覆盖全部行块；不再有逐行循环。2–12 行的谓词化开销见性能方案 P6。
 
 ### 5. Kernel 观测
 
@@ -209,7 +208,7 @@ replay 后读取，聚合为：
 1. `GroupedIntTiled` + loader 收口（已完成）；
 2. `Projection::grouped_int` 单入口、rows 单路径（已完成；rows 仍逐行调用 GEMV）；
 3. kernel 家族按 packing × offset 模板化（已完成）；
-4. multi-row MMQ 接入 prefill，删除 `PromptGrouped` fallback；
+4. 多行 rows kernel（BF16 MMA，`[32, 16]` 输出块）接入 prefill 与 pooled/gathered rows，删除逐行循环（已完成；int8 MMQ 见性能方案 P5）；
 5. `KernelDescriptor` manifest；
 6. 可选 CUDA event 计时；
 7. 接入 Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q5_K（已完成，llama.cpp 量化的 Qwen3-VL-2B 端到端对照见 PR）。

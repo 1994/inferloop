@@ -509,14 +509,7 @@ impl CudaExecutor {
         tracing::info!(target: "infer::executor", planned_width, prompt_width, quoted_bytes,
             capacity, kv_tokens, "planned pooled CUDA serving storage");
         super::profiling::memory(attempt, "before_pool", planned_width, self.loaded.device());
-        let pool = self
-            .create_slot_pool(capacity, planned_width, kv_tokens)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::Capacity,
-                    "could not construct pooled CUDA storage",
-                )
-            })?;
+        let pool = self.create_slot_pool(capacity, planned_width, kv_tokens)?;
         let width = pool.width();
         super::profiling::memory(attempt, "target_pool", width, self.loaded.device());
         let head = if self.drafter.wants_pool() {
@@ -847,17 +840,24 @@ impl CudaExecutor {
     /// Each attempt that fails is followed by a reclaim so the next one is judged against
     /// memory that is actually free; a width that cannot fit is worth more to the server than
     /// no batching at all.
+    /// The widest slot pool from `maximum` down that constructs.
+    /// # Errors
+    /// The narrowest width's error when none does, so the cause keeps its code.
     fn create_slot_pool(
         &mut self,
         capacity: usize,
         maximum: usize,
         kv_tokens: usize,
-    ) -> Option<SlotPool> {
+    ) -> Result<SlotPool> {
         let minimum = self.draft_pooling().minimum_pool_width();
+        let mut last = Error::new(
+            ErrorCode::Capacity,
+            "could not construct pooled CUDA storage",
+        );
         for width in (minimum..=maximum).rev() {
             loop {
                 match self.loaded.slot_pool(width, capacity, Some(kv_tokens)) {
-                    Ok(pool) => return Some(pool),
+                    Ok(pool) => return Ok(pool),
                     Err(error) => {
                         super::profiling::pool_failure("target", width, capacity, &error);
                         tracing::debug!(
@@ -874,14 +874,16 @@ impl CudaExecutor {
                             "slot pool attempt failed"
                         );
                         self.pool_failure_reason = Some(format!("width {width}: {error}"));
-                        if !self.reclaim_cached_for_pool(&error) {
+                        let reclaimed = self.reclaim_cached_for_pool(&error);
+                        last = error;
+                        if !reclaimed {
                             break;
                         }
                     }
                 }
             }
         }
-        None
+        Err(last)
     }
 
     fn prepare_draft_pool(&mut self, width: usize, capacity: usize) -> Option<SlotPool> {
