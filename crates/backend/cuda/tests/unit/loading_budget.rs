@@ -1,5 +1,6 @@
 use super::*;
 use crate::constants::KV_BLOCK_TOKENS;
+use crate::resident::NarrowElement;
 use crate::resident::PromptScratchRegistry;
 use crate::resident::attention_mma::catalog::DIM;
 use crate::resident::attention_mma::catalog::HEADS;
@@ -36,6 +37,7 @@ fn fixture_weights() -> ProgramWeights {
         fp8_inputs: BTreeSet::new(),
         input_scales: BTreeMap::new(),
         kv_scales: BTreeMap::new(),
+        kv_element: NarrowElement::default(),
         tiling: BTreeMap::new(),
         expert_banks: BTreeMap::new(),
         constants: BTreeMap::new(),
@@ -179,6 +181,34 @@ fn kv_block_bytes_counts_attention_states_in_storage_bytes() -> Result<()> {
         kv_block_bytes(&graph, &weights)?,
         block * 512 * 2 * (F32 + 1)
     );
+    Ok(())
+}
+
+#[test]
+fn half_precision_kv_pages_cost_two_bytes_per_element() -> Result<()> {
+    let (graph, state) = attention_graph(128)?;
+    let mut weights = fixture_weights();
+    weights.kv_scales.insert(state, [1.0, 1.0]);
+    let fp8 = kv_block_bytes(&graph, &weights)?;
+    weights.kv_element = NarrowElement::F16;
+    assert_eq!(kv_block_bytes(&graph, &weights)?, 2 * fp8);
+    Ok(())
+}
+
+#[test]
+fn half_precision_kv_never_selects_the_fp8_only_attention_kernels() -> Result<()> {
+    let (graph, state) = attention_graph(128)?;
+    let mut weights = fixture_weights();
+    weights.prefill_width = 128;
+    weights.kv_scales.insert(state, [1.0, 1.0]);
+    weights.kv_element = NarrowElement::F16;
+    assert!(!weights.fp8_kv(&state));
+    for profile in [crate::AttentionProfile::Bf16, crate::AttentionProfile::Fp16] {
+        weights.attention_profile = profile;
+        for architecture in ["sm_100", "sm_120"] {
+            assert!(!eligible(architecture, &graph, &weights, 128));
+        }
+    }
     Ok(())
 }
 

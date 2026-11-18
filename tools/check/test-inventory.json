@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 517
+      "tests": 520
     },
     "cuda-kernels": {
       "benches": 0,
@@ -58,7 +58,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 26
+      "tests": 29
     },
     "kernel-api": {
       "benches": 0,
@@ -221,7 +221,7 @@
     "requires CUDA hardware; new F32-state/F64-reference contract": 1,
     "requires CUDA hardware; root runs release serially": 3,
     "requires CUDA hardware; run explicitly inside tools/bench/safe-run.sh": 5,
-    "requires CUDA hardware; run inside safe-run": 34,
+    "requires CUDA hardware; run inside safe-run": 35,
     "requires CUDA hardware; run release inside safe-run": 1,
     "requires CUDA hardware; run under safe-run": 30,
     "requires CUDA hardware; run under safe-run in release": 1,
@@ -1418,6 +1418,11 @@
     },
     {
       "crate": "ir",
+      "file": "src/hardware/kv_cache.rs",
+      "mount": "../../tests/unit/hardware_kv_cache.rs"
+    },
+    {
+      "crate": "ir",
       "file": "src/image.rs",
       "mount": "../tests/unit/image.rs"
     },
@@ -1738,11 +1743,11 @@
     }
   ],
   "totals": {
-    "all": 1352,
+    "all": 1358,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1352
+    "tests": 1358
   }
 }

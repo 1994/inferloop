@@ -335,7 +335,8 @@ impl QuantizedPackage {
             weights: BTreeMap::new(),
             mtp: BTreeMap::new(),
             dflash2: None,
-            kv_cache_dtype: None,
+            // A GGUF file stores no KV encoding; half precision is the GGML runtimes' default.
+            kv_cache_dtype: Some(TensorDtype::F16),
             shards: BTreeMap::new(),
             tensor_map: BTreeMap::new(),
             activation_rules: Vec::new(),

@@ -11,7 +11,7 @@ use crate::contract::attention::{
 };
 use crate::contract::buffer::Buffer;
 use crate::contract::recording::Recording;
-use crate::tile::projection::retyped_fp8;
+use crate::tile::projection::{retyped_f16, retyped_fp8};
 use crate::tile::{backend_error, borrowed, capture_scope};
 use cuda_core::DType;
 use cutile::prelude::*;
@@ -134,6 +134,10 @@ macro_rules! typed {
             }
             KvBuffers::Fp8 { keys, values } => {
                 let $kv = $self.pair($recording, (retyped_fp8(keys), retyped_fp8(values)), $cache)?;
+                $self.$launch($recording, $bound, $($argument),*)
+            }
+            KvBuffers::F16 { keys, values } => {
+                let $kv = $self.pair($recording, (retyped_f16(keys), retyped_f16(values)), $cache)?;
                 $self.$launch($recording, $bound, $($argument),*)
             }
         }

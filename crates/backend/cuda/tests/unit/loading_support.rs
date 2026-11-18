@@ -4,7 +4,7 @@
 //! here once. `pub(super)` matches the existing `quant_reuse_model_tests::bits` sharing convention.
 use super::LoadedModel;
 use super::quant_reuse_model_tests::bits;
-use crate::resident::fp8_cache::KvState;
+use crate::resident::narrow_kv::{KvState, NarrowState};
 use crate::{
     device::CudaDevice,
     resident::{DeviceProgram, slot_batch::SlotPool},
@@ -67,12 +67,16 @@ pub(super) fn state_census_slot(
         }
     }
     assert_eq!(program.fp8_states().len(), fp8.len());
-    for (id, KvState { keys, values, .. }) in program.fp8_states() {
+    for (id, KvState { keys, values, .. }) in program
+        .fp8_states()
+        .iter()
+        .map(|(id, state)| (id, state.as_fp8().expect("an FP8 cache")))
+    {
         let KvState {
             keys: rkeys,
             values: rvalues,
             ..
-        } = &fp8[id];
+        } = fp8[id].as_fp8().expect("an FP8 cache");
         for (field, left, right) in [("keys", keys, rkeys), ("values", values, rvalues)] {
             let a = loaded.device().runtime().read(left)?;
             let b = loaded.device().runtime().read(right)?;
@@ -105,10 +109,15 @@ pub(super) fn seed_prefix(
             target.copy_from(loaded.device(), source)?;
         }
     }
-    for (id, KvState { keys, values, .. }) in aligned.fp8_states() {
+    for (id, KvState { keys, values, .. }) in aligned
+        .fp8_states()
+        .iter()
+        .map(|(id, state)| (id, state.as_fp8().expect("an FP8 cache")))
+    {
         let target = original
             .fp8_states()
             .get(id)
+            .and_then(NarrowState::as_fp8)
             .ok_or_else(|| Error::invariant("control FP8 cache"))?;
         for (target, source) in [(&target.keys, keys), (&target.values, values)] {
             assert_eq!(target.len(), source.len());
@@ -136,7 +145,7 @@ pub(super) fn widened(device: &CudaDevice, state: &StateTensor) -> Result<Vec<f3
             .collect()),
     }
 }
-pub(super) use crate::resident::fp8_cache::Fp8Caches;
+pub(super) use crate::resident::narrow_kv::NarrowCaches;
 use crate::resident::shaped::StateTensor;
 use infer_cuda_kernels::runtime::bf16;
 
@@ -144,8 +153,8 @@ pub(super) fn states(
     device: &CudaDevice,
     actual: &States,
     expected: &States,
-    actual_fp8: &Fp8Caches,
-    expected_fp8: &Fp8Caches,
+    actual_fp8: &NarrowCaches,
+    expected_fp8: &NarrowCaches,
 ) -> Result<()> {
     assert_eq!(actual.len(), expected.len());
     assert_ne!(actual.len(), 0, "batch output is empty");
@@ -159,12 +168,15 @@ pub(super) fn states(
     }
     assert_eq!(actual_fp8.len(), expected_fp8.len());
     assert!(!actual_fp8.is_empty());
-    for (id, KvState { keys, values, .. }) in actual_fp8 {
+    for (id, KvState { keys, values, .. }) in actual_fp8
+        .iter()
+        .map(|(id, state)| (id, state.as_fp8().expect("an FP8 cache")))
+    {
         let KvState {
             keys: ref_keys,
             values: ref_values,
             ..
-        } = &expected_fp8[id];
+        } = expected_fp8[id].as_fp8().expect("an FP8 cache");
         for (a, b) in [(keys, ref_keys), (values, ref_values)] {
             let a = device.runtime().read(a)?;
             let b = device.runtime().read(b)?;

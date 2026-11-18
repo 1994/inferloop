@@ -28,6 +28,10 @@ pub struct Fp4Pair;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fp8;
 
+/// IEEE half-precision element marker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct F16;
+
 /// Bytes one element of a buffer occupies, so a buffer can be cut without knowing its toolkit.
 pub trait Width {
     /// Bytes of one element.
@@ -48,6 +52,9 @@ impl Width for Bf16 {
 }
 impl Width for Fp8 {
     const BYTES: usize = 1;
+}
+impl Width for F16 {
+    const BYTES: usize = 2;
 }
 impl Width for u8 {
     const BYTES: usize = 1;

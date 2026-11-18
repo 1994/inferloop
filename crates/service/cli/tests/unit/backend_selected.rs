@@ -22,6 +22,7 @@ fn selected_backend_preserves_compact_generation_reservation() -> Result<()> {
             upload_staging_mib: None,
             num_speculative_tokens: Some(super::super::SpeculativeTokens::Depth(0)),
             draft_model: None,
+            kv_cache_dtype: None,
             gpu_memory_utilization: 0.0,
             autotune: false,
             device_timing: infer_ir::DeviceTimingMode::Off,

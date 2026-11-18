@@ -55,8 +55,13 @@ fn check_states(loaded: &LoadedModel, lane: &Lane, pool: &SlotPool, slot: usize)
         }
     }
     let rows = lane.teacher.position();
-    for (id, teacher) in lane.teacher.fp8_states() {
-        let pooled = &fp8[id];
+    for (id, teacher) in lane
+        .teacher
+        .fp8_states()
+        .iter()
+        .map(|(id, state)| (id, state.as_fp8().expect("an FP8 cache")))
+    {
+        let pooled = fp8[id].as_fp8().expect("an FP8 cache");
         for (left, right) in [
             (&teacher.keys, &pooled.keys),
             (&teacher.values, &pooled.values),

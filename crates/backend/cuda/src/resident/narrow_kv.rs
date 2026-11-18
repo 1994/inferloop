@@ -3,13 +3,131 @@ use crate::device::CudaDevice;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::{KvCache, KvElement, Width};
 use infer_cuda_kernels::runtime::DType;
-use infer_cuda_kernels::runtime::f8e4m3fn;
-use infer_cuda_kernels::runtime::{Allocation, Element, HeadMajor, Transfers};
+use infer_cuda_kernels::runtime::{Allocation, Element, HeadMajor, Transfers, f8e4m3fn, f16};
 use infer_ir::{DataflowGraph, StateKind, TensorOp, TensorStorage};
 use std::collections::BTreeMap;
 
-/// Every FP8 KV cache of a program or slot, by state.
-pub type Fp8Caches = BTreeMap<TensorId, KvState<f8e4m3fn>>;
+/// Every narrow KV cache of a program or slot, by state.
+pub type NarrowCaches = BTreeMap<TensorId, NarrowState>;
+
+/// What every scaled ("narrow") attention state of a program stores. A state is narrow when the
+/// program weights hold scales for it; F32 states are plain state tensors.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NarrowElement {
+    /// E4M3 with the checkpoint's static scales.
+    #[default]
+    Fp8,
+    /// IEEE half precision, written and read through unit scales.
+    F16,
+}
+
+impl NarrowElement {
+    /// Device bytes of one element.
+    #[must_use]
+    pub const fn bytes(self) -> usize {
+        match self {
+            Self::Fp8 => 1,
+            Self::F16 => 2,
+        }
+    }
+}
+
+/// One narrow attention state: FP8 or half-precision keys and values.
+#[derive(Clone)]
+pub enum NarrowState {
+    Fp8(KvState<f8e4m3fn>),
+    F16(KvState<f16>),
+}
+
+impl NarrowState {
+    /// Zeroed caches of `layout` holding `element`.
+    /// # Errors
+    /// Reports a failed allocation.
+    pub fn zeros(device: &CudaDevice, layout: KvLayout, element: NarrowElement) -> Result<Self> {
+        Ok(match element {
+            NarrowElement::Fp8 => Self::Fp8(KvState::zeros(device, layout)?),
+            NarrowElement::F16 => Self::F16(KvState::zeros(device, layout)?),
+        })
+    }
+
+    /// The FP8 caches, when these hold FP8.
+    #[must_use]
+    pub const fn as_fp8(&self) -> Option<&KvState<f8e4m3fn>> {
+        match self {
+            Self::Fp8(state) => Some(state),
+            Self::F16(_) => None,
+        }
+    }
+
+    /// The element these caches hold.
+    #[must_use]
+    pub const fn element(&self) -> NarrowElement {
+        match self {
+            Self::Fp8(_) => NarrowElement::Fp8,
+            Self::F16(_) => NarrowElement::F16,
+        }
+    }
+
+    /// The layout launches address these caches in.
+    #[must_use]
+    pub const fn layout(&self) -> KvLayout {
+        match self {
+            Self::Fp8(state) => state.layout,
+            Self::F16(state) => state.layout,
+        }
+    }
+
+    /// The caches as one launch addresses them, read with `scales`.
+    #[must_use]
+    pub fn cache(&self, scales: [f32; 2]) -> KvCache<'_> {
+        match self {
+            Self::Fp8(state) => state.cache(scales),
+            Self::F16(state) => state.cache(scales),
+        }
+    }
+
+    /// Device bytes of the key and the value cache.
+    #[must_use]
+    pub const fn bytes(&self) -> u64 {
+        let layout = self.layout();
+        (2 * layout.len() * self.element().bytes()) as u64
+    }
+
+    /// Whether `other` addresses the same memory.
+    #[must_use]
+    pub fn same_memory(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Fp8(a), Self::Fp8(b)) => a.same_memory(b),
+            (Self::F16(a), Self::F16(b)) => a.same_memory(b),
+            _ => false,
+        }
+    }
+
+    /// [`KvState::copy_prefix_from`] between caches of the same element.
+    /// # Errors
+    /// Rejects caches of different elements, and as [`KvState::copy_prefix_from`].
+    pub fn copy_prefix_from(&self, device: &CudaDevice, source: &Self, rows: usize) -> Result<()> {
+        device
+            .runtime()
+            .enqueue(|transfers| self.copy_prefix_in(transfers, source, rows))
+    }
+
+    /// [`KvState::copy_prefix_in`] between caches of the same element.
+    /// # Errors
+    /// Rejects caches of different elements, and as [`KvState::copy_prefix_in`].
+    pub fn copy_prefix_in(
+        &self,
+        transfers: &Transfers<'_>,
+        source: &Self,
+        rows: usize,
+    ) -> Result<()> {
+        match (self, source) {
+            (Self::Fp8(to), Self::Fp8(from)) => to.copy_prefix_in(transfers, from, rows),
+            (Self::F16(to), Self::F16(from)) => to.copy_prefix_in(transfers, from, rows),
+            _ => Err(Error::invariant("KV prefix copy between cache elements")),
+        }
+    }
+}
 
 /// Head-major layout of one KV cache: `heads` groups of `rows` positions of `dim` values. A
 /// paged slot's cache holds the pool's physical rows, not one sequence's capacity.
@@ -117,12 +235,9 @@ impl<T: DType + Element<Marker: KvElement>> KvState<T> {
     }
 }
 
-/// Device bytes of every cache: one per FP8 element.
-pub(super) fn bytes(caches: &Fp8Caches) -> u64 {
-    caches
-        .values()
-        .map(|state| (state.keys.len() + state.values.len()) as u64)
-        .sum()
+/// Device bytes of every cache.
+pub(super) fn bytes(caches: &NarrowCaches) -> u64 {
+    caches.values().map(NarrowState::bytes).sum()
 }
 
 /// KV heads and head dimension of the attention reading `state`, as its layout's groups.
@@ -141,15 +256,15 @@ pub fn kv_geometry(graph: &DataflowGraph, state: TensorId) -> Result<(usize, usi
         .ok_or_else(|| Error::invalid("KV state without attention"))
 }
 
-/// FP8 KV caches of `capacity` positions for every scaled attention state.
+/// `element` KV caches of `capacity` positions for every scaled attention state.
 /// # Errors
 /// Rejects invalid bindings or scales, budgets past the device, and failed allocation.
 pub(super) fn allocate(
     device: &CudaDevice,
     graph: &DataflowGraph,
     capacity: usize,
-    scales: &BTreeMap<TensorId, [f32; 2]>,
-) -> Result<Fp8Caches> {
+    (scales, element): (&BTreeMap<TensorId, [f32; 2]>, NarrowElement),
+) -> Result<NarrowCaches> {
     let mut plan = Vec::new();
     let mut bytes = 0usize;
     let budget = device
@@ -168,36 +283,36 @@ pub(super) fn allocate(
         ) || spec.shape.len() != 2
             || scale.iter().any(|s| !s.is_finite() || *s <= 0.0)
         {
-            return Err(Error::invalid("FP8 KV binding/scales"));
+            return Err(Error::invalid("narrow KV binding/scales"));
         }
         let (heads, dim) = kv_geometry(graph, spec.id)?;
         if heads.checked_mul(dim) != Some(spec.shape[1]) {
-            return Err(Error::invalid("FP8 KV width differs from its attention"));
+            return Err(Error::invalid("narrow KV width differs from its attention"));
         }
         let size = capacity
             .checked_mul(spec.shape[1])
-            .ok_or_else(|| Error::invalid("FP8 KV size overflow"))?;
+            .ok_or_else(|| Error::invalid("narrow KV size overflow"))?;
         let layout = KvLayout {
             heads,
             rows: capacity,
             dim,
         };
         bytes = size
-            .checked_mul(2)
+            .checked_mul(2 * element.bytes())
             .and_then(|n| bytes.checked_add(n))
-            .ok_or_else(|| Error::invalid("FP8 KV budget overflow"))?;
+            .ok_or_else(|| Error::invalid("narrow KV budget overflow"))?;
         if bytes as u64 > budget {
             return Err(Error::new(
                 infer_core::ErrorCode::Capacity,
-                "FP8 KV exceeds available device memory minus 1 GiB headroom",
+                "narrow KV exceeds available device memory minus 1 GiB headroom",
             ));
         }
         plan.push((spec.id, layout));
     }
     if plan.len() != scales.len() {
-        return Err(Error::invalid("unknown FP8 KV state"));
+        return Err(Error::invalid("unknown narrow KV state"));
     }
     plan.into_iter()
-        .map(|(id, layout)| Ok((id, KvState::zeros(device, layout)?)))
+        .map(|(id, layout)| Ok((id, NarrowState::zeros(device, layout, element)?)))
         .collect()
 }

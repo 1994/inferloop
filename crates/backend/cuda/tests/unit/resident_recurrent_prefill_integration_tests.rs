@@ -1,4 +1,5 @@
 use crate::mlp::Matrix;
+use crate::resident::NarrowElement;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{
     device::CudaDevice,
@@ -82,6 +83,7 @@ fn fixture_at(
             ),
         ]),
         kv_scales: BTreeMap::new(),
+        kv_element: NarrowElement::default(),
         tiling: BTreeMap::new(),
         fp8_inputs: BTreeSet::new(),
         input_scales: BTreeMap::new(),

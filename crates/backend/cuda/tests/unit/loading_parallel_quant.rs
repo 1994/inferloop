@@ -1,5 +1,5 @@
 use super::{LoadOptions, LoadedModel};
-use crate::resident::fp8_cache::KvState;
+use crate::resident::narrow_kv::KvState;
 use crate::{
     device::CudaDevice,
     resident::{
@@ -39,13 +39,16 @@ fn states(loaded: &LoadedModel, a: &DeviceProgram, b: &DeviceProgram, label: &st
             values: av,
             ..
         },
-    ) in a.fp8_states()
+    ) in a
+        .fp8_states()
+        .iter()
+        .map(|(id, state)| (id, state.as_fp8().expect("an FP8 cache")))
     {
         let KvState {
             keys: bk,
             values: bv,
             ..
-        } = &b.fp8_states()[id];
+        } = b.fp8_states()[id].as_fp8().expect("an FP8 cache");
         for (x, y) in [(ak, bk), (av, bv)] {
             let x = loaded.device().runtime().read(x)?;
             let y = loaded.device().runtime().read(y)?;

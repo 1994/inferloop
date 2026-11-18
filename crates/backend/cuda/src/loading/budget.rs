@@ -591,7 +591,7 @@ fn pool_storage(
             .get(1)
             .ok_or_else(|| Error::invalid("pooled KV shape"))? as u64;
         let (tokens, size) = if weights.kv_scales.contains_key(&spec.id) {
-            (kv_tokens, 1)
+            (kv_tokens, narrow_bytes(weights))
         } else {
             (width * capacity, F32)
         };
@@ -729,7 +729,10 @@ fn worker_storage_bytes(
                     .get(1)
                     .ok_or_else(|| Error::invalid("shared worker KV shape"))?
                     as u64;
-                add(sum, mul(columns, 2 * capacity as u64)?)
+                add(
+                    sum,
+                    mul(columns, 2 * capacity as u64 * narrow_bytes(weights))?,
+                )
             })?;
         bytes = bytes.saturating_sub(shared);
     }
@@ -739,8 +742,13 @@ fn worker_storage_bytes(
     )
 }
 
+/// Device bytes of one element of the program's narrow (scaled) KV states.
+const fn narrow_bytes(weights: &ProgramWeights) -> u64 {
+    weights.kv_element.bytes() as u64
+}
+
 /// One KV block's bytes over the graph's attention states: `columns` per position, keys and
-/// values, packed to one byte where the checkpoint carries fp8 scales.
+/// values, at the narrow element's width where the program holds scales for the state.
 pub fn kv_block_bytes(graph: &DataflowGraph, weights: &ProgramWeights) -> Result<u64> {
     let block = u64::try_from(KV_BLOCK_TOKENS).map_err(|_| Error::invalid("KV block size"))?;
     let mut bytes = 0;
@@ -759,7 +767,7 @@ pub fn kv_block_bytes(graph: &DataflowGraph, weights: &ProgramWeights) -> Result
             .get(1)
             .ok_or_else(|| Error::invalid("KV shape"))? as u64;
         let size = if weights.kv_scales.contains_key(&spec.id) {
-            1
+            narrow_bytes(weights)
         } else {
             F32
         };

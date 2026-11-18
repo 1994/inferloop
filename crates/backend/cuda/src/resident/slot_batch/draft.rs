@@ -189,7 +189,7 @@ impl SlotPool {
                         capacity,
                         transfers,
                     )?,
-                    SlotCopy::KvFp8 => Self::copy_kv_fp8(
+                    SlotCopy::KvNarrow => Self::copy_kv_narrow(
                         target.fp8_states_mut(),
                         &self.fp8[slot],
                         *id,

@@ -155,7 +155,8 @@ impl Support {
             (Arithmetic::Bf16, KvBuffers::F32 { .. }) => {
                 self.prepare_f32.is_some() && scales.iter().all(|v| v.to_bits() == 1.0f32.to_bits())
             }
-            (Arithmetic::F16, KvBuffers::F32 { .. }) => false,
+            // The bridges stage FP8 or F32 caches; a half-precision cache takes the cuTile path.
+            (Arithmetic::F16, KvBuffers::F32 { .. }) | (_, KvBuffers::F16 { .. }) => false,
         };
         bridge
             && scales.iter().all(|v| v.is_finite() && *v > 0.0)

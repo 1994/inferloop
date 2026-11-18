@@ -28,6 +28,7 @@ pub fn run() {
         draft_model: cli.draft_model.clone(),
         #[cfg(cuda_backend)]
         attention_profile: cli.cuda_attention_profile,
+        kv_cache_dtype: cli.kv_cache_dtype,
         gpu_memory_utilization: cli.gpu_memory_utilization,
         autotune: !cli.no_autotune,
         device_timing: cli.device_timing.into(),

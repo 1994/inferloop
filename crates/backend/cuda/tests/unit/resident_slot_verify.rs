@@ -1,5 +1,6 @@
 use super::*;
 use crate::mlp::Matrix;
+use crate::resident::NarrowElement;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{
     mlp::ProjectionWeight,
@@ -110,6 +111,7 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
         recurrent_profile: crate::RecurrentProfile::F32,
         fusion: None,
         kv_scales: BTreeMap::new(),
+        kv_element: NarrowElement::default(),
         tiling: BTreeMap::new(),
         embeddings: BTreeMap::from([(TensorId::ONE, embedding.allocation().clone())]),
         fp8_inputs: BTreeSet::new(),

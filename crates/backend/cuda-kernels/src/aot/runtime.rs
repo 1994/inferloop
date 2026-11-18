@@ -9,7 +9,7 @@
     reason = "Typed views of driver memory whose element types promise every bit pattern is valid"
 )]
 use super::driver;
-use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner, Width};
+use crate::contract::buffer::{Bf16, Buffer, F16, Fp4Pair, Fp8, Owner, Width};
 #[cfg(not(all(feature = "tile", target_os = "linux")))]
 use crate::contract::recording::Foreign;
 use crate::contract::recording::Recording;
@@ -127,6 +127,9 @@ impl Element for u32 {
 }
 impl Element for bf16 {
     type Marker = Bf16;
+}
+impl Element for f16 {
+    type Marker = F16;
 }
 impl Element for f4e2m1fnx2 {
     type Marker = Fp4Pair;

@@ -136,7 +136,7 @@ impl BatchBuilder<'_> {
         scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
-        caches: &[super::fp8_cache::Fp8Caches],
+        caches: &[super::narrow_kv::NarrowCaches],
         (metadata, table_group): (&Allocation<i32>, usize),
     ) -> Result<bool> {
         let TensorOp::Attention {

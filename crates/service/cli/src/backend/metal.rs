@@ -42,6 +42,16 @@ pub fn load(path: &Path, memory_bytes: u64, selection: &Selection) -> Result<Sel
             "a separate draft model requires the CUDA resident backend",
         ));
     }
+    // Metal stores attention KV in F32 only; another explicit dtype fails before loading.
+    if let Some(encoding) = selection
+        .kv_cache_dtype
+        .filter(|&encoding| encoding != infer_ir::KvCacheEncoding::F32)
+    {
+        return Err(Error::unsupported(format!(
+            "KV cache dtype {} requires the CUDA resident backend",
+            encoding.label()
+        )));
+    }
     let mut package = infer_models::ModelPackage::open(path, ModelId::new(1)?)?;
     Ok(SelectedBackend::Metal(Box::new(
         MetalBackend::from_package(
