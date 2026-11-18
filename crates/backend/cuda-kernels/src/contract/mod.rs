@@ -7,8 +7,8 @@ pub mod draft;
 pub mod geometry;
 pub mod grouped_int;
 pub use grouped_int::{
-    CodePacking, GROUPED_INT_TILE_ROWS, GroupedIntLayout, GroupedIntPlan, GroupedIntWeight,
-    NIBBLE_PAIR_STRIDE,
+    CodePacking, GROUPED_INT_GEMM_ROWS, GROUPED_INT_TILE_ROWS, GroupedIntLayout, GroupedIntPlan,
+    GroupedIntWeight, NIBBLE_PAIR_STRIDE,
 };
 pub mod kernels;
 pub mod plan;

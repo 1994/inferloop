@@ -11,6 +11,9 @@ use infer_ir::{GROUPED_INT_SPAN, GroupedIntFormat};
 
 /// Output rows one grouped-int tile covers.
 pub const GROUPED_INT_TILE_ROWS: usize = 16;
+/// Activation rows one grouped-int rows-kernel CTA multiplies per decoded weight tile. On the
+/// RTX 5090, 64 and 128 rows ran 1.4-3x slower over 128-2048 rows and 16 rows slower still.
+pub const GROUPED_INT_GEMM_ROWS: usize = 32;
 /// Widest code a nibble packing holds.
 const NIBBLE_BITS: u32 = 4;
 /// Values one nibble-packed 64-value group holds in each of its 32 code bytes.
