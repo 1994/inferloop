@@ -1115,8 +1115,6 @@ fn reach(task: &ExecutionTask, lanes: usize, capacity: usize) -> usize {
     .min(capacity)
 }
 
-/// The engine schedules a step only when its pages are free, so a slot that cannot grow means
-/// the reported growth and the ledger disagree.
 /// Lease free slots, with their target and draft pages, to the `unbound` tasks while the pool
 /// has room beside its `bound` sequences, stopping at the first whose pages are not free.
 fn lease_slots(
@@ -1153,6 +1151,8 @@ fn lease_slots(
     Ok(newly)
 }
 
+/// The engine schedules a step only when its pages are free, so a slot that cannot grow means
+/// the reported growth and the ledger disagree.
 fn pages_exhausted() -> Error {
     Error::new(ErrorCode::Capacity, "slot KV pages exhausted")
 }
