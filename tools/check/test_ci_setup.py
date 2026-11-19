@@ -123,7 +123,7 @@ class CiSetupTests(unittest.TestCase):
                 path = binaries / name
                 path.write_text(stub)
                 path.chmod(0o755)
-            for name in ["sort", "paste"]:
+            for name in ["sort", "paste", "mkdir"]:
                 (binaries / name).symlink_to(shutil.which(name))
             if case == "present":
                 for name in ["ffmpeg", "ffprobe"]:
@@ -135,6 +135,7 @@ class CiSetupTests(unittest.TestCase):
             env = dict(
                 os.environ,
                 PATH=str(binaries),
+                HOME=str(root),
                 CASE_BIN=str(binaries),
                 CASE_HEADER=str(header),
                 CASE_LOG=str(log),
@@ -167,6 +168,8 @@ class CiSetupTests(unittest.TestCase):
                     self.assertIn("Acquire::Retries=1", args)
                     self.assertIn("Acquire::http::Timeout=20", args)
                     self.assertIn("DPkg::Lock::Timeout=60", args)
+                    self.assertIn(f"Dir::Cache::Archives={root}/apt-archives", args)
+                self.assertTrue((root / "apt-archives/partial").is_dir())
                 if job != "rust" and case in {"missing", "stall"}:
                     self.assertIn("CUDA_TOOLKIT_CACHE_KEY=", github_env.read_text())
                 if case in {"install", "update"}:
