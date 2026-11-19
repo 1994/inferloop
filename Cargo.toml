@@ -186,6 +186,14 @@ cognitive_complexity = "deny"
 lto = "thin"
 codegen-units = 1
 
+# Host-only CUDA tests: release optimization and assertions, so the suite takes the same
+# `cfg!(debug_assertions)` branches, without the single-unit thin-LTO codegen that shipped
+# binaries pay for (about 4x the compile time of the backend's test crate).
+[profile.hosted-test]
+inherits = "release"
+lto = false
+codegen-units = 16
+
 # cuTile's build script turns Cargo's DEBUG into device debug for every JIT kernel, and device
 # debug (tileiras -O0) builds TMA descriptors on the device. In prompt graph replay that write
 # hits an unmapped driver workspace (CUDA 700, #249), so dev and test builds keep the optimized

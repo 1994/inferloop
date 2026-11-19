@@ -113,17 +113,17 @@ cuda_hosted_checks() {
     python3 tools/cuda/kernels.py verify
     cargo clippy --locked -p infer-backend-cuda --features cuda --all-targets -- -D warnings
     cargo clippy --locked -p infer-cli --features cuda --all-targets -- -D warnings
-    # Release profile the baseline contract requires, reporting what it collected. The suite
-    # branches on `cfg!(debug_assertions)` where the two differ.
+    # Release optimization and assertions, reporting what it collected. The suite branches on
+    # `cfg!(debug_assertions)` where the two differ; `hosted-test` keeps them and skips LTO.
     python3 tools/check/test-report.py --entry cuda -- \
-        cargo test --locked --release -p infer-backend-cuda --features cuda
+        cargo test --locked --profile hosted-test -p infer-backend-cuda --features cuda
     python3 tools/check/test-report.py --entry cli-cuda -- \
         cargo test --locked -p infer-cli --features cuda
     RUSTDOCFLAGS="-D warnings" cargo doc --locked -p infer-backend-cuda --features cuda --no-deps
     # Both kernel sources must keep building together; only this job has the headers for it.
     cargo clippy --locked -p infer-cuda-kernels --features tile,aot --all-targets -- -D warnings
     # Compile the device example without running it: the kernels need a GPU on the next step.
-    cargo build --locked --release -p infer-backend-cuda --features cuda --example cuda-kernels
+    cargo build --locked --profile hosted-test -p infer-backend-cuda --features cuda --example cuda-kernels
 }
 
 # Device acceptance. Requires a driver plus a `tileiras` that supports the installed device.
