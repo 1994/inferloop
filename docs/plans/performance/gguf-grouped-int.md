@@ -1,6 +1,6 @@
 # GGUF grouped-int 性能：问题记录与修复方案
 
-状态：P1、P2 已修复；P3 前两步（word-load GEMV、tile 按行拆给多个 CTA）已修复（本 PR）；P3 余项、P4–P6 为方案。格式与 kernel 家族的结构见
+状态：P1、P2 已修复；P3 前两步（word-load GEMV、tile 按行拆给多个 CTA）已修复；P4 第一步（5/6-bit nibble + 高位平面）已实现（本 PR）；P3 余项、P4 余项、P5–P6 为方案。格式与 kernel 家族的结构见
 [grouped-int kernel family](../engineering/grouped-int-kernels.md)。
 
 测量环境：RTX 5090，Qwen3-VL-2B 由 BF16 HF 权重经 `convert_hf_to_gguf.py` + `llama-quantize`
@@ -161,9 +161,42 @@ serving TPOT（32 token prompt，`split.jsonl`）：
 | Q6_K | 2.82 ms | 2.74 ms | 2.09 ms |
 | Q8_0 | 2.78 ms | 2.64 ms | 2.27 ms |
 
+## P4 第一步：5/6-bit nibble + 高位平面
+
+Q5_0/Q5_1/Q5_K/Q6_K 的低 4 位沿用 nibble 平面（与 4-bit 同一布局），其上 1/2 位放进整矩阵 nibble 之后的高位平面
+（`CodePacking::NibbleHigh`）：每 span `[32·H, 4]` 个 `u32`，word `(j, w)` 的第 `4H·k + H·b + i` 位是行
+`4w + b`、值 `32H·k + j` 的第 `4 + i` 位。GEMV（`high::gemv{,_zero}`）按 byte kernel 的结构读 term，四个行字节
+放在最后一维、只用一个 `[VALUES, W, 4]` 累加器，code 为 `nibble | 高位 << 4` 再走 `2^23` 尾数技巧；每步 4 span、
+`W = 2`、2 CTA/SM（扫描过 1/2/8 span、`W` 1/4、占用率 1/3/4）。设备字节：Q5_0 9→6、Q5_1/Q5_K 10→7、Q6_K 10→8
+bits/值。数值不变（Q5_0 与参考逐位相同，K-quant 最大相对误差与原先同为 1e-6 量级）。
+
+kernel（冷 L2，µs，P3 第二步 → 本步）：
+
+| 张量 | gate | k | q | down | lm_head |
+|---|---:|---:|---:|---:|---:|
+| Q5_K（Q5_K_M） | 16.0 → 13.3 | 4.3 → 4.4 | 6.6 → 5.8 | — | — |
+| Q6_K | 15.1 → 13.1 | 3.9 → 4.4 | 6.1 → 5.9 | 13.7 → 12.8 | 246 → 210 |
+
+1024 行的 k/v 慢 0.1–0.5 µs（64 个 tile，延迟受限，解码指令更多）。
+
+serving（`p4.jsonl`，对照 main `e4daccf7`，同一二进制构建方式；ms）：
+
+| 格式 | TPOT | prompt 513 | prompt 2049 |
+|---|---:|---:|---:|
+| Q4_0（对照） | 2.19 → 2.21 | 69.0 → 67.7 | 439 → 434 |
+| Q4_K_M | 2.54 → 2.42 | 83.2 → 76.8 | 468 → 468 |
+| Q5_0 | 2.72 → 2.52 | 72.5 → 85.7 | 451 → 503 |
+| Q5_K_M | 2.88 → 2.66 | 82.8 → 88.4 | 491 → 516 |
+| Q6_K | 2.76 → 2.62 | 81.7 → 88.2 | 505 → 535 |
+| Q8_0（对照） | 2.65 → 2.66 | 84.9 → 85.0 | 464 → 463 |
+
+取舍：TPOT 快 4–8%、权重显存少 20–33%，prompt 慢 5–18%（Q5_0 最多）。rows kernel 每个 32 行块按 span 重解一次
+高位平面，解码受限（100 行 Q6_K gate 116 → 127 µs）；试过与 GEMV 同样的 word 解码，GEMM 反而慢 50%，已放弃。
+prompt 路径由 P5（int8 MMA、激活块复用）整体重写，届时解码只做一次。
+
 ## 后续方案
 
-**P3 余项（优先）。** 目标：单请求 TPOT 4-bit ≤ 2.0 ms、5/6/8-bit ≤ 2.5 ms。剩余差距 0.4–0.9 ms：5/6-bit 的设备字节数（P4，Q5_K/Q6_K 10 bits/值 vs 文件 5.5/6.56）、非 GEMV kernel（norm、rope、attention 的 split/merge，约 0.5 ms，与 BF16 路径共有）以及 kernel 间空隙（约 0.2 ms）。
+**P3 余项（优先）。** 目标：单请求 TPOT 4-bit ≤ 2.0 ms、5/6/8-bit ≤ 2.5 ms。剩余差距 0.4–0.9 ms：5/6-bit 的设备字节数（P4 第一步后 Q5_K 7、Q6_K 8 bits/值 vs 文件 5.5/6.56）、非 GEMV kernel（norm、rope、attention 的 split/merge，约 0.5 ms，与 BF16 路径共有）以及 kernel 间空隙（约 0.2 ms）。
 1. split-K：每个 16 行 tile 的 span 分给 `S` 个 CTA，`S` 由输出 tile 数与 SM 数推导
    （`S = ceil(2 · SMs / tiles)`，上限为 span 数），部分和写到 workspace，由一个 reduce 或 atomic 合并；
    workspace 在 program 构建时按最大 `outputs · S` 预留，不在 decode 中分配。
@@ -172,12 +205,11 @@ serving TPOT（32 token prompt，`split.jsonl`）：
 3. 验收：`cuda-gguf-gemv` 1 行 ≥ 1.2 TB/s（gate/down 两种形状），serving TPOT 与 llama.cpp 对照，
    并确认 BF16/NVFP4 路径不受影响。
 
-**P4 设备字节数。**
+**P4 余项。**
 1. term 由 f32 改为 f16：K-quant 的 `d · sc` 在 f16 下有舍入（`d` 是 f16、`sc` 是 6-bit），
    需要先测与 llama.cpp 的一致性；legacy 格式的 `d` 本身就是 f16，无损。所有格式省 1–2 bits/值。
-2. 5-bit：nibble 平面 + 1-bit 高位平面（`CodePacking::NibbleHigh`），一个 packer 分支与两个 kernel
-   变体；Q6_K 用 nibble + 2-bit 平面。格式层不变。
-3. 与 P3 一起做：P3 提高到带宽受限后，字节数才直接决定 TPOT。
+2. 1024 行投影（k/v）：GEMV 在 64 个 tile 上延迟受限，P3 的 split-K 同样适用。
+3. 高位平面的 prompt 解码代价随 P5 一起解决。
 
 **P5 长 prompt。** llama.cpp 的 MMQ 把激活量化为 q8_1、用 int8 MMA；我们是 BF16 MMA + 每块重解码。
 1. 先测 `[32, 64]` 输出块（一次解 4 个 16 行 tile，复用激活块）是否比 `[32, 16]` 快；
