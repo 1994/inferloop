@@ -5,6 +5,7 @@ use crate::device::{CudaDevice, asynchronous::block_on};
 use crate::executor::SlotPool;
 use crate::loading::{LoadOptions, LoadedModel};
 use crate::resident::narrow_kv::NarrowState;
+use crate::resident::shaped::StateTensor;
 use infer_core::{ModelId, RequestId, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask, TokenBuffer};
 use std::env::var;
@@ -66,12 +67,16 @@ fn committed_state(backend: &CudaExecutor, state: StateId) -> Result<Vec<Vec<u32
         .values()
         .flatten()
         .map(|part| {
-            backend
-                .loaded
-                .device()
-                .runtime()
-                .read(part.f32()?.memory())
-                .map(|values| values.into_iter().map(f32::to_bits).collect())
+            let runtime = backend.loaded.device().runtime();
+            // Gated-delta states default to BF16; compare every state by its stored bits.
+            match part {
+                StateTensor::F32(tensor) => runtime
+                    .read(tensor.memory())
+                    .map(|values| values.into_iter().map(f32::to_bits).collect()),
+                StateTensor::Bf16(tensor) => runtime
+                    .read(tensor.memory())
+                    .map(|values| values.into_iter().map(|v| u32::from(v.to_bits())).collect()),
+            }
         })
         .collect()
 }

@@ -91,11 +91,12 @@ fn lazy_pool_retries_after_a_live_private_reservation_is_released() -> Result<()
     )?;
     assert!(loaded.model().max_sequence >= 32768);
     let budget = loaded.device().allocatable_memory_bytes()?;
-    // Start without a pool, then admit one long and two short private programs.
+    // Start without a pool, then admit one long and two short private programs. The long one
+    // reads its full history, so no pool serves it and it is not a solo the others wait for.
     let mut backend = CudaExecutor::new(loaded, budget, 1)?;
     backend.maximum_states = 16;
     let long = StateId::new(1)?;
-    backend.reserve(long, 32768, OutputReadout::Logits, true)?;
+    backend.reserve(long, 32768, OutputReadout::Full, true)?;
     backend.reserve(StateId::new(2)?, 512, OutputReadout::Logits, true)?;
     backend.reserve(StateId::new(3)?, 512, OutputReadout::Logits, true)?;
     let mut lower = 0;
