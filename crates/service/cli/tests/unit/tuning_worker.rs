@@ -111,3 +111,42 @@ fn preparation_timeout_and_nonzero_exit_are_bounded_failures() -> StdResult<(), 
     assert!(run_worker(&mut failed).is_err());
     Ok(())
 }
+
+#[test]
+fn host_only_options_do_not_key_a_preparation() {
+    let key = |arguments: &[&str]| geometry_arguments(arguments.iter().map(OsString::from));
+    let base = key(&["serve", "--package", "/models/a", "--max-num-seqs", "4"]);
+    assert_eq!(
+        key(&[
+            "serve",
+            "--listen",
+            "0.0.0.0:9000",
+            "--package",
+            "/models/a",
+            "--served-model-name=chat",
+            "--enable-response-store",
+            "--max-num-seqs",
+            "4",
+        ]),
+        base
+    );
+    assert_eq!(
+        key(&[
+            "serve",
+            "--listen=127.0.0.1:1",
+            "--package",
+            "/models/a",
+            "--max-num-seqs",
+            "4"
+        ]),
+        base
+    );
+    assert_ne!(
+        key(&["serve", "--package", "/models/a", "--max-num-seqs", "8"]),
+        base
+    );
+    assert_ne!(
+        key(&["serve", "--package", "/models/b", "--max-num-seqs", "4"]),
+        base
+    );
+}

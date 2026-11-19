@@ -3,7 +3,7 @@ use super::Model;
 use cutile::half::bf16;
 use infer_backend_cuda::loading::load_kv_scales;
 use infer_backend_cuda::resident::{
-    DeviceProgram, FusionWeights, ProgramWeights, PromptScratchRegistry,
+    DeviceProgram, FusionWeights, NarrowElement, ProgramWeights, PromptScratchRegistry,
 };
 use infer_backend_cuda::strategy::default_tiling;
 use infer_backend_cuda::tuning::projection_key;
@@ -41,6 +41,7 @@ pub fn prepare(
         attention_profile: infer_backend_cuda::AttentionProfile::Canonical,
         recurrent_profile: infer_backend_cuda::RecurrentProfile::F32,
         kv_scales: BTreeMap::new(),
+        kv_element: NarrowElement::default(),
         tiling: BTreeMap::new(),
         fusion,
         fp8_inputs: BTreeSet::new(),

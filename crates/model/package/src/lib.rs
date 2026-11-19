@@ -6,6 +6,9 @@ mod providers;
 mod storage;
 pub use input::{image, mrope, prompt, video, vision};
 mod workload;
+/// The one GGML block decoder; backends pack its spans for their own kernels.
+#[cfg(feature = "gguf")]
+pub use infer_format::{GroupedSpan, decode_span, span_bytes};
 /// Canonical provider import result, re-exported for package consumers.
 pub use infer_spi::ImportedModel;
 pub use input::constraint::{CONSTRAINT_REQUEST_BYTES, ToolConstraints};
@@ -46,10 +49,6 @@ pub use storage::gguf_package::{GgufPackage, GgufSlot};
 pub use storage::gguf_requirements::{PackageRequirements, gguf_requirements};
 #[cfg(feature = "gguf")]
 pub use storage::gguf_vision::{GgufVisionPackage, VisionSlot};
-#[cfg(feature = "gguf")]
-pub use storage::grouped_int::{Q4K_TILE_ROWS, Q4KDevice, Q4KTiled};
-#[cfg(feature = "gguf")]
-pub use storage::grouped_int6::{Q6K_TILE_ROWS, Q6KTiled};
 pub use storage::index::SafetensorsIndex;
 pub use storage::loader::{
     LoadOptions, LoadedWeights, TensorLoadPlan, WeightLoadPlan, WeightStorage, WeightTarget,
@@ -60,8 +59,7 @@ pub use storage::package::{
     ModelPackage, PackageManifest, QwenPackage, WeightBinding, package_path,
 };
 pub use storage::quantized::{
-    DFlash2Package, DeviceWeight, GroupedIntKind, QuantizedPackage, WeightEncoding, WeightSource,
-    WeightView,
+    DFlash2Package, DeviceWeight, QuantizedPackage, WeightEncoding, WeightSource, WeightView,
 };
 pub use storage::safetensors::{
     HostTensor, SafetensorsFile, TensorDtype, TensorHeader, convert_float_bytes, write_safetensors,

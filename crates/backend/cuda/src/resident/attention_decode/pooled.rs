@@ -164,7 +164,12 @@ fn blueprints(
         let Some(state) = node.states.first() else {
             continue;
         };
-        let Some(scales) = weights.kv_scales.get(state) else {
+        // The pooled kernels read FP8 pages.
+        let Some(scales) = weights
+            .kv_scales
+            .get(state)
+            .filter(|_| weights.fp8_kv(state))
+        else {
             continue;
         };
         if scales

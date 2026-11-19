@@ -2,6 +2,7 @@ use super::super::ProgramGeometry;
 use super::*;
 use crate::mlp::Matrix;
 use crate::resident::BatchOutput;
+use crate::resident::NarrowElement;
 use crate::resident::PromptScratchRegistry;
 use crate::resident::batch::BatchReadout;
 use crate::resident::metadata::identity_table;
@@ -38,6 +39,7 @@ fn fixture_weights(device: &CudaDevice, width: usize) -> Result<ProgramWeights> 
         attention_profile: crate::AttentionProfile::Canonical,
         recurrent_profile: crate::RecurrentProfile::F32,
         kv_scales: BTreeMap::new(),
+        kv_element: NarrowElement::default(),
         tiling: BTreeMap::new(),
         fusion: Some(FusionWeights {
             projection: ProjectionWeight::Dense(Matrix::upload(

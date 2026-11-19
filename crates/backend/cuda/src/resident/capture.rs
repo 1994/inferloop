@@ -53,7 +53,7 @@ pub(super) struct Capture<'a> {
     pub weights: &'a ProgramWeights,
     pub nvfp4: &'a mut super::nvfp4_gemm::Workspace,
     pub attention: &'a mut super::attention_decode::Workspace,
-    pub fp8_states: &'a mut super::fp8_cache::Fp8Caches,
+    pub fp8_states: &'a mut super::narrow_kv::NarrowCaches,
     pub states: &'a mut super::batch::States,
     pub metadata: Buffer<'a, i32>,
     /// Logical-to-physical KV block ids for the sequence this capture belongs to. Step 1 of the

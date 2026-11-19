@@ -1,7 +1,7 @@
 //! Independent F64 attention from actual checkpoint Q/K/V, including every appended cache byte.
 use super::{LoadOptions, LoadedModel};
 use crate::constants::KV_BLOCK_TOKENS;
-use crate::resident::fp8_cache::KvState;
+use crate::resident::narrow_kv::KvState;
 use crate::tuning::table_path as tuning_table_path;
 use crate::{
     device::CudaDevice,
@@ -48,6 +48,7 @@ fn cache(device: &CudaDevice, program: &DeviceProgram) -> Result<Cache> {
     program
         .fp8_states()
         .iter()
+        .map(|(id, state)| (id, state.as_fp8().expect("an FP8 cache")))
         .map(
             |(
                 &id,

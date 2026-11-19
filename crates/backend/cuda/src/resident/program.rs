@@ -39,12 +39,23 @@ use std::time::Instant;
 
 type SlotState = (
     super::batch::States,
-    super::fp8_cache::Fp8Caches,
+    super::narrow_kv::NarrowCaches,
     Allocation<i32>,
 );
+
+/// Positions a program over `kv` can reach: its capacity, or fewer when the caches are a paged
+/// pool's shared pages, which no sequence outgrows ([`super::slot_batch::SlotPool::admits`]).
+/// Staging sized past them would be paid for and never written.
+pub(super) fn reach(capacity: usize, kv: &super::narrow_kv::NarrowCaches) -> usize {
+    kv.values()
+        .map(|cache| cache.layout().rows)
+        .min()
+        .map_or(capacity, |rows| rows.min(capacity))
+}
+
 type InitialState = (
     super::batch::States,
-    super::fp8_cache::Fp8Caches,
+    super::narrow_kv::NarrowCaches,
     Option<Allocation<i32>>,
 );
 
@@ -110,6 +121,8 @@ pub struct ProgramWeights {
     /// 51-token prompt wants the narrow graph while a 511-token prompt wants the wide one.
     pub narrow_prefill_width: usize,
     pub kv_scales: BTreeMap<TensorId, [f32; 2]>,
+    /// What every state with [`Self::kv_scales`] stores.
+    pub kv_element: super::narrow_kv::NarrowElement,
     pub tiling: BTreeMap<TensorId, LinearTiling>,
     pub fusion: Option<FusionWeights>,
     /// Target prefill attention numerical profile, resolved once at load. The draft proposal
@@ -139,6 +152,14 @@ pub(super) enum ActivationQuantization {
     Fp8Token,
 }
 impl ProgramWeights {
+    /// Whether `state` is an FP8 cache, the only layout the MMA, SIMT and pooled-page attention
+    /// kernels read.
+    #[must_use]
+    pub fn fp8_kv(&self, state: &TensorId) -> bool {
+        self.kv_element == super::narrow_kv::NarrowElement::Fp8
+            && self.kv_scales.contains_key(state)
+    }
+
     /// What a captured graph reads by device pointer. A program or pool holds these, so they outlive
     /// its graphs whatever happens to the model that loaded them; replay never touches them.
     pub(super) fn owners(&self) -> Vec<Owner> {
@@ -239,7 +260,7 @@ pub struct DeviceProgram {
     // and prefix caching reads them back for snapshots.
     states: super::batch::States,
     kv_states: BTreeSet<TensorId>,
-    fp8_states: super::fp8_cache::Fp8Caches,
+    fp8_states: super::narrow_kv::NarrowCaches,
     lane_external: Vec<Allocation<f32>>,
     // The allocation the external rows view, which a prompt burst views too.
     lane_external_memory: Allocation<f32>,
@@ -308,7 +329,7 @@ impl ExternalInput<'_> {
 fn retained_tensor_bytes(
     graph: &DataflowGraph,
     states: &super::batch::States,
-    fp8: &super::fp8_cache::Fp8Caches,
+    fp8: &super::narrow_kv::NarrowCaches,
     activation_bytes: usize,
     verify: usize,
     prompt: usize,
@@ -320,7 +341,7 @@ fn retained_tensor_bytes(
         .flatten()
         .map(StateTensor::bytes)
         .sum::<u64>();
-    let packed_bytes = super::fp8_cache::bytes(fp8);
+    let packed_bytes = super::narrow_kv::bytes(fp8);
     let recurrent = graph
         .tensors
         .iter()
@@ -473,7 +494,7 @@ impl DeviceProgram {
             .flatten()
             .map(StateTensor::bytes)
             .sum::<u64>();
-        let packed_bytes = super::fp8_cache::bytes(&self.fp8_states);
+        let packed_bytes = super::narrow_kv::bytes(&self.fp8_states);
         let prompt = retained_prompt_lanes(&self.prompts);
         self.reclaimable_bytes =
             state_bytes + packed_bytes + self.activation_bytes as u64 * (1 + prompt) as u64;
@@ -598,7 +619,7 @@ impl DeviceProgram {
         graph: &DataflowGraph,
         weights: &ProgramWeights,
         geometry: (usize, usize, usize),
-        kv: Option<super::fp8_cache::Fp8Caches>,
+        kv: Option<super::narrow_kv::NarrowCaches>,
         prompt_width: usize,
     ) -> Result<Self> {
         // A paged pool's worker reads and writes the shared KV blocks of whichever sequence it
@@ -650,17 +671,18 @@ impl DeviceProgram {
                 .fp8_states
                 .get(id)
                 .ok_or_else(|| Error::invariant("program state copy source"))?;
-            if state.layout != from.layout {
+            if state.layout() != from.layout() {
                 return Err(Error::invariant(format!(
                     "program KV copy shape: {:?} from {:?}",
-                    state.layout, from.layout
+                    state.layout(),
+                    from.layout()
                 )));
             }
             // Two views of one shared paged cache: nothing to move, whatever its physical rows.
             if state.same_memory(from) {
                 continue;
             }
-            if state.layout.rows != self.capacity {
+            if state.layout().rows != self.capacity {
                 return Err(Error::invariant("program KV copy layout"));
             }
             state.copy_prefix_from(device, from, rows)?;
@@ -730,7 +752,7 @@ impl DeviceProgram {
     fn program_retained_bytes(
         graph: &DataflowGraph,
         states: &super::batch::States,
-        fp8: &super::fp8_cache::Fp8Caches,
+        fp8: &super::narrow_kv::NarrowCaches,
         activation_bytes: usize,
         captures: &super::batch::ProgramCaptures,
     ) -> u64 {
@@ -749,7 +771,7 @@ impl DeviceProgram {
         graph: &DataflowGraph,
         weights: &ProgramWeights,
         geometry: ProgramGeometry,
-        capacity: usize,
+        (capacity, reach): (usize, usize),
         forward_captured: bool,
     ) -> Result<(
         super::nvfp4_gemm::Workspace,
@@ -765,7 +787,7 @@ impl DeviceProgram {
                 device,
                 graph,
                 weights,
-                capacity,
+                reach,
                 geometry.prompts.into_iter().max().unwrap_or(0),
             )?;
             prepare(device, graph, weights, &geometry.prompt_widths());
@@ -818,8 +840,13 @@ impl DeviceProgram {
         let capacity = program_capacity(graph, weights, capacity, hidden, vocabulary)?;
         let mut arena = ActivationArena::new(device, graph, arena_budget(device)?)?;
         let activation_bytes = arena.bytes();
+        let lengths = (
+            capacity,
+            slot.as_ref()
+                .map_or(capacity, |(_, kv, _)| reach(capacity, kv)),
+        );
         let (mut nvfp4, mut delegated, mut attention) =
-            Self::program_workspaces(device, graph, weights, geometry, capacity, forward_captured)?;
+            Self::program_workspaces(device, graph, weights, geometry, lengths, forward_captured)?;
         let (mut states, mut fp8_states, slot_table) =
             initial_state(device, graph, weights, capacity, slot)?;
         let (metadata, external, identity) = Self::constant_inputs(device, hidden, capacity)?;
@@ -828,7 +855,6 @@ impl DeviceProgram {
         let mut fusion = FusionWorkspace::allocate(device, hidden, weights.fusion.is_some())?;
         let (lane_external_memory, mut lane_external, mut lane_fusion) =
             allocate_lane_fusion(device, hidden, weights, geometry)?;
-        let prime_previous = Self::zero_row(device, hidden)?;
         let mut builder = super::batch::BatchBuilder {
             device,
             graph,
@@ -888,7 +914,7 @@ impl DeviceProgram {
             external,
             lane_external,
             lane_external_memory,
-            prime_previous,
+            prime_previous: Self::zero_row(device, hidden)?,
             states,
             kv_states: attention_states(graph),
             fp8_states,
@@ -1209,7 +1235,7 @@ impl DeviceProgram {
         &mut self,
     ) -> (
         &mut super::batch::States,
-        &mut super::fp8_cache::Fp8Caches,
+        &mut super::narrow_kv::NarrowCaches,
         &Allocation<i32>,
     ) {
         (&mut self.states, &mut self.fp8_states, &self.table)
@@ -1241,13 +1267,13 @@ impl DeviceProgram {
 
     /// FP8 scale side tables paired with the resident state tensors.
     #[must_use]
-    pub const fn fp8_states(&self) -> &super::fp8_cache::Fp8Caches {
+    pub const fn fp8_states(&self) -> &super::narrow_kv::NarrowCaches {
         &self.fp8_states
     }
 
     /// Mutable quantized KV storage for a prefix restore.
     #[must_use]
-    pub const fn fp8_states_mut(&mut self) -> &mut super::fp8_cache::Fp8Caches {
+    pub const fn fp8_states_mut(&mut self) -> &mut super::narrow_kv::NarrowCaches {
         &mut self.fp8_states
     }
 
@@ -1931,7 +1957,12 @@ fn initial_state(
         Some((states, fp8, table)) => Ok((states, fp8, Some(table))),
         None => Ok((
             allocate_states(device, graph, capacity, weights)?,
-            super::fp8_cache::allocate(device, graph, capacity, &weights.kv_scales)?,
+            super::narrow_kv::allocate(
+                device,
+                graph,
+                capacity,
+                (&weights.kv_scales, weights.kv_element),
+            )?,
             None,
         )),
     }

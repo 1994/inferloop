@@ -1,8 +1,8 @@
 use super::*;
-use crate::constants::PROMPT_GEMM_TILE_ROWS;
-use crate::constants::QUANT_GEMM_TILE;
 use crate::mlp::Matrix;
 use crate::tuning::resident_gemm::prompt_tile_rows;
+use crate::tuning::tiles::PROMPT_GEMM_TILE_ROWS;
+use crate::tuning::tiles::QUANT_GEMM_TILE;
 use std::env::temp_dir;
 use std::fs::remove_file;
 use std::fs::write;

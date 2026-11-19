@@ -2,6 +2,7 @@
 //! No observer kernels enter either arm; snapshots and input updates stay outside replay.
 use super::{QuantPairPlan, Workspace, record_certified};
 use crate::device::device_error;
+use crate::resident::NarrowElement;
 use crate::resident::buffers::{Operand, buffer, region, tensor_rows};
 use crate::resident::projection_lowering::{Format, quantized};
 use crate::tuning::resident_gemm::ResidentTuningSession;
@@ -158,6 +159,7 @@ fn fixture_weights() -> ProgramWeights {
         input_scales: BTreeMap::new(),
         fp8_inputs: BTreeSet::new(),
         kv_scales: BTreeMap::new(),
+        kv_element: NarrowElement::default(),
         tiling: BTreeMap::new(),
         expert_banks: BTreeMap::new(),
         constants: BTreeMap::new(),

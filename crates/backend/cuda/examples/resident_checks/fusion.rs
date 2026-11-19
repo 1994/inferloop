@@ -1,5 +1,6 @@
 use cutile::half::bf16;
 use infer_backend_cuda::mlp::Matrix;
+use infer_backend_cuda::resident::NarrowElement;
 use infer_backend_cuda::strategy::default_tiling;
 use infer_backend_cuda::tuning::resident_gemm::ResidentTuningSession;
 use infer_backend_cuda::{
@@ -107,6 +108,7 @@ fn weights(device: &CudaDevice, d: usize, id: TensorId) -> Result<ProgramWeights
         attention_profile: infer_backend_cuda::AttentionProfile::Canonical,
         recurrent_profile: infer_backend_cuda::RecurrentProfile::F32,
         kv_scales: BTreeMap::new(),
+        kv_element: NarrowElement::default(),
         tiling: BTreeMap::new(),
         fusion: Some(FusionWeights {
             projection: ProjectionWeight::Dense(Matrix::upload(

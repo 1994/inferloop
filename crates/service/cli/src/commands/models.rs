@@ -108,8 +108,8 @@ pub fn inspect_package(options: InspectPackageOptions) -> Result<()> {
 struct GgufInspection {
     checkpoint: &'static str,
     text_slots: usize,
-    q4k: usize,
-    q6k: usize,
+    /// Slots per grouped-int format label.
+    grouped: std::collections::BTreeMap<&'static str, usize>,
     dense: usize,
     encodings: Vec<infer_ir::ExecutableEncoding>,
     vision: GgufVision,
@@ -133,13 +133,13 @@ struct GgufVision {
 #[cfg(feature = "gguf")]
 fn inspect_gguf(path: &Path) -> Result<()> {
     let package = infer_models::GgufPackage::open_auto(path)?;
-    let mut q4k = 0usize;
-    let mut q6k = 0usize;
+    let mut grouped = std::collections::BTreeMap::new();
     let mut dense = 0usize;
     for slot in package.slots().values() {
         match slot.encoding()? {
-            infer_ir::ExecutableEncoding::GroupedInt4 => q4k += 1,
-            infer_ir::ExecutableEncoding::GroupedInt6 => q6k += 1,
+            infer_ir::ExecutableEncoding::GroupedInt(format) => {
+                *grouped.entry(format.label()).or_default() += 1;
+            }
             _ => dense += 1,
         }
     }
@@ -155,8 +155,7 @@ fn inspect_gguf(path: &Path) -> Result<()> {
     print(&GgufInspection {
         checkpoint: "gguf",
         text_slots: package.slots().len(),
-        q4k,
-        q6k,
+        grouped,
         dense,
         encodings: requirements.encodings,
         vision,

@@ -9,7 +9,7 @@ use infer_backend_cuda::tuning::{
 use infer_core::{Error, ErrorCode, Result};
 #[cfg(cuda_backend)]
 use std::env::{args_os, current_exe, var_os};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 #[cfg(cuda_backend)]
 use std::fs::metadata;
 use std::fs::{OpenOptions, create_dir_all, remove_file};
@@ -76,14 +76,16 @@ fn run_preparation() {
     }
 }
 
+/// Serving options that never reach the device: changing one must not discard a preparation.
+const HOST_ONLY_OPTIONS: [&str; 3] = ["--listen", "--served-model-name", "--enable-response-store"];
+/// Of [`HOST_ONLY_OPTIONS`], those that take a value.
+const HOST_ONLY_VALUED: [&str; 2] = ["--listen", "--served-model-name"];
+
 /// The binary and command line that decide which geometries a preparation measures. The
 /// backend adds its own device identity.
 #[cfg(cuda_backend)]
 fn invocation() -> Vec<Vec<u8>> {
-    let mut parts: Vec<Vec<u8>> = args_os()
-        .skip(1)
-        .map(|arg| arg.as_encoded_bytes().to_vec())
-        .collect();
+    let mut parts = geometry_arguments(args_os().skip(1));
     if let Ok(file) = current_exe().and_then(metadata) {
         parts.push(format!("{}:{:?}", file.len(), file.modified().ok()).into_bytes());
     }
@@ -97,6 +99,33 @@ pub(super) fn record_prepared(width: Option<usize>) {
     if let Some(width) = width {
         record_width(&invocation(), width);
     }
+}
+
+/// The command line without [`HOST_ONLY_OPTIONS`], in either `--name value` or `--name=value`
+/// form. Anything else, including options this list does not know, still keys the preparation.
+fn geometry_arguments(arguments: impl IntoIterator<Item = OsString>) -> Vec<Vec<u8>> {
+    let mut kept = Vec::new();
+    let mut skip_value = false;
+    for argument in arguments {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        let bytes = argument.as_encoded_bytes();
+        let name = bytes.split(|&byte| byte == b'=').next().unwrap_or(bytes);
+        if HOST_ONLY_OPTIONS
+            .iter()
+            .any(|option| option.as_bytes() == name)
+        {
+            skip_value = name.len() == bytes.len()
+                && HOST_ONLY_VALUED
+                    .iter()
+                    .any(|option| option.as_bytes() == name);
+            continue;
+        }
+        kept.push(bytes.to_vec());
+    }
+    kept
 }
 
 fn worker_mode(value: Option<&OsStr>) -> Result<bool> {

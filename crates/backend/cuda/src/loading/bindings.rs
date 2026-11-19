@@ -5,6 +5,7 @@ use crate::constants::GIB;
 use crate::constants::MAX_PREFILL_LANES;
 use crate::device::DeviceProfile;
 use crate::mlp::ProjectionWeight;
+use crate::resident::narrow_kv::NarrowElement;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::tuning::select_tiling;
 use crate::tuning::{TilingSource, TuningReport, resolve_table, shipped_table, table_path};
@@ -14,7 +15,7 @@ use crate::{
 };
 use infer_core::{Error, OpId, Result, TensorId};
 use infer_cuda_kernels::runtime::bf16;
-use infer_ir::{DataflowGraph, TensorOp, TensorStorage};
+use infer_ir::{DataflowGraph, KvCacheEncoding, TensorOp, TensorStorage};
 use infer_models::mrope::axes as mrope_axes;
 use infer_models::{QuantizedPackage, TensorDtype};
 use std::collections::{BTreeMap, BTreeSet};
@@ -70,10 +71,18 @@ pub(super) fn load(
         &package.imported.model.position,
         &padding.rotary,
     )?;
-    if options.fp8_kv == Some(true) {
-        let kv_phase = phase::Phase::start("kv_scales", "uploading KV scales");
-        weights.kv_scales = super::kv_scales::load(package).map_err(|e| kv_phase.fail(&e))?;
-        kv_phase.finish();
+    match options.kv_cache {
+        Some(KvCacheEncoding::Fp8E4m3) => {
+            let kv_phase = phase::Phase::start("kv_scales", "uploading KV scales");
+            weights.kv_scales = super::kv_scales::load(package).map_err(|e| kv_phase.fail(&e))?;
+            kv_phase.finish();
+        }
+        Some(KvCacheEncoding::F16) => {
+            // Half precision needs no calibration: every attention state reads unit scales.
+            weights.kv_scales = unit_kv_scales(&package.graph);
+            weights.kv_element = NarrowElement::F16;
+        }
+        Some(KvCacheEncoding::F32) | None => {}
     }
     let draft = if options.mtp_depth > 0 {
         let draft_phase = phase::Phase::start("draft", "binding the MTP draft head");
@@ -110,6 +119,7 @@ fn empty_weights(device: &CudaDevice, options: &LoadOptions) -> ProgramWeights {
         prefill_width: options.prefill_width,
         narrow_prefill_width: 0,
         kv_scales: BTreeMap::new(),
+        kv_element: NarrowElement::default(),
         tiling: BTreeMap::new(),
         fusion: None,
         attention_profile: options.attention_profile,
@@ -302,6 +312,11 @@ fn draft_projection(
 /// then reads a quarter of the F32 bytes. The draft only proposes, so greedy target outputs keep
 /// the target's numerics.
 fn draft_kv_scales(graph: &DataflowGraph) -> BTreeMap<TensorId, [f32; 2]> {
+    unit_kv_scales(graph)
+}
+
+/// Unit scales for every attention state of `graph`.
+fn unit_kv_scales(graph: &DataflowGraph) -> BTreeMap<TensorId, [f32; 2]> {
     graph
         .nodes
         .iter()
@@ -347,6 +362,7 @@ fn draft_weights(
         prefill_width: MAX_PREFILL_LANES,
         narrow_prefill_width: 0,
         kv_scales: draft_kv_scales(graph),
+        kv_element: NarrowElement::default(),
         tiling: BTreeMap::new(),
         fusion: Some(draft_fusion(
             device,

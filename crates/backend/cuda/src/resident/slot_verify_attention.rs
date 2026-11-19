@@ -9,7 +9,7 @@ use super::{
     batch::{BatchBuilder, States},
     buffers::buffer,
     capture::{Capture, CaptureMode, error},
-    fp8_cache::Fp8Caches,
+    narrow_kv::{NarrowCaches, NarrowState},
     slot_recurrent::row_buffer,
 };
 use crate::constants::KV_BLOCK_TOKENS;
@@ -23,7 +23,7 @@ impl BatchBuilder<'_> {
     pub(super) fn slot_verify_lowering(
         &self,
         node: &TensorNode,
-        caches: &[Fp8Caches],
+        caches: &[NarrowCaches],
         verify: usize,
     ) -> Option<Lowering> {
         let TensorOp::Attention {
@@ -56,7 +56,7 @@ impl BatchBuilder<'_> {
     pub(super) fn record_pool_verify_attention(
         &mut self,
         (scope, node, arena): (&Recording<'_>, &TensorNode, &mut ActivationArena),
-        (states, caches): (&mut [States], &mut [Fp8Caches]),
+        (states, caches): (&mut [States], &mut [NarrowCaches]),
         (metadata, metadata_owner): (&[Allocation<i32>], &Allocation<i32>),
         verify: usize,
     ) -> Result<bool> {
@@ -79,7 +79,7 @@ impl BatchBuilder<'_> {
         scope: &Recording<'_>,
         node: &TensorNode,
         arena: &mut ActivationArena,
-        (states, caches): (&mut [States], &mut [Fp8Caches]),
+        (states, caches): (&mut [States], &mut [NarrowCaches]),
         (metadata, metadata_owner): (&[Allocation<i32>], &Allocation<i32>),
     ) -> Result<()> {
         let TensorOp::Attention {
@@ -109,7 +109,9 @@ impl BatchBuilder<'_> {
         let output = arena.activation(node.outputs[0]).map_err(error)?;
         let queries = arena.activation(node.inputs[0]).map_err(error)?;
         if prefix > 0 {
-            let shared = &caches[0][&state];
+            let NarrowState::Fp8(shared) = &caches[0][&state] else {
+                return Err(error("pooled attention over a non-FP8 cache"));
+            };
             self.attention.record_pooled_attention(
                 attention,
                 recording,
@@ -160,15 +162,17 @@ impl BatchBuilder<'_> {
         scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
-        caches: &[Fp8Caches],
+        caches: &[NarrowCaches],
         metadata_owner: &Allocation<i32>,
         state: infer_core::TensorId,
     ) -> Result<usize> {
+        // The pooled kernels read FP8 pages; other caches take one launch per slot.
         let shared = caches.first().is_some_and(|first| {
             let shared = &first[&state];
-            caches.iter().all(|cache| {
-                cache[&state].same_memory(shared) && cache[&state].layout == shared.layout
-            })
+            matches!(shared, NarrowState::Fp8(_))
+                && caches.iter().all(|cache| {
+                    cache[&state].same_memory(shared) && cache[&state].layout() == shared.layout()
+                })
         });
         let prefix = if shared {
             self.attention.pooled_prefix(node.id, caches.len())
@@ -176,7 +180,9 @@ impl BatchBuilder<'_> {
             0
         };
         if prefix > 0 {
-            let shared = caches[0].get(&state).ok_or_else(|| error("pooled cache"))?;
+            let Some(NarrowState::Fp8(shared)) = caches[0].get(&state) else {
+                return Err(error("pooled FP8 cache"));
+            };
             self.attention.record_pooled_append(
                 &*self.weights.kernels.attention,
                 scope,
@@ -201,7 +207,7 @@ impl BatchBuilder<'_> {
         scope: &Recording<'_>,
         node: &TensorNode,
         arena: &mut ActivationArena,
-        (states, caches): (&mut [States], &mut [Fp8Caches]),
+        (states, caches): (&mut [States], &mut [NarrowCaches]),
         metadata: &[Allocation<i32>],
         first_lane: usize,
     ) -> Result<()> {

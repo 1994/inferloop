@@ -252,16 +252,16 @@ impl LoadedModel {
             &self.graph,
             &self.weights,
             (capacity, hidden, vocabulary),
-            prompt_width,
-            true,
+            (prompt_width, kv_tokens),
             profile,
         )?;
         let (draft_pool_bytes, draft_homes_bytes, draft_worker_bytes) =
             if let Some(draft) = &self.draft {
+                // The draft pages its KV from a ledger as large as the target's.
                 let pool = pool_storage(
                     &draft.graph,
                     &draft.weights,
-                    (width, capacity, width * capacity),
+                    (width, capacity, kv_tokens),
                     1,
                     hidden,
                     profile,
@@ -289,8 +289,7 @@ impl LoadedModel {
                     &draft.graph,
                     &draft.weights,
                     (capacity, hidden, vocabulary),
-                    prompt_width,
-                    false,
+                    (prompt_width, kv_tokens),
                     profile,
                 )?;
                 (pool, homes, worker)
@@ -402,30 +401,46 @@ impl LoadedModel {
     ) -> Result<Option<PooledServingQuote>> {
         let capacity = self.validate_capacity(capacity)?;
         let maximum_kv_tokens = maximum_kv_tokens / KV_BLOCK_TOKENS * KV_BLOCK_TOKENS;
-        let minimum = minimum_kv_tokens(width, capacity, request_tokens)?;
+        let minimum = minimum_kv_tokens(width, capacity, (request_tokens, prompt_width))?;
         if maximum_kv_tokens < minimum {
             return Ok(None);
         }
-        let full = self.pooled_serving_quote(width, capacity, maximum_kv_tokens, prompt_width)?;
-        if full.total_bytes <= envelope {
-            return Ok(Some(full));
-        }
-        let fixed = self
+        // The quote is affine in KV pages on each side of one context: below it a page also
+        // widens the prompt workers' attention staging, which stops at the slot capacity.
+        // Fund each affine piece in turn, so a page is never priced at the other piece's rate.
+        let knee = capacity.min(maximum_kv_tokens) / KV_BLOCK_TOKENS * KV_BLOCK_TOKENS;
+        let mut funded = 0;
+        let mut funded_bytes = self
             .pooled_serving_quote(width, capacity, 0, prompt_width)?
             .total_bytes;
-        let blocks = maximum_kv_tokens / KV_BLOCK_TOKENS;
-        if fixed >= envelope || blocks == 0 {
+        if funded_bytes >= envelope {
             return Ok(None);
         }
-        let block_bytes = full.total_bytes.saturating_sub(fixed) / blocks as u64;
-        let Some(tokens) =
-            funded_kv_tokens(minimum, maximum_kv_tokens, block_bytes, fixed, envelope)
-        else {
+        for end in [knee, maximum_kv_tokens] {
+            if end <= funded {
+                continue;
+            }
+            let end_bytes = self
+                .pooled_serving_quote(width, capacity, end, prompt_width)?
+                .total_bytes;
+            if end_bytes <= envelope {
+                (funded, funded_bytes) = (end, end_bytes);
+                continue;
+            }
+            let block_bytes =
+                end_bytes.saturating_sub(funded_bytes) / ((end - funded) / KV_BLOCK_TOKENS) as u64;
+            if let Some(tokens) =
+                funded_kv_tokens(0, end - funded, block_bytes, funded_bytes, envelope)
+            {
+                funded += tokens;
+            }
+            break;
+        }
+        if funded < minimum {
             return Ok(None);
-        };
-        let bytes = add(fixed, mul((tokens / KV_BLOCK_TOKENS) as u64, block_bytes)?)?;
-        let quote = self.pooled_serving_quote(width, capacity, tokens, prompt_width)?;
-        debug_assert_eq!(quote.total_bytes, bytes);
+        }
+        let quote = self.pooled_serving_quote(width, capacity, funded, prompt_width)?;
+        debug_assert!(quote.total_bytes <= envelope);
         Ok(Some(quote))
     }
 
@@ -458,17 +473,26 @@ impl LoadedModel {
     }
 }
 
-/// One complete context keeps isolated requests executable. A known request demand
-/// additionally funds its actual page-rounded length per slot, never half a bucket.
-fn minimum_kv_tokens(width: usize, capacity: usize, request_tokens: usize) -> Result<usize> {
+/// Every slot holds one prompt chunk of `prompt_width` rows: a pool wider than its pages can
+/// feed adds only recurrent state, which crowds out the KV the narrower pool would page. A known
+/// request demand funds its page-rounded length per slot instead when longer, never half a
+/// bucket. Nothing funds a whole context: a sequence leases pages as it reaches them and waits
+/// when none are free, and one longer than the pool's pages never joins it
+/// ([`SlotPool::admits`]).
+fn minimum_kv_tokens(
+    width: usize,
+    capacity: usize,
+    (request_tokens, prompt_width): (usize, usize),
+) -> Result<usize> {
     if request_tokens > capacity {
         return Err(Error::invalid("request KV exceeds pooled capacity"));
     }
-    let pages = request_tokens.div_ceil(KV_BLOCK_TOKENS);
-    pages
+    request_tokens
+        .max(prompt_width.min(capacity))
+        .div_ceil(KV_BLOCK_TOKENS)
+        .max(1)
         .checked_mul(KV_BLOCK_TOKENS)
         .and_then(|tokens| tokens.checked_mul(width))
-        .map(|tokens| tokens.max(capacity))
         .ok_or_else(|| Error::invalid("pooled request KV overflow"))
 }
 
@@ -591,7 +615,7 @@ fn pool_storage(
             .get(1)
             .ok_or_else(|| Error::invalid("pooled KV shape"))? as u64;
         let (tokens, size) = if weights.kv_scales.contains_key(&spec.id) {
-            (kv_tokens, 1)
+            (kv_tokens, narrow_bytes(weights))
         } else {
             (width * capacity, F32)
         };
@@ -699,12 +723,12 @@ fn token_readout_bytes(graph: &DataflowGraph, lanes: usize) -> Result<u64> {
     mul(mul(lanes as u64, add(partials, GREEDY_TOKEN_WORDS)?)?, F32)
 }
 
+/// A prompt worker over its pool's `kv_tokens` shared paged positions.
 fn worker_storage_bytes(
     graph: &DataflowGraph,
     weights: &ProgramWeights,
     (capacity, hidden, vocabulary): (usize, usize, usize),
-    prompt_width: usize,
-    shared_kv: bool,
+    (prompt_width, kv_tokens): (usize, usize),
     profile: &DeviceProfile,
 ) -> Result<u64> {
     let geometry = ProgramGeometry::worker(weights, prompt_width);
@@ -717,30 +741,45 @@ fn worker_storage_bytes(
         geometry,
         profile,
     )?;
-    let mut bytes = price.at(capacity as u64)?;
-    if shared_kv {
-        let shared = graph
-            .tensors
-            .iter()
-            .filter(|spec| weights.kv_scales.contains_key(&spec.id))
-            .try_fold(0, |sum, spec| {
-                let columns = *spec
-                    .shape
-                    .get(1)
-                    .ok_or_else(|| Error::invalid("shared worker KV shape"))?
-                    as u64;
-                add(sum, mul(columns, 2 * capacity as u64)?)
-            })?;
-        bytes = bytes.saturating_sub(shared);
-    }
+    // The worker reads and writes its pool's shared paged caches instead of owning KV.
+    let shared = graph
+        .tensors
+        .iter()
+        .filter(|spec| weights.kv_scales.contains_key(&spec.id))
+        .try_fold(0, |sum, spec| {
+            let columns = *spec
+                .shape
+                .get(1)
+                .ok_or_else(|| Error::invalid("shared worker KV shape"))?
+                as u64;
+            add(
+                sum,
+                mul(columns, 2 * capacity as u64 * narrow_bytes(weights))?,
+            )
+        })?;
+    // Its attention staging spans only the positions those pages hold.
+    let unreached = if shared > 0 {
+        capacity.saturating_sub(kv_tokens)
+    } else {
+        0
+    };
+    let bytes = price
+        .at(capacity as u64)?
+        .saturating_sub(shared)
+        .saturating_sub(mul(price.per_token, unreached as u64)?);
     add(
         bytes,
         prompt_scratch_bytes(graph, weights, geometry, profile)?,
     )
 }
 
+/// Device bytes of one element of the program's narrow (scaled) KV states.
+const fn narrow_bytes(weights: &ProgramWeights) -> u64 {
+    weights.kv_element.bytes() as u64
+}
+
 /// One KV block's bytes over the graph's attention states: `columns` per position, keys and
-/// values, packed to one byte where the checkpoint carries fp8 scales.
+/// values, at the narrow element's width where the program holds scales for the state.
 pub fn kv_block_bytes(graph: &DataflowGraph, weights: &ProgramWeights) -> Result<u64> {
     let block = u64::try_from(KV_BLOCK_TOKENS).map_err(|_| Error::invalid("KV block size"))?;
     let mut bytes = 0;
@@ -759,7 +798,7 @@ pub fn kv_block_bytes(graph: &DataflowGraph, weights: &ProgramWeights) -> Result
             .get(1)
             .ok_or_else(|| Error::invalid("KV shape"))? as u64;
         let size = if weights.kv_scales.contains_key(&spec.id) {
-            1
+            narrow_bytes(weights)
         } else {
             F32
         };

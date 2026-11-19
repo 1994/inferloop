@@ -9,6 +9,8 @@ use crate::resident::require_kernel_geometry;
 use head_padding::pad_package;
 use std::path::PathBuf;
 mod concurrency;
+pub(crate) mod grouped_int_tiled;
+pub use grouped_int_tiled::GroupedIntTiled;
 mod kv_scales;
 mod weights;
 use crate::constants::FUSED_VERIFY_LANES;
@@ -22,7 +24,7 @@ use crate::device::DeviceProfile;
 
 use crate::device::image_preprocess::Capability as ImageCapability;
 use crate::device::{CudaImageProcessor as ImageProcessor, ImageBatch};
-use crate::resident::fp8_cache::Fp8Caches;
+use crate::resident::narrow_kv::NarrowCaches;
 use crate::resident::slot_batch::SlotPool;
 use crate::tuning::attention::mma::prepare;
 use crate::vision::VisionWeights;
@@ -59,13 +61,30 @@ use std::sync::Arc;
 const IMAGE_CHANNELS: usize = 3;
 pub use weights::floats;
 
+/// The KV storage `package` declares: its checkpoint's KV scheme or its provider's default, else
+/// F32.
+/// # Errors
+/// Rejects a declared dtype no KV cache stores.
+fn declared_kv_cache(package: &QuantizedPackage) -> Result<infer_ir::KvCacheEncoding> {
+    use infer_ir::KvCacheEncoding;
+    use infer_models::TensorDtype;
+    match package.kv_cache_dtype {
+        None | Some(TensorDtype::F32) => Ok(KvCacheEncoding::F32),
+        Some(TensorDtype::F16) => Ok(KvCacheEncoding::F16),
+        Some(TensorDtype::F8E4m3) => Ok(KvCacheEncoding::Fp8E4m3),
+        Some(other) => Err(Error::unsupported(format!(
+            "declared KV cache dtype {other:?}"
+        ))),
+    }
+}
+
 /// Load-time execution policy; each request receives independent mutable device state.
 #[derive(Debug, Clone)]
 pub struct LoadOptions {
     pub prefill_width: usize,
     pub verification_width: usize,
-    /// None follows the checkpoint declaration; Some overrides KV storage.
-    pub fp8_kv: Option<bool>,
+    /// KV storage; `None` follows the package's declaration, then F32.
+    pub kv_cache: Option<infer_ir::KvCacheEncoding>,
     pub mtp_depth: usize,
     /// Measure GEMV tiles for geometries the local or shipped tables do not cover. On by default:
     /// tile size is a property of the machine, so the first load measures and caches its winners
@@ -94,7 +113,7 @@ impl Default for LoadOptions {
         Self {
             prefill_width: 1,
             verification_width: 0,
-            fp8_kv: None,
+            kv_cache: None,
             mtp_depth: 0,
             autotune: true,
             chunked_recurrent: false,
@@ -478,10 +497,11 @@ impl LoadedModel {
         let padding = pad_package(&mut package, &options).map_err(|e| package_phase.fail(&e))?;
         require_kernel_geometry(&package.graph).map_err(|e| package_phase.fail(&e))?;
         package_phase.finish();
-        options.fp8_kv =
-            Some(options.fp8_kv.unwrap_or_else(|| {
-                package.kv_cache_dtype == Some(infer_models::TensorDtype::F8E4m3)
-            }));
+        let kv_cache = match options.kv_cache {
+            Some(explicit) => explicit,
+            None => declared_kv_cache(&package)?,
+        };
+        options.kv_cache = Some(kv_cache);
         let automatic_prefill = options.prefill_width == 0;
         if automatic_prefill {
             options.prefill_width = PREFILL_LANES;
@@ -689,10 +709,15 @@ impl LoadedModel {
         .map(Some)
     }
 
+    /// The draft head's slot pool beside a target pool of `width` slots of `capacity` tokens.
+    /// `kv_tokens` pages its KV like the target's, from a ledger of its own.
+    /// # Errors
+    /// Rejects invalid geometry, exceeded device budgets or CUDA capture failures.
     pub(crate) fn draft_slot_pool(
         &self,
         width: usize,
         capacity: usize,
+        kv_tokens: Option<usize>,
     ) -> Result<Option<SlotPool>> {
         self.validate_capacity(capacity)?;
         let Some(draft) = &self.draft else {
@@ -719,7 +744,7 @@ impl LoadedModel {
             capacity,
             self.model.hidden_size,
             (self.model.vocab_size, 0),
-            None,
+            kv_tokens,
         )
         .map(Some)
     }
@@ -730,13 +755,13 @@ impl LoadedModel {
     /// # Errors
     /// Rejects invalid geometry, exceeded device budgets or CUDA capture failures.
     /// Wide-prompt target and draft programs at `capacity` that slot-resident sequences prompt
-    /// through.
+    /// through, over the target and draft pools' shared paged caches when they page.
     /// # Errors
     /// Rejects invalid capacity or CUDA graph capture failures.
     pub(crate) fn prompt_worker(
         &self,
         capacity: usize,
-        kv: Option<Fp8Caches>,
+        (kv, draft_kv): (Option<NarrowCaches>, Option<NarrowCaches>),
         prompt_width: usize,
     ) -> Result<(DeviceProgram, Option<DeviceProgram>)> {
         self.validate_capacity(capacity)?;
@@ -758,7 +783,7 @@ impl LoadedModel {
                     &draft.graph,
                     &draft.weights,
                     geometry,
-                    None,
+                    draft_kv,
                     prompt_width,
                 )
             })

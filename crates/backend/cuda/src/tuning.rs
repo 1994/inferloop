@@ -13,6 +13,7 @@ pub mod qualify;
 pub mod recurrent;
 pub mod resident_gemm;
 pub mod search;
+pub(crate) mod tiles;
 
 use crate::device::DeviceProfile;
 use crate::resident::tensor_buffer as buffer;

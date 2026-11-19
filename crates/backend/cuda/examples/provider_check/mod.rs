@@ -16,6 +16,11 @@ use std::env::args as env_args;
 use std::error::Error as StdError;
 use std::time::Instant;
 
+/// Whether `--fp8-kv` asks for the checkpoint's FP8 KV scales.
+fn fp8_kv() -> bool {
+    env_args().any(|arg| arg == "--fp8-kv")
+}
+
 pub fn run() -> Result<(), Box<dyn StdError>> {
     let root = env_args()
         .nth(1)
@@ -28,7 +33,7 @@ pub fn run() -> Result<(), Box<dyn StdError>> {
         &root,
         ModelId::ONE,
         LoadOptions {
-            fp8_kv: env_args().any(|arg| arg == "--fp8-kv").then_some(true),
+            kv_cache: fp8_kv().then_some(infer_ir::KvCacheEncoding::Fp8E4m3),
             prefill_width: 32,
             mtp_depth: mtp_depth(),
             ..Default::default()
@@ -107,7 +112,7 @@ pub fn run() -> Result<(), Box<dyn StdError>> {
             "passed": true, "model": root, "backend": identity, "capabilities": capabilities,
             "nodes": program.operations.len(), "requests": 2, "token_ids": sequences[0], "text": text,
             "state_admission_bytes": estimate, "prefill_width": 32, "pool": pool,
-            "fp8_kv": env_args().any(|arg| arg == "--fp8-kv"),
+            "fp8_kv": fp8_kv(),
             "device_profile": profile,
             // Compiled ops are the per-step dispatch census the fusion estimate rests on.
             "operations": program.operations.len(),

@@ -3,17 +3,20 @@ use crate::constants::FP8_BLOCK_COLUMNS;
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::device::CudaDevice;
 use crate::device::device_error;
+use crate::loading::grouped_int_tiled::code_shape;
 use crate::resident::buffers::Operand;
 use crate::resident::tensor_buffer as buffer;
 use crate::strategy::LinearTiling;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
-    Buffer, DownPlan, DraftWeight, ExpertWeight, Kernels, Owner, Recording, WeightRef,
+    Buffer, CodePacking, DownPlan, DraftWeight, ExpertWeight, GroupedIntWeight, Kernels, Owner,
+    Recording, WeightRef,
 };
 use infer_cuda_kernels::runtime::DType;
 use infer_cuda_kernels::runtime::bf16;
 use infer_cuda_kernels::runtime::{Allocation, Element, Watch};
 use infer_cuda_kernels::runtime::{f4e2m1fnx2, f8e4m3fn};
+use infer_ir::GroupedIntFormat;
 use std::sync::Arc;
 
 /// A row-major `[rows, columns]` matrix in device memory; a graph that records it keeps it alive.
@@ -131,12 +134,12 @@ pub enum ProjectionWeight {
     Fp8Block(Matrix<f8e4m3fn>, Matrix<f32>),
     /// Packed code pairs, one E4M3 scale per 16-column group, and the global scale.
     Fp4(Matrix<f4e2m1fnx2>, Matrix<f8e4m3fn>, f32),
-    /// Grouped-int codes with per-group factors; `Q4_K` also has biases.
+    /// Grouped-int codes with per-group factors, and biases when the format has them.
     GroupedInt {
         codes: Matrix<u8>,
         factors: Allocation<f32>,
         biases: Option<Allocation<f32>>,
-        kind: infer_models::GroupedIntKind,
+        format: GroupedIntFormat,
     },
 }
 
@@ -179,7 +182,7 @@ impl ProjectionWeight {
             Self::Fp8(..) => ("fp8-channel", 1),
             Self::Fp8Block(..) => ("fp8-block", 1),
             Self::Fp4(..) => ("nvfp4", 2),
-            Self::GroupedInt { .. } => ("grouped-int", 1),
+            Self::GroupedInt { format, .. } => (format.label(), 1),
         }
     }
 
@@ -263,10 +266,10 @@ impl ProjectionWeight {
             Self::Dense(w) => w.shape(),
             Self::Fp8(w, _) | Self::Fp8Block(w, _) => w.shape(),
             Self::Fp4(w, _, _) => w.shape(),
-            Self::GroupedInt { codes, kind, .. } => match kind {
-                infer_models::GroupedIntKind::Q4K => [codes.rows(), codes.columns() * 2],
-                infer_models::GroupedIntKind::Q6K => codes.shape(),
-            },
+            Self::GroupedInt { codes, format, .. } => [
+                codes.rows(),
+                CodePacking::of(*format).code_values(codes.columns()),
+            ],
         }
     }
 
@@ -286,10 +289,9 @@ impl ProjectionWeight {
                     && g.is_finite()
                     && *g > 0.0
             }
-            Self::GroupedInt { codes, kind, .. } => match kind {
-                infer_models::GroupedIntKind::Q4K => codes.shape() == [rows, columns / 2],
-                infer_models::GroupedIntKind::Q6K => codes.shape() == [rows, columns],
-            },
+            Self::GroupedInt { codes, format, .. } => {
+                codes.shape() == code_shape(*format, rows, columns)
+            }
         };
         if valid {
             Ok(())
@@ -318,20 +320,13 @@ impl ProjectionWeight {
                 codes,
                 factors,
                 biases,
-                kind,
-            } => match kind {
-                infer_models::GroupedIntKind::Q4K => Ok(WeightRef::GroupedInt {
-                    codes: buffer(codes)?,
-                    factors: buffer(factors)?,
-                    biases: buffer(biases.as_ref().ok_or_else(|| {
-                        device_error("Q4_K weight is missing biases".to_string())
-                    })?)?,
-                }),
-                infer_models::GroupedIntKind::Q6K => Ok(WeightRef::GroupedInt6 {
-                    codes: buffer(codes)?,
-                    factors: buffer(factors)?,
-                }),
-            },
+                format,
+            } => Ok(WeightRef::GroupedInt(GroupedIntWeight {
+                format: *format,
+                codes: buffer(codes)?,
+                factors: buffer(factors)?,
+                biases: biases.as_ref().map(buffer).transpose()?,
+            })),
         }
     }
 

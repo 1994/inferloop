@@ -7,7 +7,7 @@ use crate::{
     ImportedModel, ModelRegistry, PackageSource, TensorDtype, TensorFile, default_registry,
 };
 use infer_core::{Error, ErrorCode, ModelId, Result};
-use infer_ir::{DataflowGraph, TensorStorage};
+use infer_ir::{DataflowGraph, GroupedIntFormat, TensorStorage};
 use infer_spi::ModelProvider;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
@@ -40,19 +40,8 @@ pub enum WeightEncoding {
     /// Block-scaled FP8 (`weight_scale_inv`, one scale per 128x128 block).
     Fp8Block,
     Nvfp4,
-    /// GGML `Q4_K` grouped integers.
-    GroupedInt4,
-    /// GGML `Q6_K` grouped integers.
-    GroupedInt6,
-}
-
-/// Grouped-integer block family carried by a weight.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum GroupedIntKind {
-    /// `Q4_K`.
-    Q4K,
-    /// `Q6_K`.
-    Q6K,
+    /// GGML grouped integers of one block family.
+    GroupedInt(GroupedIntFormat),
 }
 
 /// Contiguous view into an immutable validated stored tensor.
@@ -122,7 +111,7 @@ pub enum DeviceWeight {
     /// Raw grouped-integer super-blocks.
     GroupedInt {
         data: WeightSource,
-        kind: GroupedIntKind,
+        format: GroupedIntFormat,
     },
 }
 
@@ -135,10 +124,7 @@ impl DeviceWeight {
             Self::Fp8Channel { .. } => WeightEncoding::Fp8Channel,
             Self::Fp8Block { .. } => WeightEncoding::Fp8Block,
             Self::Nvfp4 { .. } => WeightEncoding::Nvfp4,
-            Self::GroupedInt { kind, .. } => match kind {
-                GroupedIntKind::Q4K => WeightEncoding::GroupedInt4,
-                GroupedIntKind::Q6K => WeightEncoding::GroupedInt6,
-            },
+            Self::GroupedInt { format, .. } => WeightEncoding::GroupedInt(*format),
         }
     }
 
@@ -349,7 +335,8 @@ impl QuantizedPackage {
             weights: BTreeMap::new(),
             mtp: BTreeMap::new(),
             dflash2: None,
-            kv_cache_dtype: None,
+            // A GGUF file stores no KV encoding; half precision is the GGML runtimes' default.
+            kv_cache_dtype: Some(TensorDtype::F16),
             shards: BTreeMap::new(),
             tensor_map: BTreeMap::new(),
             activation_rules: Vec::new(),
@@ -410,16 +397,21 @@ impl QuantizedPackage {
                     .map_err(|_| Error::unsupported("GGUF weight byte length"))?,
                 view: None,
             };
-            let weight = match source.dtype {
-                infer_format::GgufType::Q4K => DeviceWeight::GroupedInt {
-                    data,
-                    kind: GroupedIntKind::Q4K,
-                },
-                infer_format::GgufType::Q6K => DeviceWeight::GroupedInt {
-                    data,
-                    kind: GroupedIntKind::Q6K,
-                },
-                _ => DeviceWeight::Float { data },
+            let weight = match (source.dtype.grouped_int(), source.dtype) {
+                (Some(format), _) => DeviceWeight::GroupedInt { data, format },
+                (
+                    None,
+                    infer_format::GgufType::F32
+                    | infer_format::GgufType::F16
+                    | infer_format::GgufType::Bf16,
+                ) => DeviceWeight::Float { data },
+                (None, other) => {
+                    return Err(Error::unsupported(format!(
+                        "GGUF weight {} uses unsupported type {}",
+                        data.name,
+                        other.name()
+                    )));
+                }
             };
             weights.insert(slot.clone(), weight);
         }

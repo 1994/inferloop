@@ -166,6 +166,8 @@ pub struct Selection {
     /// Explicit target attention profile; absence allows paired automatic selection.
     #[cfg(cuda_backend)]
     pub attention_profile: Option<CudaAttentionProfile>,
+    /// KV cache storage (`--kv-cache-dtype`); `None` follows the package.
+    pub kv_cache_dtype: Option<infer_ir::KvCacheEncoding>,
     pub gpu_memory_utilization: f64,
     /// Measure uncovered geometries; both modes reuse validated cached choices.
     pub autotune: bool,

@@ -3,7 +3,15 @@
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 
+# `check-rust` in one run; CI runs the three parts as parallel jobs.
 rust_checks() {
+    rust_lint_checks
+    test_checks
+    rust_release_checks
+}
+
+# Repository tools, formatting, lints, policy and rustdoc, plus the CPU completion gate.
+rust_lint_checks() {
     python3 -m unittest discover -s tools/package -p 'test_*.py'
     python3 -m unittest discover -s tools/attention -p 'test_attention_gate.py'
     # Collect every bench module: the review found one of them was collected nowhere.
@@ -41,10 +49,12 @@ rust_checks() {
     python3 tools/check/release-dependencies.py
     cargo clippy --locked -p infer-backend-cuda --no-default-features --all-targets -- -D warnings
     cargo clippy --locked --workspace --exclude infer-backend-cuda --all-targets -- -D warnings
-    test_checks
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --exclude infer-backend-cuda --no-deps
-    cargo build --locked --release -p infer-cli --no-default-features
     cpu_checks
+}
+
+rust_release_checks() {
+    cargo build --locked --release -p infer-cli --no-default-features
 }
 
 # The workspace test entries, the one place they are listed: `make test` runs these and nothing
@@ -113,17 +123,17 @@ cuda_hosted_checks() {
     python3 tools/cuda/kernels.py verify
     cargo clippy --locked -p infer-backend-cuda --features cuda --all-targets -- -D warnings
     cargo clippy --locked -p infer-cli --features cuda --all-targets -- -D warnings
-    # Release profile the baseline contract requires, reporting what it collected. The suite
-    # branches on `cfg!(debug_assertions)` where the two differ.
+    # Release optimization and assertions, reporting what it collected. The suite branches on
+    # `cfg!(debug_assertions)` where the two differ; `hosted-test` keeps them and skips LTO.
     python3 tools/check/test-report.py --entry cuda -- \
-        cargo test --locked --release -p infer-backend-cuda --features cuda
+        cargo test --locked --profile hosted-test -p infer-backend-cuda --features cuda
     python3 tools/check/test-report.py --entry cli-cuda -- \
         cargo test --locked -p infer-cli --features cuda
     RUSTDOCFLAGS="-D warnings" cargo doc --locked -p infer-backend-cuda --features cuda --no-deps
     # Both kernel sources must keep building together; only this job has the headers for it.
     cargo clippy --locked -p infer-cuda-kernels --features tile,aot --all-targets -- -D warnings
     # Compile the device example without running it: the kernels need a GPU on the next step.
-    cargo build --locked --release -p infer-backend-cuda --features cuda --example cuda-kernels
+    cargo build --locked --profile hosted-test -p infer-backend-cuda --features cuda --example cuda-kernels
 }
 
 # Device acceptance. Requires a driver plus a `tileiras` that supports the installed device.
@@ -194,6 +204,8 @@ case "${1:-all}" in
         if [ "$(uname -s)" = Darwin ]; then metal_checks; fi
         ;;
     rust) rust_checks ;;
+    rust-lint) rust_lint_checks ;;
+    rust-release) rust_release_checks ;;
     test) test_checks ;;
     tools) tool_checks ;;
     security) security_checks ;;
@@ -206,5 +218,5 @@ case "${1:-all}" in
     linux) linux_checks ;;
     linux-numa) linux_numa_checks ;;
     attention) bash tools/bench/safe-run.sh --memory-gib 16 bash tools/bench/attention.sh ;;
-    *) echo "usage: $0 [all|rust|test|tools|security|metal|cuda|cuda-hosted|cuda-aot|cpu|msrv|linux|linux-numa|attention]" >&2; exit 2 ;;
+    *) echo "usage: $0 [all|rust|rust-lint|rust-release|test|tools|security|metal|cuda|cuda-hosted|cuda-aot|cpu|msrv|linux|linux-numa|attention]" >&2; exit 2 ;;
 esac

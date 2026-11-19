@@ -6,7 +6,7 @@ use super::{
     batch::{BatchOutput, SlotDecodeGraph, SlotLane, States},
     buffers::RowMajor,
     buffers::{Operand, buffer},
-    fp8_cache::{self, Fp8Caches, KvLayout, KvState},
+    narrow_kv::{self, KvLayout, KvState, NarrowCaches, NarrowState},
     program::ProgramWeights,
     shaped::{Shaped, StateTensor},
     slot_states::SlotStates,
@@ -23,9 +23,9 @@ use crate::device::copy_runs;
 use crate::device::{CudaDevice, DeviceProfile, device_error};
 use crate::loading::kv_block_bytes;
 use infer_core::{Error, ErrorCode, Result, TensorId};
-use infer_cuda_kernels::contract::{Owner, VERIFY_LANES, Width};
+use infer_cuda_kernels::contract::{KvElement, Owner, VERIFY_LANES, Width};
 use infer_cuda_kernels::runtime::Allocation;
-use infer_cuda_kernels::runtime::f8e4m3fn;
+use infer_cuda_kernels::runtime::{DType, Element};
 use infer_cuda_kernels::runtime::{Staging, Transfers};
 use infer_ir::KvCacheInspection;
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
@@ -90,7 +90,7 @@ fn pool_workspace(
 fn build_narrow_decode(
     builder: &mut super::batch::BatchBuilder<'_>,
     states: &mut SlotStates,
-    fp8: &mut [Fp8Caches],
+    fp8: &mut [NarrowCaches],
     widths: &[usize],
 ) -> Result<Vec<SlotDecodeGraph>> {
     let mut graphs = Vec::with_capacity(widths.len());
@@ -142,7 +142,7 @@ fn lanes_workspace(
 fn build_pool_decode<'a>(
     builder: &mut super::batch::BatchBuilder<'a>,
     states: &'a mut SlotStates,
-    fp8: &mut [Fp8Caches],
+    fp8: &mut [NarrowCaches],
     narrow: &[usize],
     table_root: RowMajor<'a, i32>,
 ) -> Result<(SlotDecodeGraph, Vec<SlotDecodeGraph>)> {
@@ -172,7 +172,7 @@ const fn lanes_enabled() -> bool {
 /// views each narrow graph reads. `lanes` lets every verify graph batch attention lanes.
 fn build_verify_graphs<'a>(
     builder: &mut super::batch::BatchBuilder<'a>,
-    (states, fp8): (&mut SlotStates, &mut [Fp8Caches]),
+    (states, fp8): (&mut SlotStates, &mut [NarrowCaches]),
     (verify, narrow): (usize, &[usize]),
     lanes: Option<(&'a mut super::attention_lanes::Workspace, RowMajor<'a, i32>)>,
 ) -> Result<(SlotVerifyGraph, Vec<SlotVerifyGraph>, Vec<States>)> {
@@ -215,7 +215,7 @@ type LaneInputs = (
 );
 type SlotStorage = (SlotStates, Fp8Slots, Tables);
 /// Each slot's FP8 KV caches and the allocations they view.
-type Fp8Slots = Vec<Fp8Caches>;
+type Fp8Slots = Vec<NarrowCaches>;
 /// Each slot's block table row and the allocation they share, the whole `[slots, blocks]` table.
 struct Tables {
     rows: Vec<Allocation<i32>>,
@@ -236,12 +236,12 @@ impl Tables {
 }
 
 /// How one state family moves into a slot at bind time: a token-row prefix of a
-/// capacity-sized KV cache (f32 or fp8), or the whole tensor (conv/delta state).
+/// capacity-sized KV cache (f32 or narrow), or the whole tensor (conv/delta state).
 /// KV layout is discovered from the captured tensors at bind time, never assumed.
 #[derive(Clone, Copy)]
 enum SlotCopy {
     Kv,
-    KvFp8,
+    KvNarrow,
     Whole,
 }
 
@@ -255,10 +255,10 @@ fn copy_plan(graph: &DataflowGraph, weights: &ProgramWeights) -> Result<Vec<(Ten
         let TensorStorage::State { kind, .. } = &spec.storage else {
             continue;
         };
-        let fp8 = weights.kv_scales.contains_key(&spec.id);
-        let copy = match (kind, fp8) {
+        let narrow = weights.kv_scales.contains_key(&spec.id);
+        let copy = match (kind, narrow) {
             (StateKind::AttentionKv, false) if spec.shape.len() == 2 => SlotCopy::Kv,
-            (StateKind::AttentionKv, true) if spec.shape.len() == 2 => SlotCopy::KvFp8,
+            (StateKind::AttentionKv, true) if spec.shape.len() == 2 => SlotCopy::KvNarrow,
             (StateKind::Conv | StateKind::LinearAttention, false) => SlotCopy::Whole,
             _ => return Err(Error::unsupported("slot pool state recipe")),
         };
@@ -284,13 +284,29 @@ fn gather_kv(
     Ok(dst)
 }
 
-/// [`gather_kv`] into a new FP8 cache of `rows` positions.
-fn gather_fp8(
-    src: &KvState<f8e4m3fn>,
+/// [`gather_kv`] into a new narrow cache of `rows` positions and the same element.
+fn gather_narrow(
+    src: &NarrowState,
     rows: usize,
     blocks: Option<&[i32]>,
     device: &CudaDevice,
-) -> Result<KvState<f8e4m3fn>> {
+) -> Result<NarrowState> {
+    Ok(match src {
+        NarrowState::Fp8(src) => NarrowState::Fp8(gather_typed(src, rows, blocks, device)?),
+        NarrowState::F16(src) => NarrowState::F16(gather_typed(src, rows, blocks, device)?),
+    })
+}
+
+/// [`gather_narrow`] for one element type.
+fn gather_typed<T>(
+    src: &KvState<T>,
+    rows: usize,
+    blocks: Option<&[i32]>,
+    device: &CudaDevice,
+) -> Result<KvState<T>>
+where
+    T: DType + Element<Marker: KvElement + Width>,
+{
     let dst = KvState::zeros(device, KvLayout { rows, ..src.layout })?;
     for (to, from) in [(&dst.keys, &src.keys), (&dst.values, &src.values)] {
         gather_kv_into(to, from, src.layout.dims(), (rows, blocks), device)?;
@@ -339,9 +355,9 @@ fn gather_kv_into<M: Width, D: Operand<Marker = M> + ?Sized, S: Operand<Marker =
 
 /// Device bytes one slot's state tensors occupy: unquantized states at their storage plus fp8
 /// KV caches.
-fn state_bytes(states: &States, fp8: &Fp8Caches) -> u64 {
+fn state_bytes(states: &States, fp8: &NarrowCaches) -> u64 {
     let unquantized: u64 = states.values().flatten().map(StateTensor::bytes).sum();
-    unquantized + fp8_cache::bytes(fp8)
+    unquantized + narrow_kv::bytes(fp8)
 }
 
 /// Free-slot stack and the pool's lifetime lease counters.
@@ -388,7 +404,7 @@ impl SlotLedger {
 /// whole per-slot capacity.
 struct Paging {
     /// Allocations of the shared caches; each slot's entry in `SlotPool::fp8` views them.
-    shared: Fp8Caches,
+    shared: NarrowCaches,
     /// The engine's page ledger; this pool only maps its leases to device rows.
     pages: KvCacheManager<PagePrefix>,
     /// Bytes one page occupies, the unit cached prefixes are charged in.
@@ -486,7 +502,7 @@ pub struct SlotPool {
     /// Root-family views the narrow graphs read; they alias `states` and drop before it.
     _narrow_roots: Vec<States>,
     states: SlotStates,
-    fp8: Vec<Fp8Caches>,
+    fp8: Vec<NarrowCaches>,
     _lanes_attention: super::attention_lanes::Workspace,
     /// Per-slot identity block tables; declared with the states so they outlive the captures.
     tables: Vec<Allocation<i32>>,
@@ -643,7 +659,7 @@ impl SlotPool {
         let plan = copy_plan(graph, weights)?;
         let headroom = device.profile()?.device_headroom_bytes();
         let budget = device.allocatable_memory_bytes()?.saturating_sub(headroom);
-        let paging = Self::paging(device, graph, weights, (width, capacity), kv_tokens)?;
+        let paging = Self::paging(device, graph, weights, width, kv_tokens)?;
         let (mut states, mut fp8, tables) = Self::allocate_slots(
             device,
             graph,
@@ -661,7 +677,7 @@ impl SlotPool {
         let narrow_slots = narrow_widths(graph, width, verify);
         let mut nvfp4 = pool_workspace(device, graph, weights, (lanes, verify), &narrow_slots)?;
         let mut placeholder_states = States::new();
-        let mut placeholder_fp8 = Fp8Caches::new();
+        let mut placeholder_fp8 = NarrowCaches::new();
         let mut lanes_attention = lanes_workspace(device, graph, width, verify)?;
         let (decode, verify_graph, decode_narrow, narrow, narrow_roots) = {
             let mut builder = super::batch::BatchBuilder {
@@ -760,7 +776,7 @@ impl SlotPool {
         paging: Option<&Paging>,
         budget: u64,
     ) -> Result<SlotStorage> {
-        let paging_bytes = paging.map_or(0, |paging| fp8_cache::bytes(&paging.shared));
+        let paging_bytes = paging.map_or(0, |paging| narrow_kv::bytes(&paging.shared));
         let states = SlotStates::allocate(
             device,
             graph,
@@ -775,11 +791,16 @@ impl SlotPool {
             // A paged slot views the shared caches; its table selects its blocks.
             let slot_fp8 = match paging {
                 Some(paging) => paging.shared.clone(),
-                None => fp8_cache::allocate(device, graph, capacity, &weights.kv_scales)?,
+                None => narrow_kv::allocate(
+                    device,
+                    graph,
+                    capacity,
+                    (&weights.kv_scales, weights.kv_element),
+                )?,
             };
             let slot_bytes = paging.map_or_else(
                 || state_bytes(slot_states, &slot_fp8),
-                |_| state_bytes(slot_states, &Fp8Caches::new()),
+                |_| state_bytes(slot_states, &NarrowCaches::new()),
             );
             bytes = bytes
                 .checked_add(slot_bytes)
@@ -857,7 +878,7 @@ impl SlotPool {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_states(&self, slot: usize) -> (&States, &Fp8Caches) {
+    pub(crate) fn test_states(&self, slot: usize) -> (&States, &NarrowCaches) {
         (&self.states[slot], &self.fp8[slot])
     }
 
@@ -940,6 +961,18 @@ impl SlotPool {
         (self.leases.allocations, self.leases.releases)
     }
 
+    /// Whether a sequence of `tokens` positions can run in this pool: within the slot capacity,
+    /// and, when the pool pages, within its pages, so that once the others release theirs it
+    /// can finish alone. A longer one keeps its private program.
+    #[must_use]
+    pub fn admits(&self, tokens: usize) -> bool {
+        tokens <= self.capacity
+            && self
+                .paging
+                .as_ref()
+                .is_none_or(|paging| tokens.div_ceil(KV_BLOCK_TOKENS) <= paging.pages.capacity())
+    }
+
     pub const fn capacity(&self) -> usize {
         self.capacity
     }
@@ -984,7 +1017,7 @@ impl SlotPool {
     pub(crate) unsafe fn slot_views(
         &self,
         slot: usize,
-    ) -> Result<(States, Fp8Caches, Allocation<i32>)> {
+    ) -> Result<(States, NarrowCaches, Allocation<i32>)> {
         let fp8 = self
             .fp8
             .get(slot)
@@ -1164,28 +1197,34 @@ impl SlotPool {
     /// The views hold the caches' memory, so they stay valid on their own.
     /// # Errors
     /// Propagates view failures.
-    pub(crate) fn kv_views(&self) -> Result<Option<Fp8Caches>> {
+    pub(crate) fn kv_views(&self) -> Result<Option<NarrowCaches>> {
         self.paging
             .as_ref()
             .map(|paging| Ok(paging.shared.clone()))
             .transpose()
     }
 
-    /// The physical KV pool for a pool of `width` slots of `capacity` tokens: `kv_tokens`
-    /// shared positions, or `None` to give each slot its own whole-capacity cache.
+    /// The physical KV pool for a pool of `width` slots: `kv_tokens` shared positions, or
+    /// `None` to give each slot its own whole-capacity cache.
     fn paging(
         device: &CudaDevice,
         graph: &DataflowGraph,
         weights: &ProgramWeights,
-        (width, capacity): (usize, usize),
+        width: usize,
         kv_tokens: Option<usize>,
     ) -> Result<Option<Paging>> {
         let Some(tokens) = kv_tokens.filter(|_| !weights.kv_scales.is_empty()) else {
             return Ok(None);
         };
         let block = KV_BLOCK_TOKENS;
-        let blocks = tokens.div_ceil(block).max(capacity.div_ceil(block));
-        let shared = fp8_cache::allocate(device, graph, blocks * block, &weights.kv_scales)?;
+        // One page per slot keeps every slot's table addressable; nothing funds a whole context.
+        let blocks = tokens.div_ceil(block).max(width);
+        let shared = narrow_kv::allocate(
+            device,
+            graph,
+            blocks * block,
+            (&weights.kv_scales, weights.kv_element),
+        )?;
         let bytes_per_block = kv_block_bytes(graph, weights)?;
         // The ledger prices pages in the unit the pool quote uses.
         let pages = KvCacheManager::new(KvCacheConfig {
@@ -1225,7 +1264,7 @@ impl SlotPool {
         &mut self,
         slot: usize,
         source: &States,
-        source_fp8: &Fp8Caches,
+        source_fp8: &NarrowCaches,
         rows: usize,
         device: &CudaDevice,
     ) -> Result<()> {
@@ -1254,7 +1293,7 @@ impl SlotPool {
         &mut self,
         slot: usize,
         source: &States,
-        source_fp8: Option<&Fp8Caches>,
+        source_fp8: Option<&NarrowCaches>,
         rows: usize,
         device: &CudaDevice,
     ) -> Result<()> {
@@ -1288,14 +1327,14 @@ impl SlotPool {
                         self.capacity,
                         transfers,
                     )?,
-                    SlotCopy::KvFp8 => {
+                    SlotCopy::KvNarrow => {
                         let dst = self
                             .fp8
                             .get_mut(slot)
                             .ok_or_else(|| Error::invariant("slot fp8 caches"))?;
                         match (self.paging.as_ref(), source_fp8) {
                             (Some(_), None) => {}
-                            (Some(paging), Some(source_fp8)) => Self::scatter_kv_fp8(
+                            (Some(paging), Some(source_fp8)) => Self::scatter_kv_narrow(
                                 dst,
                                 source_fp8,
                                 *id,
@@ -1306,7 +1345,7 @@ impl SlotPool {
                                 return Err(Error::invariant("unpaged bind without KV rows"));
                             }
                             (None, Some(source_fp8)) => {
-                                Self::copy_kv_fp8(
+                                Self::copy_kv_narrow(
                                     dst,
                                     source_fp8,
                                     *id,
@@ -1357,7 +1396,7 @@ impl SlotPool {
         slot: usize,
         rows: usize,
         device: &CudaDevice,
-    ) -> Result<(States, Fp8Caches)> {
+    ) -> Result<(States, NarrowCaches)> {
         self.export_with(slot, rows, true, device)
     }
 
@@ -1384,7 +1423,7 @@ impl SlotPool {
         rows: usize,
         with_kv: bool,
         device: &CudaDevice,
-    ) -> Result<(States, Fp8Caches)> {
+    ) -> Result<(States, NarrowCaches)> {
         let exported = self.export_queued(slot, rows, with_kv, device);
         // A partial export has queued copies into tensors it is about to drop; settle them first.
         if exported.is_err() {
@@ -1399,7 +1438,7 @@ impl SlotPool {
         rows: usize,
         with_kv: bool,
         device: &CudaDevice,
-    ) -> Result<(States, Fp8Caches)> {
+    ) -> Result<(States, NarrowCaches)> {
         if slot >= self.width() || rows == 0 || rows > self.capacity {
             return Err(Error::invalid("slot export index or prefix length"));
         }
@@ -1422,7 +1461,7 @@ impl SlotPool {
             None => None,
         };
         let mut out = States::new();
-        let mut out_fp8 = Fp8Caches::new();
+        let mut out_fp8 = NarrowCaches::new();
         for (id, copy) in &self.plan {
             match *copy {
                 SlotCopy::Kv => {
@@ -1435,12 +1474,12 @@ impl SlotPool {
                         .collect::<Result<_>>()?;
                     out.insert(*id, copies);
                 }
-                SlotCopy::KvFp8 if !with_kv => {}
-                SlotCopy::KvFp8 => {
+                SlotCopy::KvNarrow if !with_kv => {}
+                SlotCopy::KvNarrow => {
                     let cache = caches
                         .get(id)
                         .ok_or_else(|| Error::invariant("slot export fp8 cache"))?;
-                    out_fp8.insert(*id, gather_fp8(cache, rows, blocks, device)?);
+                    out_fp8.insert(*id, gather_narrow(cache, rows, blocks, device)?);
                 }
                 SlotCopy::Whole => {
                     let tensors = states
@@ -1687,22 +1726,43 @@ impl SlotPool {
         Ok(())
     }
 
-    /// Copy a contiguous `[kv_heads, capacity, head_dim]` FP8 cache's first `rows` positions
+    /// Copy a contiguous `[kv_heads, capacity, head_dim]` narrow cache's first `rows` positions
     /// into a paged slot's blocks, block by block. A slot-resident program's views are the
     /// slot's own blocks and move nothing.
-    fn scatter_kv_fp8(
-        dst: &Fp8Caches,
-        src: &Fp8Caches,
+    fn scatter_kv_narrow(
+        dst: &NarrowCaches,
+        src: &NarrowCaches,
         id: TensorId,
         (rows, blocks): (usize, &[i32]),
         transfers: &Transfers<'_>,
     ) -> Result<()> {
         let from = src
             .get(&id)
-            .ok_or_else(|| Error::invariant("slot bind source fp8 cache"))?;
+            .ok_or_else(|| Error::invariant("slot bind source narrow cache"))?;
         let to = dst
             .get(&id)
-            .ok_or_else(|| Error::invariant("slot bind target fp8 cache"))?;
+            .ok_or_else(|| Error::invariant("slot bind target narrow cache"))?;
+        match (to, from) {
+            (NarrowState::Fp8(to), NarrowState::Fp8(from)) => {
+                Self::scatter_typed(to, from, (rows, blocks), transfers)
+            }
+            (NarrowState::F16(to), NarrowState::F16(from)) => {
+                Self::scatter_typed(to, from, (rows, blocks), transfers)
+            }
+            _ => Err(Error::invariant("slot bind between KV cache elements")),
+        }
+    }
+
+    /// [`Self::scatter_kv_narrow`] for one element type.
+    fn scatter_typed<T>(
+        to: &KvState<T>,
+        from: &KvState<T>,
+        (rows, blocks): (usize, &[i32]),
+        transfers: &Transfers<'_>,
+    ) -> Result<()>
+    where
+        T: DType + Element<Marker: KvElement + Width>,
+    {
         let block = KV_BLOCK_TOKENS;
         if rows.div_ceil(block) > blocks.len() {
             return Err(Error::invariant("slot bind beyond assigned blocks"));
@@ -1742,10 +1802,10 @@ impl SlotPool {
         )
     }
 
-    /// fp8 twin of [`Self::copy_kv_states`].
-    fn copy_kv_fp8(
-        dst: &Fp8Caches,
-        src: &Fp8Caches,
+    /// Narrow-cache twin of [`Self::copy_kv_states`].
+    fn copy_kv_narrow(
+        dst: &NarrowCaches,
+        src: &NarrowCaches,
         id: TensorId,
         rows: usize,
         slot_capacity: usize,
@@ -1761,7 +1821,7 @@ impl SlotPool {
         if to.same_memory(from) {
             return Ok(());
         }
-        if to.layout.rows != slot_capacity {
+        if to.layout().rows != slot_capacity {
             return Err(Error::invariant("slot bind KV layout"));
         }
         to.copy_prefix_in(transfers, from, rows)

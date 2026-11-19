@@ -22,6 +22,7 @@ use std::fmt::Display;
 use vision::TileVision;
 
 pub mod attention;
+mod identities;
 pub mod identity;
 pub mod jit;
 pub mod mlp;

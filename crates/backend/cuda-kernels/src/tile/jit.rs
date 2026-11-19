@@ -30,6 +30,14 @@ pub fn enable_cache() -> Result<()> {
     enable_default().map_err(backend_error)
 }
 
+/// Remember kernel identities across processes of this executable, so warm starts skip lowering.
+///
+/// Entries are scoped to `scope`, the device and driver identity the caller keys its tuning by.
+/// Without a usable cache directory identities are derived each time.
+pub fn enable_identity_cache(scope: &[u8]) {
+    super::identities::enable(scope);
+}
+
 /// Check that the device with `ordinal` can launch kernels with programmatic dependent launch.
 /// # Errors
 /// Rejects a device or driver without it.

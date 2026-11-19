@@ -3,6 +3,7 @@ use super::{fixture, id};
 use crate::AttentionProfile;
 use crate::device::device_error;
 use crate::mlp::Matrix;
+use crate::resident::NarrowElement;
 use crate::resident::buffers::cutile;
 use crate::resident::capture::error as capture_error;
 use crate::resident::prefill_projection::DensePlan;
@@ -115,6 +116,7 @@ impl Fixture {
             prefill_width: lanes,
             narrow_prefill_width: 0,
             kv_scales: BTreeMap::new(),
+            kv_element: NarrowElement::default(),
             tiling: BTreeMap::new(),
             fusion: None,
             attention_profile: AttentionProfile::Canonical,

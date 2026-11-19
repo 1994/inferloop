@@ -1,5 +1,6 @@
 use super::*;
 use crate::constants::KV_BLOCK_TOKENS;
+use crate::resident::NarrowElement;
 use crate::resident::PromptScratchRegistry;
 use crate::resident::attention_mma::catalog::DIM;
 use crate::resident::attention_mma::catalog::HEADS;
@@ -36,6 +37,7 @@ fn fixture_weights() -> ProgramWeights {
         fp8_inputs: BTreeSet::new(),
         input_scales: BTreeMap::new(),
         kv_scales: BTreeMap::new(),
+        kv_element: NarrowElement::default(),
         tiling: BTreeMap::new(),
         expert_banks: BTreeMap::new(),
         constants: BTreeMap::new(),
@@ -179,6 +181,34 @@ fn kv_block_bytes_counts_attention_states_in_storage_bytes() -> Result<()> {
         kv_block_bytes(&graph, &weights)?,
         block * 512 * 2 * (F32 + 1)
     );
+    Ok(())
+}
+
+#[test]
+fn half_precision_kv_pages_cost_two_bytes_per_element() -> Result<()> {
+    let (graph, state) = attention_graph(128)?;
+    let mut weights = fixture_weights();
+    weights.kv_scales.insert(state, [1.0, 1.0]);
+    let fp8 = kv_block_bytes(&graph, &weights)?;
+    weights.kv_element = NarrowElement::F16;
+    assert_eq!(kv_block_bytes(&graph, &weights)?, 2 * fp8);
+    Ok(())
+}
+
+#[test]
+fn half_precision_kv_never_selects_the_fp8_only_attention_kernels() -> Result<()> {
+    let (graph, state) = attention_graph(128)?;
+    let mut weights = fixture_weights();
+    weights.prefill_width = 128;
+    weights.kv_scales.insert(state, [1.0, 1.0]);
+    weights.kv_element = NarrowElement::F16;
+    assert!(!weights.fp8_kv(&state));
+    for profile in [crate::AttentionProfile::Bf16, crate::AttentionProfile::Fp16] {
+        weights.attention_profile = profile;
+        for architecture in ["sm_100", "sm_120"] {
+            assert!(!eligible(architecture, &graph, &weights, 128));
+        }
+    }
     Ok(())
 }
 
@@ -595,11 +625,10 @@ fn worker_quote_uses_actual_prompt_rows_and_keeps_unscaled_kv() -> Result<()> {
         external_bytes(&weights, 48, geometry, &profile)?,
         257 * 48 * F32
     );
-    let quote = |graph: &DataflowGraph, shared| {
-        worker_storage_bytes(graph, &weights, (8192, 48, 48), 256, shared, &profile)
+    let quote = |graph: &DataflowGraph, weights: &ProgramWeights| {
+        worker_storage_bytes(graph, weights, (8192, 48, 48), (256, 8192), &profile)
     };
-    let plain = quote(&graph, false)?;
-    assert_eq!(quote(&graph, true)?, plain);
+    let plain = quote(&graph, &weights)?;
     let mut with_kv = graph;
     let id = TensorId::new(9)?;
     with_kv.tensors.push(TensorSpec {
@@ -611,13 +640,11 @@ fn worker_quote_uses_actual_prompt_rows_and_keeps_unscaled_kv() -> Result<()> {
             kind: StateKind::AttentionKv,
         },
     });
-    // No FP8 scale: a shared paged FP8 pool does not own this F32 KV allocation.
-    assert_eq!(quote(&with_kv, true)?, quote(&with_kv, false)?);
-    assert_eq!(quote(&with_kv, true)? - plain, 8192 * 128 * 2 * F32);
+    // No FP8 scale: the shared paged FP8 pool does not hold this F32 KV, so the worker owns it.
+    assert_eq!(quote(&with_kv, &weights)? - plain, 8192 * 128 * 2 * F32);
+    // A scaled state lives in the pool's pages; the worker owns none of it.
     weights.kv_scales.insert(id, [1.0, 1.0]);
-    let private = worker_storage_bytes(&with_kv, &weights, (8192, 48, 48), 256, false, &profile)?;
-    let shared = worker_storage_bytes(&with_kv, &weights, (8192, 48, 48), 256, true, &profile)?;
-    assert_eq!(private - shared, 8192 * 128 * 2);
+    assert_eq!(quote(&with_kv, &weights)?, plain);
     Ok(())
 }
 
@@ -660,7 +687,7 @@ fn funded_kv_rounds_down_without_changing_logical_capacity() -> Result<()> {
     let block_bytes = 1_048_576;
     let envelope = 7_569_557_647;
     let tokens = funded_kv_tokens(
-        minimum_kv_tokens(width, capacity, 0)?,
+        minimum_kv_tokens(width, capacity, (0, 0))?,
         maximum,
         block_bytes,
         fixed,
@@ -675,7 +702,7 @@ fn funded_kv_rounds_down_without_changing_logical_capacity() -> Result<()> {
     // A known request length must fit every selected lane, including page rounding.
     assert_eq!(
         funded_kv_tokens(
-            minimum_kv_tokens(width, capacity, capacity / 2 + 1)?,
+            minimum_kv_tokens(width, capacity, (capacity / 2 + 1, 0))?,
             maximum,
             block_bytes,
             fixed,
@@ -707,7 +734,7 @@ fn funded_kv_admits_short_requests_without_per_slot_half_capacity() -> Result<()
     let envelope = fixed + (physical_tokens / KV_BLOCK_TOKENS) as u64 * block_bytes;
     assert_eq!(
         funded_kv_tokens(
-            minimum_kv_tokens(width, capacity, 0)?,
+            minimum_kv_tokens(width, capacity, (0, 0))?,
             maximum,
             block_bytes,
             fixed,
@@ -718,14 +745,50 @@ fn funded_kv_admits_short_requests_without_per_slot_half_capacity() -> Result<()
     Ok(())
 }
 
+/// A slot's capacity costs no pages: an idle pool funds one prompt chunk per slot, however long
+/// the context it can address, and its remaining budget becomes shared pages.
+#[test]
+fn idle_pool_minimum_is_one_chunk_per_slot_at_any_capacity() -> Result<()> {
+    let width = 32;
+    for capacity in [8192, 262_144] {
+        assert_eq!(
+            minimum_kv_tokens(width, capacity, (0, 0))?,
+            width * KV_BLOCK_TOKENS
+        );
+        // Every slot holds one prompt chunk; a longer known request funds its own length.
+        assert_eq!(minimum_kv_tokens(width, capacity, (0, 1000))?, width * 1024);
+        assert_eq!(
+            minimum_kv_tokens(width, capacity, (4352, 1024))?,
+            width * 4352
+        );
+    }
+    // A chunk wider than the slot is bounded by the slot.
+    assert_eq!(minimum_kv_tokens(4, 128, (0, 1024))?, 4 * 128);
+    let block_bytes = 1024;
+    let fixed = 100_000;
+    let pages: usize = 797;
+    let envelope = fixed + pages as u64 * block_bytes;
+    assert_eq!(
+        funded_kv_tokens(
+            minimum_kv_tokens(width, 262_144, (0, 0))?,
+            width * 262_144,
+            block_bytes,
+            fixed,
+            envelope
+        ),
+        Some(pages * KV_BLOCK_TOKENS)
+    );
+    Ok(())
+}
+
 #[test]
 fn real_request_kv_rounding_and_bounds_are_checked() -> Result<()> {
-    assert_eq!(minimum_kv_tokens(4, 128, 1)?, 128);
-    assert_eq!(minimum_kv_tokens(4, 128, 32)?, 128);
-    assert_eq!(minimum_kv_tokens(4, 128, 33)?, 256);
-    assert_eq!(minimum_kv_tokens(4, 128, 128)?, 512);
-    assert!(minimum_kv_tokens(4, 128, 129).is_err());
-    assert!(minimum_kv_tokens(usize::MAX, 128, 33).is_err());
+    assert_eq!(minimum_kv_tokens(4, 128, (1, 0))?, 128);
+    assert_eq!(minimum_kv_tokens(4, 128, (32, 0))?, 128);
+    assert_eq!(minimum_kv_tokens(4, 128, (33, 0))?, 256);
+    assert_eq!(minimum_kv_tokens(4, 128, (128, 0))?, 512);
+    assert!(minimum_kv_tokens(4, 128, (129, 0)).is_err());
+    assert!(minimum_kv_tokens(usize::MAX, 128, (33, 0)).is_err());
     assert_eq!(funded_kv_tokens(256, 512, 10, 100, 179), None);
     assert_eq!(funded_kv_tokens(256, 512, 10, 100, 180), Some(256));
     Ok(())

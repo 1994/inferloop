@@ -1,7 +1,7 @@
 //! Real MTP2 gate: independent default FC/GDN target and draft versus original captures.
 //! Both target timelines compare complete hidden, vocabulary and actual F32/FP8 state bits.
 use super::prefix_state::{DraftSnapshot, ProgramSnapshot};
-use crate::resident::fp8_cache::{KvLayout, KvState};
+use crate::resident::narrow_kv::{KvLayout, KvState};
 use crate::resident::shaped::StateTensor;
 use crate::tuning::table_path as tuning_table_path;
 use crate::{
@@ -193,7 +193,11 @@ fn layout(program: &DeviceProgram, graph: &DataflowGraph) {
             assert!(tensor.dims().iter().all(|&dimension| dimension > 0));
         }
     }
-    for KvState { keys, values, .. } in program.fp8_states().values() {
+    for KvState { keys, values, .. } in program
+        .fp8_states()
+        .values()
+        .map(|state| state.as_fp8().expect("an FP8 cache"))
+    {
         assert!(
             !keys.is_empty() && !values.is_empty(),
             "FP8 state tensor is empty"
@@ -241,12 +245,16 @@ fn compare_programs(
         actual.fp8_states().keys().collect::<Vec<_>>(),
         expected.fp8_states().keys().collect::<Vec<_>>()
     );
-    for (id, KvState { keys, values, .. }) in actual.fp8_states() {
+    for (id, KvState { keys, values, .. }) in actual
+        .fp8_states()
+        .iter()
+        .map(|(id, state)| (id, state.as_fp8().expect("an FP8 cache")))
+    {
         let KvState {
             keys: ref_keys,
             values: ref_values,
             ..
-        } = &expected.fp8_states()[id];
+        } = expected.fp8_states()[id].as_fp8().expect("an FP8 cache");
         for (a, b) in [(keys, ref_keys), (values, ref_values)] {
             assert_eq!(a.len(), b.len());
             let a = loaded.device().runtime().read(a)?;
@@ -591,7 +599,11 @@ fn state_digest(
         }
         result.insert(*id, hashes);
     }
-    for (id, kv) in program.fp8_states() {
+    for (id, kv) in program
+        .fp8_states()
+        .iter()
+        .map(|(id, state)| (id, state.as_fp8().expect("an FP8 cache")))
+    {
         let mut hashes = Vec::new();
         for tensor in [&kv.keys, &kv.values] {
             let values = loaded.device().runtime().read(tensor)?;

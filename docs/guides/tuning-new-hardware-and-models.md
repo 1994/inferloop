@@ -123,7 +123,9 @@ attention、recurrent、norm、greedy 的独立 allowance 保持原有边界。
 | 稠密投影识别（已推导） | `resident/prefill_projection/dense.rs` | 从图声明的输入与权重维度识别相邻、同层、同输入的稠密投影对和小输出投影 | 不再匹配固定模型维度；录图时复核实际稠密权重、尺寸与别名，保留 vendor、稀疏和单行 logits 路径 |
 | pooled 稠密投影交叉点（已接入调优） | `tuning/pool_dense` | 对实际 decode/verify 行数比较逐行 GEMV、四行共享权重分块与原小 GEMM | 按设备、驱动、内核、M/N/K 与实际 GEMV tile 缓存冷/暖正反确认结果；新路径保持私有 F32 归约，只有原已使用小 GEMM 的行数允许保留该算法 |
 | resident 投影搜索预算（已推导） | `tuning/projection_budget.rs` | 按实际录图保留的 FP4/FP8 形状、候选数和独立确认轮次估算 | 同一模型跨层和 serving state 去重；耗尽时列出尚未完成的形状，保留 native 路径 |
-| 每槽半容量 KV 保底（已删除） | `loading/budget.rs`、`executor/admission_pool.rs` | 每请求按实际 prompt + 最大输出长度向上取整到页；保留一个完整上下文的隔离能力 | `serve` 启动时按零需求捕获实体池；更长的实际需求按长度重选计划，只在无活动状态且 lease 全归还后调整实体池 |
+| 每槽 KV 保底（已推导） | `loading/budget.rs`、`executor/admission_pool.rs` | 每请求按实际 prompt + 最大输出长度向上取整到页；空闲池每槽保底一个 prompt 块（worker 的 `prompt_width` 行），不再保底完整上下文 | 槽宽超过页能供给的部分只增加递推状态、挤占 KV；`serve` 启动时按零需求捕获实体池，更长的实际需求按长度重选计划 |
+| 池槽位容量（已推导，#275） | `executor/execution.rs::slot_capacity` | 等于模型上下文：MTP draft KV 与 target 一样按页租用，prompt worker 的注意力暂存按池的页数而非容量分配，容量只占块表项 | 比池全部页更长的请求不入池（`SlotPool::admits`）；页不足的请求等待其他序列归还 |
+| 投影 tile 基线 | `tuning/tiles.rs` | 加载期实测按 `(设备, 驱动, kernel, M/N/K)` 选择 tile；这些值只是无测量时的保留配置与候选列表 | 新硬件先看 `source=measured`；不要按显卡型号改基线，新增 tile 变体时同步扩充搜索空间 |
 
 CUDA 默认并发按两个界限推导。N_mem 通过现有完整 serving 报价求最大可资助宽度，
 包括 target/draft pool、worker、slot home、workspace、KV 与 driver headroom。

@@ -14,7 +14,7 @@ workspace = true
 
 [features]
 default = []
-tile = ["dep:cutile", "dep:cuda-core"]
+tile = ["dep:cutile", "dep:cuda-core", "dep:sha2"]
 aot = ["dep:half", "dep:libloading", "dep:serde", "dep:serde_json", "dep:sha2"]
 
 [dependencies]

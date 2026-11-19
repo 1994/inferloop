@@ -21,3 +21,4 @@ workspace = true
 
 [dependencies]
 infer-core.workspace = true
+infer-ir.workspace = true

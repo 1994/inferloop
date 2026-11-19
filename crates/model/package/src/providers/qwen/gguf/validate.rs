@@ -119,17 +119,7 @@ pub fn validate_text(metadata: &Metadata, tensors: &[TensorSpec]) -> Result<()> 
         )?;
     }
     check(tensors, &mut expected, |ty| {
-        matches!(
-            ty,
-            GgufType::F32
-                | GgufType::F16
-                | GgufType::Bf16
-                | GgufType::Q4_0
-                | GgufType::Q4K
-                | GgufType::Q5K
-                | GgufType::Q6K
-                | GgufType::Q8_0
-        )
+        matches!(ty, GgufType::F32 | GgufType::F16 | GgufType::Bf16) || ty.grouped_int().is_some()
     })
 }
 

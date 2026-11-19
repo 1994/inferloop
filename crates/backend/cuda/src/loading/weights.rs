@@ -1,3 +1,4 @@
+use super::grouped_int_tiled::GroupedIntTiled;
 use super::head_padding::Pad;
 use crate::constants::DEFAULT_TILE_COLUMNS;
 use crate::constants::DEFAULT_TILE_ROWS;
@@ -11,10 +12,8 @@ use infer_cuda_kernels::runtime::bf16;
 use infer_cuda_kernels::runtime::{f4e2m1fnx2, f8e4m3fn};
 use infer_ir::DType;
 use infer_models::{
-    DeviceWeight, GroupedIntKind, Q4KDevice, Q4KTiled, Q6KTiled, QuantizedPackage, WeightEncoding,
-    WeightSource, WeightView, convert_float_bytes,
+    DeviceWeight, QuantizedPackage, WeightEncoding, WeightSource, WeightView, convert_float_bytes,
 };
-use std::cmp::Ordering;
 
 const STAGING: u64 = 2 * 1024 * 1024 * 1024;
 /// Decoded BF16 byte budget for one NVFP4 projection falling back to host decoding.
@@ -24,11 +23,15 @@ const NVFP4_DECODE_BUDGET: usize = GIB;
 const E4M3_NAN_CODE: u8 = 127;
 const E4M3_MAX_CODE: u8 = E4M3_NAN_CODE - 1;
 const E4M3_MANTISSA_BITS: u8 = 3;
-const E4M3_MANTISSA_MASK: u8 = 7;
-const E4M3_MANTISSA_SCALE: f32 = 8.0;
-const E4M3_EXPONENT_BIAS: i32 = 7;
 const E4M3_MAX: f32 = 448.0;
 const E4M3_SIGN: u8 = 0x80;
+/// Smallest normal E4M3 magnitude, 2^-6.
+const E4M3_MIN_NORMAL: f32 = 0.015_625;
+/// Subnormal steps per unit, 2^9: E4M3 subnormals are multiples of 2^-9.
+const E4M3_SUBNORMAL_STEPS: f32 = 512.0;
+const F32_MANTISSA_BITS: u32 = 23;
+/// The f32 exponent bias less the E4M3 one (127 - 7), in E4M3 code units.
+const E4M3_REBIAS: u32 = (127 - 7) << 3;
 
 /// Read floating weights under a 2 GiB encoded staging limit.
 /// # Errors
@@ -71,44 +74,35 @@ fn codes(package: &mut QuantizedPackage, source: &WeightSource) -> Result<Vec<f8
         .collect())
 }
 
-/// Finite non-negative E4M3 values in code order (codes 0..=126; 127 is NaN).
-fn e4m3_magnitudes() -> Vec<f32> {
-    (0u8..E4M3_NAN_CODE)
-        .map(|code| {
-            let exponent = i32::from(code >> E4M3_MANTISSA_BITS);
-            let mantissa = f32::from(code & E4M3_MANTISSA_MASK);
-            if exponent == 0 {
-                mantissa / E4M3_MANTISSA_SCALE * 2f32.powi(1 - E4M3_EXPONENT_BIAS)
-            } else {
-                (1.0 + mantissa / E4M3_MANTISSA_SCALE) * 2f32.powi(exponent - E4M3_EXPONENT_BIAS)
-            }
-        })
-        .collect()
-}
-
-/// Round to the nearest E4M3 code (ties to the even code), saturating at +-448.
-fn e4m3_code(value: f32, magnitudes: &[f32]) -> u8 {
+/// Round to the nearest E4M3 code (ties to the even code), saturating at +-448; NaN saturates.
+///
+/// Normal magnitudes round the f32 fraction to three bits in place: the carry of a rounded-up
+/// fraction moves into the exponent, which is the next code. Magnitudes below the smallest normal
+/// are multiples of the subnormal step, scaled exactly by a power of two.
+fn e4m3_code(value: f32) -> u8 {
     let magnitude = value.abs().min(E4M3_MAX);
-    let upper = magnitudes.partition_point(|&m| m < magnitude);
-    let code = if upper == 0 {
-        0
-    } else if upper >= magnitudes.len() {
-        magnitudes.len() - 1
+    let code = if magnitude < E4M3_MIN_NORMAL {
+        // At most eight steps, and exact: a power-of-two scale of a value below 2^-6.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a rounded non-negative multiple of the subnormal step, at most eight"
+        )]
+        let steps = (magnitude * E4M3_SUBNORMAL_STEPS).round_ties_even() as u8;
+        steps
     } else {
-        let below = magnitude - magnitudes[upper - 1];
-        let above = magnitudes[upper] - magnitude;
-        match below.total_cmp(&above) {
-            Ordering::Less => upper - 1,
-            Ordering::Equal if (upper - 1) % 2 == 0 => upper - 1,
-            Ordering::Greater | Ordering::Equal => upper,
-        }
+        let bits = magnitude.to_bits();
+        let dropped = F32_MANTISSA_BITS - u32::from(E4M3_MANTISSA_BITS);
+        let half = (1 << (dropped - 1)) - 1;
+        let rounded = (bits + half + ((bits >> dropped) & 1)) >> dropped;
+        u8::try_from(rounded - E4M3_REBIAS).unwrap_or(E4M3_MAX_CODE)
     };
     let sign = if value.is_sign_negative() && code != 0 {
         E4M3_SIGN
     } else {
         0
     };
-    u8::try_from(code).unwrap_or(E4M3_MAX_CODE) | sign
+    code.min(E4M3_MAX_CODE) | sign
 }
 
 impl ProjectionWeight {
@@ -123,7 +117,6 @@ impl ProjectionWeight {
         if rows * columns != values.len() || *columns == 0 {
             return Err(Error::invalid("FP8 projection shape"));
         }
-        let magnitudes = e4m3_magnitudes();
         let mut codes = Vec::with_capacity(values.len());
         let mut scales = Vec::with_capacity(*rows);
         for row in values.chunks(*columns) {
@@ -134,10 +127,7 @@ impl ProjectionWeight {
                 1.0
             };
             scales.push(scale);
-            codes.extend(
-                row.iter()
-                    .map(|v| f8e4m3fn(e4m3_code(v / scale, &magnitudes))),
-            );
+            codes.extend(row.iter().map(|v| f8e4m3fn(e4m3_code(v / scale))));
         }
         Ok(Self::Fp8(
             Matrix::upload(device, codes, shape)?,
@@ -181,9 +171,7 @@ impl ProjectionWeight {
                 ))
             }
             WeightEncoding::Nvfp4 => Self::load_nvfp4(device, package, weight),
-            WeightEncoding::GroupedInt4 | WeightEncoding::GroupedInt6 => {
-                Self::load_grouped_int(device, package, weight)
-            }
+            WeightEncoding::GroupedInt(_) => Self::load_grouped_int(device, package, weight),
             WeightEncoding::Fp8Block => {
                 let values = codes(package, weight.data())?;
                 let shape = weight.shape();
@@ -281,12 +269,11 @@ impl ProjectionWeight {
                     device.runtime().upload(scaling)?,
                 ))
             }
-            WeightEncoding::Nvfp4
-            | WeightEncoding::Fp8Block
-            | WeightEncoding::GroupedInt4
-            | WeightEncoding::GroupedInt6 => Err(Error::unsupported(
-                "padded CUDA attention heads need dense or per-channel FP8 projections",
-            )),
+            WeightEncoding::Nvfp4 | WeightEncoding::Fp8Block | WeightEncoding::GroupedInt(_) => {
+                Err(Error::unsupported(
+                    "padded CUDA attention heads need dense or per-channel FP8 projections",
+                ))
+            }
         }
     }
 
@@ -295,7 +282,7 @@ impl ProjectionWeight {
         package: &mut QuantizedPackage,
         weight: &DeviceWeight,
     ) -> Result<Self> {
-        let DeviceWeight::GroupedInt { data, kind } = weight else {
+        let DeviceWeight::GroupedInt { data, format } = weight else {
             return Err(Error::invalid("grouped-int weight descriptor"));
         };
         let shape = weight.shape();
@@ -303,43 +290,23 @@ impl ProjectionWeight {
             return Err(Error::invalid("grouped-int weight must be a matrix"));
         };
         let raw = package.read(data, STAGING)?;
-        // Each stage's buffers drop once the next exists, and the tiled layout moves into the
-        // upload, so the host peak holds at most two copies of the weight.
-        match kind {
-            GroupedIntKind::Q4K => {
-                let layout =
-                    Q4KTiled::from_device(&Q4KDevice::from_blocks(*rows, *columns, &raw)?)?;
-                drop(raw);
-                if layout.rows() != *rows || layout.columns() != *columns {
-                    return Err(Error::invalid("Q4_K layout shape"));
-                }
-                let (codes, factors, biases) = layout.into_device_parts();
-                Ok(Self::GroupedInt {
-                    codes: Matrix::upload(device, codes, &[*rows, *columns / 2]).map_err(
-                        |error| Error::invalid(format!("{} Q4_K codes: {error}", data.name)),
-                    )?,
-                    factors: device.runtime().upload(factors)?,
-                    biases: Some(device.runtime().upload(biases)?),
-                    kind: GroupedIntKind::Q4K,
-                })
-            }
-            GroupedIntKind::Q6K => {
-                let layout = Q6KTiled::from_blocks(*rows, *columns, &raw)?;
-                drop(raw);
-                if layout.rows() != *rows || layout.columns() != *columns {
-                    return Err(Error::invalid("Q6_K layout shape"));
-                }
-                let (codes, factors) = layout.into_device_parts();
-                Ok(Self::GroupedInt {
-                    codes: Matrix::upload(device, codes, &[*rows, *columns]).map_err(|error| {
-                        Error::invalid(format!("{} Q6_K codes: {error}", data.name))
-                    })?,
-                    factors: device.runtime().upload(factors)?,
-                    biases: None,
-                    kind: GroupedIntKind::Q6K,
-                })
-            }
-        }
+        let layout = GroupedIntTiled::from_blocks(*format, *rows, *columns, &raw)
+            .map_err(|error| Error::invalid(format!("{}: {error}", data.name)))?;
+        // The raw blocks drop before upload and the packed parts move into it, so the host peak
+        // holds at most the stored and the packed copy of one weight.
+        drop(raw);
+        let code_shape = layout.code_shape();
+        let (codes, factors, biases) = layout.into_parts();
+        Ok(Self::GroupedInt {
+            codes: Matrix::upload(device, codes, &code_shape).map_err(|error| {
+                Error::invalid(format!("{} grouped-int codes: {error}", data.name))
+            })?,
+            factors: device.runtime().upload(factors)?,
+            biases: biases
+                .map(|biases| device.runtime().upload(biases))
+                .transpose()?,
+            format: *format,
+        })
     }
 
     fn load_nvfp4(
@@ -426,3 +393,7 @@ impl ProjectionWeight {
         device.runtime().read(&output)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/loading_e4m3.rs"]
+mod tests;

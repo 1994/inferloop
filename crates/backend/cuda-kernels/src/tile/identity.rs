@@ -4,6 +4,7 @@
 //! the kernel or its compilation does, and no device memory is touched.
 use super::attention::resident_attention_prefill;
 use super::backend_error;
+use super::identities;
 use super::projection::{
     BLOCK_BYTES, entries, fp8_gemm, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm, small_gemm,
     swizzle, vendor_fp8,
@@ -83,14 +84,16 @@ pub fn recurrent_wy(
                 lanes.to_string(),
                 block.to_string(),
             ])
-            .l2_cache_key_on(stream)
+            .specialize_on(stream)
+            .and_then(|specialization| identities::resolve(&specialization))
             .map_err(backend_error)?,
         );
     }
     identities.push(
         recurrent_prefill::transpose((&mut output).partition([1, 1, dim]), &scratch)
             .generics(vec![dim.to_string()])
-            .l2_cache_key_on(stream)
+            .specialize_on(stream)
+            .and_then(|specialization| identities::resolve(&specialization))
             .map_err(backend_error)?,
     );
     if identities.iter().any(String::is_empty) {
@@ -139,7 +142,8 @@ pub fn fp8_candidates(
             columns.to_string(),
             columns.next_power_of_two().to_string(),
         ])
-        .l2_cache_key_on(stream)
+        .specialize_on(stream)
+        .and_then(|specialization| identities::resolve(&specialization))
         .map_err(backend_error)?,
     ];
     for tile_m in row_tiles.iter().copied() {
@@ -157,14 +161,16 @@ pub fn fp8_candidates(
                     tile_m.to_string(),
                     tile_n.to_string(),
                 ])
-                .l2_cache_key_on(stream)
+                .specialize_on(stream)
+                .and_then(|specialization| identities::resolve(&specialization))
                 .map_err(backend_error)?,
             );
         }
     }
     ids.push(
         vendor_fp8::scale((&mut out).partition([1, aux_tile]), &xs, &ws)
-            .l2_cache_key_on(stream)
+            .specialize_on(stream)
+            .and_then(|specialization| identities::resolve(&specialization))
             .map_err(backend_error)?,
     );
     Ok(ids)
@@ -206,7 +212,8 @@ pub fn fp4_candidates(
             1.0,
         )
         .generics(vec![k.to_string()])
-        .l2_cache_key_on(stream)
+        .specialize_on(stream)
+        .and_then(|specialization| identities::resolve(&specialization))
         .map_err(backend_error)?,
     ];
     for tile_m in search.tile_m.iter().copied() {
@@ -224,7 +231,8 @@ pub fn fp4_candidates(
                         1.0,
                     )
                     .generics(generics)
-                    .l2_cache_key_on(stream)
+                    .specialize_on(stream)
+                    .and_then(|specialization| identities::resolve(&specialization))
                 } else {
                     nvfp4_gemm::packed(
                         (&mut output).partition(tile),
@@ -235,7 +243,8 @@ pub fn fp4_candidates(
                         1.0,
                     )
                     .generics(generics)
-                    .l2_cache_key_on(stream)
+                    .specialize_on(stream)
+                    .and_then(|specialization| identities::resolve(&specialization))
                 }
                 .map_err(backend_error)?;
                 identities.push(identity);
@@ -269,7 +278,8 @@ pub fn dense_prompt_candidates(
         identities.push(
             prefill_gemm::dense_tile((&mut output).partition([rows, outputs]), &input, &weight)
                 .generics(vec![rows.to_string(), outputs.to_string(), k.to_string()])
-                .l2_cache_key_on(stream)
+                .specialize_on(stream)
+                .and_then(|specialization| identities::resolve(&specialization))
                 .map_err(backend_error)?,
         );
     }
@@ -307,7 +317,8 @@ pub fn dense_candidates(
         &weight,
     )
     .generics(generics.clone())
-    .l2_cache_key_on(stream)
+    .specialize_on(stream)
+    .and_then(|specialization| identities::resolve(&specialization))
     .map_err(backend_error)?;
     let shared = linear_batch::dense(
         (&mut output).partition([search.shared_rows, search.tile_rows]),
@@ -315,11 +326,13 @@ pub fn dense_candidates(
         &weight,
     )
     .generics(generics)
-    .l2_cache_key_on(stream)
+    .specialize_on(stream)
+    .and_then(|specialization| identities::resolve(&specialization))
     .map_err(backend_error)?;
     let native = small_gemm::dense((&mut output).partition(search.native_tile), &input, &weight)
         .generics(vec![bf16::DTYPE.as_str().into(), k.to_string()])
-        .l2_cache_key_on(stream)
+        .specialize_on(stream)
+        .and_then(|specialization| identities::resolve(&specialization))
         .map_err(backend_error)?;
     let mut identities = vec![gemv, shared, native];
     // Wider tiles are candidates only outside the qualified family, whose identity stays frozen.
@@ -336,7 +349,8 @@ pub fn dense_candidates(
                     width.to_string(),
                     k.to_string(),
                 ])
-                .l2_cache_key_on(stream)
+                .specialize_on(stream)
+                .and_then(|specialization| identities::resolve(&specialization))
                 .map_err(backend_error)?,
             );
         }
@@ -384,7 +398,8 @@ pub fn swiglu_candidates(
             1.0,
         )
         .generics(vec![k.to_string()])
-        .l2_cache_key_on(stream)
+        .specialize_on(stream)
+        .and_then(|specialization| identities::resolve(&specialization))
         .map_err(backend_error)?,
     ];
     for &[rows, outputs] in search.tiles {
@@ -408,7 +423,8 @@ pub fn swiglu_candidates(
                     .map(ToString::to_string)
                     .collect(),
             )
-            .l2_cache_key_on(stream)
+            .specialize_on(stream)
+            .and_then(|specialization| identities::resolve(&specialization))
             .map_err(backend_error)?,
         );
     }
@@ -455,7 +471,8 @@ pub fn gated_norm_candidates(
             .compile_options(occupancy.map_or_else(CompileOptions::default, |occupancy| {
                 CompileOptions::default().occupancy(occupancy)
             }))
-            .l2_cache_key_on(stream)
+            .specialize_on(stream)
+            .and_then(|specialization| identities::resolve(&specialization))
             .map_err(backend_error)?,
         );
     }
@@ -492,7 +509,8 @@ pub fn exact_recurrence(
     let identities = vec![
         recurrent_prefill::normalize_shared((&mut normalized).partition([1, 1, dim]), &qkv)
             .generics(vec![kh.to_string(), dim.to_string()])
-            .l2_cache_key_on(stream)
+            .specialize_on(stream)
+            .and_then(|specialization| identities::resolve(&specialization))
             .map_err(backend_error)?,
         recurrent_prefill::gates_shared(
             (&mut betas).partition([1, 1]),
@@ -502,7 +520,8 @@ pub fn exact_recurrence(
             &a_log,
             &bias,
         )
-        .l2_cache_key_on(stream)
+        .specialize_on(stream)
+        .and_then(|specialization| identities::resolve(&specialization))
         .map_err(backend_error)?,
         recurrent_prefill::delta_precomputed(
             (&mut state).partition([1, dim, value_columns]),
@@ -521,11 +540,13 @@ pub fn exact_recurrence(
             width.to_string(),
             value_columns.to_string(),
         ])
-        .l2_cache_key_on(stream)
+        .specialize_on(stream)
+        .and_then(|specialization| identities::resolve(&specialization))
         .map_err(backend_error)?,
         recurrent_prefill::transpose((&mut output).partition([1, 1, dim]), &scratch)
             .generics(vec![dim.to_string()])
-            .l2_cache_key_on(stream)
+            .specialize_on(stream)
+            .and_then(|specialization| identities::resolve(&specialization))
             .map_err(backend_error)?,
     ];
     if identities.iter().any(String::is_empty) {
@@ -596,7 +617,8 @@ pub fn attention_candidates<E: DType>(
         block.to_string(),
         lanes.div_ceil(block).next_power_of_two().to_string(),
     ])
-    .l2_cache_key_on(stream)
+    .specialize_on(stream)
+    .and_then(|specialization| identities::resolve(&specialization))
     .map_err(backend_error)?;
     let compute = attention_compute(
         stream,
@@ -664,7 +686,8 @@ fn attention_compute<E: DType>(
             block.to_string(),
             "1".into(),
         ])
-        .l2_cache_key_on(stream)
+        .specialize_on(stream)
+        .and_then(|specialization| identities::resolve(&specialization))
     } else {
         let mut output = meta(&[lanes * heads, dim])?;
         resident_attention_prefill::decode(
@@ -685,7 +708,8 @@ fn attention_compute<E: DType>(
             heads.to_string(),
             block.to_string(),
         ])
-        .l2_cache_key_on(stream)
+        .specialize_on(stream)
+        .and_then(|specialization| identities::resolve(&specialization))
     }
     .map_err(backend_error)
 }
@@ -723,7 +747,8 @@ pub fn greedy_reductions(device: &Device, plan: &GreedyPlan) -> Result<String> {
         &logits,
     )
     .generics(vec![vocabulary.to_string(), tile.to_string()])
-    .l2_cache_key_on(stream)
+    .specialize_on(stream)
+    .and_then(|specialization| identities::resolve(&specialization))
     .map_err(backend_error)?;
     let second = greedy::finish((&mut tokens).partition([1, 2]), &keys, &indices, &invalid)
         .generics(vec![
@@ -732,7 +757,8 @@ pub fn greedy_reductions(device: &Device, plan: &GreedyPlan) -> Result<String> {
             "0".into(),
             rows.to_string(),
         ])
-        .l2_cache_key_on(stream)
+        .specialize_on(stream)
+        .and_then(|specialization| identities::resolve(&specialization))
         .map_err(backend_error)?;
     Ok(format!("{first}:{second}"))
 }
@@ -759,6 +785,7 @@ pub fn fp4_scale_swizzle(device: &Device, plan: &Fp4ScalePlan, out_len: usize) -
     )
     .generics(launch.generics)
     .grid(launch.grid)
-    .l2_cache_key_on(stream)
+    .specialize_on(stream)
+    .and_then(|specialization| identities::resolve(&specialization))
     .map_err(backend_error)
 }

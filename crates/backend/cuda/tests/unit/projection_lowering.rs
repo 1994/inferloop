@@ -1,5 +1,4 @@
 use super::*;
-use infer_core::ErrorCode;
 
 const SHAPE: [usize; 3] = [4, 64, 4096];
 const SCALE: f32 = 0.5;
@@ -120,7 +119,7 @@ fn draft_projections_split_only_channel_fp8_with_a_partial_buffer() {
 }
 
 #[test]
-fn grouped_int_weights_refuse_pooled_rows_instead_of_a_per_row_loop() {
+fn grouped_int_pooled_rows_take_the_grouped_rows_kernel() {
     assert_eq!(rows(Mode::Single, Format::GroupedInt), Lowering::Matvec);
     assert_eq!(
         rows(Mode::Prompt, Format::GroupedInt),
@@ -135,7 +134,17 @@ fn grouped_int_weights_refuse_pooled_rows_instead_of_a_per_row_loop() {
         },
     ];
     for mode in pooled {
-        let error = lower(Format::GroupedInt, None, mode, SHAPE).unwrap_err();
-        assert_eq!(error.code, ErrorCode::Unsupported, "{mode:?}");
+        assert_eq!(
+            rows(mode, Format::GroupedInt),
+            Lowering::Rows(RowsKernel::GroupedInt),
+            "{mode:?}"
+        );
     }
+    let draft = lower(
+        Format::GroupedInt,
+        None,
+        Mode::Draft { split: false },
+        SHAPE,
+    );
+    assert!(draft.is_err());
 }

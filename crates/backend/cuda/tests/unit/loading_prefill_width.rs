@@ -1,6 +1,6 @@
 //! Real checkpoint, one weight upload, distinct prompt captures and a prediction gate.
 use super::{LoadOptions, LoadedModel};
-use crate::resident::fp8_cache::KvState;
+use crate::resident::narrow_kv::{KvState, NarrowState};
 use crate::tuning::table_path;
 use crate::{
     device::CudaDevice,
@@ -211,7 +211,10 @@ fn compare_states(
             values: actual_values,
             ..
         },
-    ) in wide.fp8_states()
+    ) in wide
+        .fp8_states()
+        .iter()
+        .map(|(id, state)| (id, state.as_fp8().expect("an FP8 cache")))
     {
         let KvState {
             keys: expected_keys,
@@ -220,6 +223,7 @@ fn compare_states(
         } = narrow
             .fp8_states()
             .get(id)
+            .and_then(NarrowState::as_fp8)
             .ok_or_else(|| Error::invariant("FP8 KV ID"))?;
         for (kind, actual, expected) in [
             ("keys", actual_keys, expected_keys),

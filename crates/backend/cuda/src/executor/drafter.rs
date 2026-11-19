@@ -88,6 +88,44 @@ impl Drafter {
         }
     }
 
+    /// Lease the draft slot the pages for `tokens` positions beside its target slot, replacing
+    /// what it owned. The draft pool pages from a ledger of its own and leases no slots: its
+    /// slots follow the target's. True without a draft pool.
+    /// # Errors
+    /// As [`SlotPool::assign`].
+    pub(super) fn assign_pages(
+        &mut self,
+        slot: usize,
+        tokens: usize,
+        device: &CudaDevice,
+    ) -> Result<bool> {
+        self.pool_mut()
+            .map_or(Ok(true), |pool| pool.assign(slot, tokens, device))
+    }
+
+    /// Grow the draft slot's pages to `tokens` positions beside its target slot. True without
+    /// a draft pool.
+    /// # Errors
+    /// As [`SlotPool::grow`].
+    pub(super) fn grow_pages(
+        &mut self,
+        slot: usize,
+        tokens: usize,
+        device: &CudaDevice,
+    ) -> Result<bool> {
+        self.pool_mut()
+            .map_or(Ok(true), |pool| pool.grow(slot, tokens, device))
+    }
+
+    /// Return the draft slot's pages when its target slot is released or reset.
+    pub(super) fn release_pages(&mut self, slot: usize) {
+        if let Some(pool) = self.pool_mut()
+            && let Err(error) = pool.shed_pages(slot)
+        {
+            tracing::error!(target: "infer::executor", %error, slot, "draft slot pages not released");
+        }
+    }
+
     /// The draft model, which the serial path primes and which leases sequence rings.
     pub(super) fn model(&mut self) -> Option<&mut Engine> {
         match self {

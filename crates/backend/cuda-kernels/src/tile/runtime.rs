@@ -2,7 +2,7 @@
 //!
 //! These are concrete types chosen at compile time, not trait objects: replaying a graph is the
 //! inference hot path, and here it compiles to exactly the cuTile future it wraps.
-use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner, Width};
+use crate::contract::buffer::{Bf16, Buffer, F16, Fp4Pair, Fp8, Owner, Width};
 use crate::contract::recording::{Foreign, Recording};
 use crate::tile::backend_error;
 use cuda_core::DTypeId;
@@ -72,6 +72,9 @@ impl Element for u32 {
 }
 impl Element for bf16 {
     type Marker = Bf16;
+}
+impl Element for f16 {
+    type Marker = F16;
 }
 impl Element for f4e2m1fnx2 {
     type Marker = Fp4Pair;

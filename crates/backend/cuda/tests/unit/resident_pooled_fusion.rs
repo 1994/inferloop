@@ -1,6 +1,6 @@
 //! The actual draft pool versus independent original per-slot FC captures.
 use super::{captures, with_row_reference};
-use crate::resident::fp8_cache::KvState;
+use crate::resident::narrow_kv::KvState;
 use crate::resident::slot_batch::narrow_widths;
 use crate::{
     device::CudaDevice,
@@ -60,7 +60,7 @@ fn extended_concurrency_preserves_checkpoint_draft_states() -> Result<()> {
 fn compare_pool(loaded: &LoadedModel, width: usize) -> Result<()> {
     let before = captures();
     let mut candidate = loaded
-        .draft_slot_pool(width, 64)?
+        .draft_slot_pool(width, 64, None)?
         .ok_or_else(|| Error::invariant("checkpoint draft pool missing"))?;
     // The pool also captures a graph per narrow decode rung, and each qualifies on its own width.
     let rungs = narrow_widths(loaded.draft_graph().unwrap(), width, 0)
@@ -74,7 +74,7 @@ fn compare_pool(loaded: &LoadedModel, width: usize) -> Result<()> {
         "qualified fusion or original row captures must match the actual pool geometry"
     );
     let before = captures();
-    let mut reference = with_row_reference(|| loaded.draft_slot_pool(width, 64))?
+    let mut reference = with_row_reference(|| loaded.draft_slot_pool(width, 64, None))?
         .ok_or_else(|| Error::invariant("checkpoint reference pool missing"))?;
     assert_eq!(
         captures(),
@@ -148,12 +148,15 @@ fn compare_states(device: &CudaDevice, a: &SlotPool, b: &SlotPool, width: usize)
             a_packed.keys().collect::<Vec<_>>(),
             b_packed.keys().collect::<Vec<_>>(),
         );
-        for (id, KvState { keys, values, .. }) in a_packed {
+        for (id, KvState { keys, values, .. }) in a_packed
+            .iter()
+            .map(|(id, state)| (id, state.as_fp8().expect("an FP8 cache")))
+        {
             let KvState {
                 keys: expected_keys,
                 values: expected_values,
                 ..
-            } = &b_packed[id];
+            } = b_packed[id].as_fp8().expect("an FP8 cache");
             for (actual, expected) in [(keys, expected_keys), (values, expected_values)] {
                 let actual = device.runtime().read(actual)?;
                 let expected = device.runtime().read(expected)?;

@@ -1,11 +1,11 @@
 //! Same-checkpoint output and complete recurrent/KV-state gate for Rust SIMT attention.
 use super::{LoadOptions, LoadedModel, quant_reuse_model_tests as reference};
-use crate::resident::fp8_cache::{KvLayout, KvState, kv_geometry};
+use crate::resident::narrow_kv::{KvLayout, NarrowState, kv_geometry};
 use crate::{
     device::CudaDevice,
     resident::{
         attention_oxide::{captures, without_oxide},
-        fp8_cache::Fp8Caches,
+        narrow_kv::NarrowCaches,
     },
 };
 use infer_core::{Error, ModelId, Result};
@@ -119,8 +119,8 @@ fn pooled_prefill_preserves_checkpoint_model_bits() -> Result<()> {
     Ok(())
 }
 
-fn pooled_caches(loaded: &LoadedModel) -> Result<Fp8Caches> {
-    let mut result = Fp8Caches::new();
+fn pooled_caches(loaded: &LoadedModel) -> Result<NarrowCaches> {
+    let mut result = NarrowCaches::new();
     for spec in &loaded.graph.tensors {
         if loaded.weights.kv_scales.contains_key(&spec.id) {
             let (heads, dim) = kv_geometry(&loaded.graph, spec.id)?;
@@ -129,7 +129,11 @@ fn pooled_caches(loaded: &LoadedModel) -> Result<Fp8Caches> {
                 rows: 12288,
                 dim,
             };
-            result.insert(spec.id, KvState::zeros(&loaded.device, layout)?);
+            let element = loaded.weights.kv_element;
+            result.insert(
+                spec.id,
+                NarrowState::zeros(&loaded.device, layout, element)?,
+            );
         }
     }
     Ok(result)
@@ -166,7 +170,7 @@ fn checkpoint_bits(pooled: bool, width: usize) -> Result<()> {
     let build = || {
         if pooled {
             loaded
-                .prompt_worker(4096, Some(pooled_caches(&loaded)?), width)
+                .prompt_worker(4096, (Some(pooled_caches(&loaded)?), None), width)
                 .map(|(program, _)| program)
         } else {
             loaded.sequence(4096)

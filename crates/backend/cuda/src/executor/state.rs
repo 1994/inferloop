@@ -109,7 +109,7 @@ impl CudaExecutor {
             return Ok(());
         };
         if !self.states.is_empty()
-            || (readout == OutputReadout::Logits && capacity <= pool.capacity())
+            || (readout == OutputReadout::Logits && pool.admits(capacity))
             || pool.free_slots() != pool.width()
             || !self.drafter.idle()
         {
@@ -427,6 +427,7 @@ impl CudaExecutor {
             } else {
                 pool.release(lease.slot);
             }
+            self.drafter.release_pages(lease.slot);
         }
         // Reset has restored the original private charge and retired the slot lease.
         // Prepare before returning to compute; decode must never capture a graph.
@@ -467,10 +468,12 @@ impl CudaExecutor {
             && let Some(pool) = self.slots.as_mut()
         {
             pool.release(lease.slot);
+            self.drafter.release_pages(lease.slot);
         }
         if let Some(slot) = state.home {
             if let Some(pool) = self.slots.as_mut() {
                 pool.release(slot);
+                self.drafter.release_pages(slot);
             }
             if let Some(home) = self.homes.get_mut(slot) {
                 *home = Some(super::Home {
@@ -506,7 +509,7 @@ impl CudaExecutor {
             && self
                 .slots
                 .as_ref()
-                .is_some_and(|pool| capacity <= pool.capacity())
+                .is_some_and(|pool| pool.admits(capacity))
             && self.worker.is_some()
             && (self.states.values().any(|state| state.home.is_some())
                 || self.homes.iter().flatten().any(|home| {
@@ -540,7 +543,7 @@ impl CudaExecutor {
             return Ok(false);
         };
         if readout != OutputReadout::Logits
-            || capacity > pool.capacity()
+            || !pool.admits(capacity)
             || self.states.len() >= self.maximum_states
         {
             return Ok(false);
@@ -558,14 +561,20 @@ impl CudaExecutor {
             return busy;
         }
         // A home leases pages as its prompt and decode reach them; one page to start.
-        match pool.assign(slot, 1, self.loaded.device()) {
+        let device = self.loaded.device();
+        let assigned = pool
+            .assign(slot, 1, device)
+            .and_then(|assigned| Ok(assigned && self.drafter.assign_pages(slot, 1, device)?));
+        match assigned {
             Ok(true) => {}
             Ok(false) => {
                 pool.release(slot);
+                self.drafter.release_pages(slot);
                 return busy;
             }
             Err(error) => {
                 pool.release(slot);
+                self.drafter.release_pages(slot);
                 return Err(error);
             }
         }
@@ -578,6 +587,7 @@ impl CudaExecutor {
             .and_then(|()| home.draft.as_mut().map_or(Ok(()), DeviceProgram::reset));
         if let Err(error) = reset {
             pool.release(slot);
+            self.drafter.release_pages(slot);
             self.homes[slot] = Some(home);
             return Err(error);
         }

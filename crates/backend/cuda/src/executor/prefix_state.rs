@@ -5,13 +5,14 @@ use crate::{
     device::CudaDevice,
     resident::{
         DeviceProgram, attention_states,
-        fp8_cache::{Fp8Caches, KvLayout, KvState},
+        narrow_kv::{KvLayout, KvState, NarrowCaches, NarrowState},
         shaped::{Shaped, StateTensor},
         slot_batch::SlotPool,
     },
 };
 use infer_core::{Error, Result, TensorId};
-use infer_cuda_kernels::runtime::{bf16, f8e4m3fn};
+use infer_cuda_kernels::contract::KvElement;
+use infer_cuda_kernels::runtime::{DType, Element, bf16};
 use infer_ir::DataflowGraph;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -24,7 +25,7 @@ type States = BTreeMap<TensorId, Vec<StateTensor>>;
 pub struct ProgramSnapshot {
     states: States,
     kv: BTreeSet<TensorId>,
-    fp8: Fp8Caches,
+    fp8: NarrowCaches,
     /// The paged KV stays in the slot pool's pages, published in its ledger under the
     /// snapshot's tokens; only a slot-resident sequence of that pool can restore it.
     pages: bool,
@@ -89,27 +90,21 @@ impl ProgramSnapshot {
             }
             let mut fp8 = BTreeMap::new();
             for (id, source) in live_fp8 {
-                if source.layout.rows < covered {
-                    return Err(Error::invariant("prefix FP8 KV shape"));
+                if source.layout().rows < covered {
+                    return Err(Error::invariant("prefix narrow KV shape"));
                 }
                 let layout = KvLayout {
                     rows: covered,
-                    ..source.layout
+                    ..source.layout()
                 };
-                let allocate = async || device.tile().zeroed::<f8e4m3fn>(layout.len()).await;
-                let keys = allocate().await?;
-                let values = allocate().await?;
+                let state = match source {
+                    NarrowState::Fp8(_) => NarrowState::Fp8(zeroed(device, layout).await?),
+                    NarrowState::F16(_) => NarrowState::F16(zeroed(device, layout).await?),
+                };
                 bytes = bytes
-                    .checked_add((keys.len() + values.len()) as u64)
+                    .checked_add(state.bytes())
                     .ok_or_else(|| Error::invalid("prefix byte overflow"))?;
-                fp8.insert(
-                    *id,
-                    KvState {
-                        keys,
-                        values,
-                        layout,
-                    },
-                );
+                fp8.insert(*id, state);
             }
             // Allocate and validate every destination before queuing copies. Keep the whole
             // destination set alive through the drain even when a later copy fails.
@@ -154,7 +149,7 @@ impl ProgramSnapshot {
     /// export; `graph` names which states are KV.
     pub(super) fn from_parts(
         states: States,
-        fp8: Fp8Caches,
+        fp8: NarrowCaches,
         graph: &DataflowGraph,
         position: usize,
     ) -> Result<Self> {
@@ -163,9 +158,9 @@ impl ProgramSnapshot {
             .values()
             .flatten()
             .try_fold(0_u64, |sum, tensor| sum.checked_add(tensor.bytes()));
-        let packed = fp8.values().try_fold(0_u64, |sum, state| {
-            sum.checked_add((state.keys.len() + state.values.len()) as u64)
-        });
+        let packed = fp8
+            .values()
+            .try_fold(0_u64, |sum, state| sum.checked_add(state.bytes()));
         let bytes = float
             .zip(packed)
             .and_then(|(float, packed)| float.checked_add(packed))
@@ -188,7 +183,7 @@ impl ProgramSnapshot {
     ) -> Result<Self> {
         Ok(Self {
             pages: true,
-            ..Self::from_parts(states, Fp8Caches::new(), graph, position)?
+            ..Self::from_parts(states, NarrowCaches::new(), graph, position)?
         })
     }
 
@@ -294,12 +289,25 @@ async fn copy_state(
     Ok(())
 }
 
-/// Copy the first `covered` positions of an FP8 cache; a failed enqueue fences first, since
+/// Zeroed caches of `layout`, allocated on the device stream.
+async fn zeroed<T: DType + Element<Marker: KvElement>>(
+    device: &CudaDevice,
+    layout: KvLayout,
+) -> Result<KvState<T>> {
+    let allocate = async || device.tile().zeroed::<T>(layout.len()).await;
+    Ok(KvState {
+        keys: allocate().await?,
+        values: allocate().await?,
+        layout,
+    })
+}
+
+/// Copy the first `covered` positions of a narrow cache; a failed enqueue fences first, since
 /// earlier copies of the batch may still be running.
 async fn copy_kv(
     device: &CudaDevice,
-    dst: &KvState<f8e4m3fn>,
-    src: &KvState<f8e4m3fn>,
+    dst: &NarrowState,
+    src: &NarrowState,
     covered: usize,
 ) -> Result<()> {
     if let Err(error) = dst.copy_prefix_from(device, src, covered) {

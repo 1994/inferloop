@@ -6,7 +6,10 @@ pub mod buffer;
 pub mod draft;
 pub mod geometry;
 pub mod grouped_int;
-pub use grouped_int::{GroupedIntPlan, GroupedIntWeight};
+pub use grouped_int::{
+    CodePacking, GROUPED_INT_GEMM_ROWS, GROUPED_INT_TILE_ROWS, GroupedIntLayout, GroupedIntPlan,
+    GroupedIntWeight, NIBBLE_PAIR_STRIDE,
+};
 pub mod kernels;
 pub mod plan;
 pub mod recording;
@@ -19,7 +22,7 @@ pub use attention::{
     PooledAppendBuffers, PooledDecodeBuffers, PooledPlan, PrefillAppendPlan, PrefillDecodePlan,
     STACKED_LANE_ROWS, STACKED_ROWS, SplitDecodePlan, VERIFY_LANES, VerifyDecodeBuffers,
 };
-pub use buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner, Width};
+pub use buffer::{Bf16, Buffer, F16, Fp4Pair, Fp8, Owner, Width};
 pub use draft::{
     DRAFT_KEY_TILE, DRAFT_ROW_TILE, Draft, DraftAddNorm, DraftAttention, DraftConv, DraftNorm,
     DraftProjection, DraftRingStore, DraftRope, DraftSplit, DraftTop, DraftWalk, DraftWeight,

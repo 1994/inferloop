@@ -3,7 +3,7 @@
 //! A family method takes one launch's buffers and a plan, so a kernel's rank, grid and generics
 //! stay beside its source. Launches that only make sense together, a split decode's partial and
 //! merge, are one method.
-use super::buffer::{Buffer, Fp8, Owner};
+use super::buffer::{Buffer, F16, Fp8, Owner};
 use super::recording::Recording;
 use infer_core::Result;
 
@@ -33,6 +33,11 @@ pub enum KvBuffers<'a> {
         keys: Buffer<'a, Fp8>,
         values: Buffer<'a, Fp8>,
     },
+    /// Half-precision cache, written and read through the cache's scales like FP8.
+    F16 {
+        keys: Buffer<'a, F16>,
+        values: Buffer<'a, F16>,
+    },
 }
 
 impl<'a> KvBuffers<'a> {
@@ -42,6 +47,7 @@ impl<'a> KvBuffers<'a> {
         match self {
             Self::F32 { keys, values } => [keys.len(), values.len()],
             Self::Fp8 { keys, values } => [keys.len(), values.len()],
+            Self::F16 { keys, values } => [keys.len(), values.len()],
         }
     }
 
@@ -51,6 +57,7 @@ impl<'a> KvBuffers<'a> {
         match self {
             Self::F32 { keys, values } => [keys.address(), values.address()],
             Self::Fp8 { keys, values } => [keys.address(), values.address()],
+            Self::F16 { keys, values } => [keys.address(), values.address()],
         }
     }
 
@@ -60,6 +67,7 @@ impl<'a> KvBuffers<'a> {
         match self {
             Self::F32 { keys, values } => [keys.owner(), values.owner()],
             Self::Fp8 { keys, values } => [keys.owner(), values.owner()],
+            Self::F16 { keys, values } => [keys.owner(), values.owner()],
         }
     }
 }
@@ -79,6 +87,12 @@ impl KvElement for f32 {
 impl KvElement for Fp8 {
     fn kv<'a>(keys: Buffer<'a, Self>, values: Buffer<'a, Self>) -> KvBuffers<'a> {
         KvBuffers::Fp8 { keys, values }
+    }
+}
+
+impl KvElement for F16 {
+    fn kv<'a>(keys: Buffer<'a, Self>, values: Buffer<'a, Self>) -> KvBuffers<'a> {
+        KvBuffers::F16 { keys, values }
     }
 }
 
