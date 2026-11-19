@@ -40,6 +40,12 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15]
         part: [rust-lint, test, rust-release]
+        # macOS arm64 runners are capacity-constrained: a queued job can be dropped unacquired.
+        # The macOS package jobs already build the release CLI there, and the Linux part builds
+        # this same no-default-features configuration.
+        exclude:
+          - os: macos-15
+            part: rust-release
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
