@@ -4,8 +4,8 @@
 //! [`GROUPED_INT_TILE_ROWS`], and each 256-value span of a tile stores its codes followed by one
 //! factor (and bias) per group; a [`CodePacking::NibbleHigh`] matrix stores the bits above the
 //! nibbles in a second plane after the whole matrix's nibbles. Formats differ only in
-//! [`CodePacking`] and their [`infer_ir::CodeOffset`], so the host packer and the kernels branch on those two properties,
-//! never on a format name.
+//! [`CodePacking`] and their [`infer_ir::CodeOffset`], so the host packer and the kernels branch
+//! on those two properties, never on a format name.
 use crate::contract::buffer::Buffer;
 use infer_core::{Error, Result};
 use infer_ir::{GROUPED_INT_SPAN, GroupedIntFormat};
