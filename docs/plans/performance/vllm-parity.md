@@ -47,7 +47,7 @@ GPU 算子合计与 TTFT 之间还有 ≈2.5 s 的主机/调度/回读间隙，�
 1. **本卡上"不降精度的张量核仿真"对 F32 CUDA core 没有量级优势**(3xTF32 峰值仅 ≈2× FP32，实际效率相抵）。attention 追平 vLLM 的 8–15 倍余量只存在于原生 BF16/FP8——那是合同与质量门双重禁止区（BF16 FA4 95/1024、 tiled 6-product 已否决）。**在现行数值合同下,32K C1 TTFT 的可达下限约 8–10 s（纯位精确优化），与 vLLM 4.65 s 仍差约 2×。** 完全追平需要 §8 的政策决策包，本方案先把合同内收益全部兑现。
 2. **H/B 数据中心卡上结论反转**(FP32 ≈67、BF16 ≈989 TFLOPS,15× 比例 > 9× 分解成本）:FP32 仿真张量核 attention 是 C1H 的设计预留，SM120 候选不为它让路，见 §7。
 
-C4(4×32K,makespan 129.46 s vs vLLM 旧诊断吞吐折算 ≈31 s）除同一算子瓶颈外还有结构性差距：超过 `CB_SLOT_TOKENS=8192` 的序列走**私有串行路径**(`execution.rs:426 run_serial`),4 条 32K 各自持有 target+draft 双程序（报价各 3,099,791,228 B)，不进 slot 池合批；vLLM 是连续合批。C1M 先量实际驻留再决定合批形态（§5.4)。
+C4(4×32K,makespan 129.46 s vs vLLM 旧诊断吞吐折算 ≈31 s）除同一算子瓶颈外还有结构性差距（#275 已消除，见下）：超过 `CB_SLOT_TOKENS=8192` 的序列走**私有串行路径**(`execution.rs:426 run_serial`),4 条 32K 各自持有 target+draft 双程序（报价各 3,099,791,228 B)，不进 slot 池合批；vLLM 是连续合批。C1M 先量实际驻留再决定合批形态（§5.4)。
 
 ## 4. 阶段总览与依赖
 
@@ -133,7 +133,7 @@ GDN(3.8%）与 embedding(2.3%）不插队：GDN 仅在 linear 之后仍高于 em
 2. **拿到四张实际账**:target/draft 实际池增量（对报价 3,099,791,228 B)、base activation、图/capture 的驱动级成本（当前完全未计量）、dataflow/lifetime(`target-dataflow.json`)。
 3. **再决定实现**（不许先承诺 4 条或 16 条 32K 驻留）:
    - arena/workspace：按实测 life-time 收敛 `ActivationArena` 计划尺寸与 256 MiB `graph_headroom` 报价的虚耗；
-   - C4 合批：当前 >8,192 token 序列走私有串行路径。两条路线按实测选择：(a) 提高 `CB_SLOT_TOKENS`/槽宽使 32K 进 slot 池（需报价兑现）；或 (b) 页级 KV——内核已是 32-token block table 间接寻址（`constants.rs:49` 注释即为此预留），把 Metal 侧已有的 `engine/state/src/kv.rs` 引用计数/COW 机制接到 CUDA，替换身份 block table，使多条 32K 共享批量 decode 图；prefix 快照从整态改为块粒度。
+   - C4 合批（#275 已落地路线 (b) 的容量部分：draft KV 分页、取消整上下文保底，槽容量等于模型上下文，32K 序列入池）：原先 >8,192 token 序列走私有串行路径。两条路线按实测选择：(a) 提高 `CB_SLOT_TOKENS`/槽宽使 32K 进 slot 池（需报价兑现）；或 (b) 页级 KV——内核已是 32-token block table 间接寻址（`constants.rs:49` 注释即为此预留），把 Metal 侧已有的 `engine/state/src/kv.rs` 引用计数/COW 机制接到 CUDA，替换身份 block table，使多条 32K 共享批量 decode 图；prefix 快照从整态改为块粒度。
    - 验收：报价兑现证明、状态独立、取消/回滚/prefix 正确，报告实际驻留条数与完整 C4 makespan/整组吞吐（五组配对）。
 4. 注意既有成果不重复：闲置不兼容 slot 池回收（≈3.22 GB）已生效；FA4 的 +131 MiB 报价来源已解释，两者都不再立项。
 

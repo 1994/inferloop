@@ -2,7 +2,6 @@ use super::drafter::{Drafter, Verified};
 use super::prefix_state::{DraftSnapshot, ProgramSnapshot};
 use super::profiling::ExecutionPhase;
 use super::{CachedMedia, CudaExecutor, ModelOutput, Sequence, SlotLease, Speculation, prefix};
-use crate::constants::CB_SLOT_TOKENS;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::MAX_POOL_SLOTS;
 use crate::constants::MIB;
@@ -242,11 +241,9 @@ impl CudaExecutor {
         }
         state.slot.as_ref().map_or_else(
             || {
-                state.capacity
-                    <= self
-                        .slots
-                        .as_ref()
-                        .map_or(CB_SLOT_TOKENS, SlotPool::capacity)
+                self.slots
+                    .as_ref()
+                    .is_none_or(|pool| pool.admits(state.capacity))
             },
             |lease| lease.batched && lease.position == state.history.len(),
         )
@@ -268,6 +265,7 @@ impl CudaExecutor {
                 .values()
                 .filter(|state| !state.poisoned)
                 .map(|state| (state.capacity, state.readout)),
+            self.slot_capacity(),
         ) else {
             return;
         };
@@ -308,9 +306,8 @@ impl CudaExecutor {
             );
             return;
         };
-        let capacity = pool.capacity();
         for state in self.states.values_mut() {
-            if state.capacity <= capacity
+            if pool.admits(state.capacity)
                 && state.speculation.is_some()
                 && state.readout == OutputReadout::Logits
             {
@@ -333,8 +330,13 @@ impl CudaExecutor {
     /// verification graph the pool would discard on its first step.
     /// Failure leaves the lazy first-step path in charge.
     pub(super) fn warm_slot_pool(&mut self) {
-        let capacity = CB_SLOT_TOKENS.min(self.loaded.model().max_sequence);
-        self.warm_slot_pool_at(capacity);
+        self.warm_slot_pool_at(self.slot_capacity());
+    }
+
+    /// Positions one slot can address: the model context. Capacity costs only block-table
+    /// entries; KV pages are leased by actual length, so no request is too long to pool.
+    pub(super) const fn slot_capacity(&self) -> usize {
+        self.loaded.model().max_sequence
     }
 
     pub(super) fn warm_slot_pool_at(&mut self, capacity: usize) {
@@ -513,7 +515,7 @@ impl CudaExecutor {
         let width = pool.width();
         super::profiling::memory(attempt, "target_pool", width, self.loaded.device());
         let head = if self.drafter.wants_pool() {
-            self.prepare_draft_pool(width, capacity)
+            self.prepare_draft_pool(width, capacity, Some(kv_tokens))
         } else {
             None
         };
@@ -630,8 +632,12 @@ impl CudaExecutor {
         let Some(pool) = self.slots.as_ref() else {
             return;
         };
-        let kv = pool.kv_views();
-        let worker = kv.and_then(|kv| self.loaded.prompt_worker(pool.capacity(), kv, prompt_width));
+        let draft_kv = self.drafter.pool().map(SlotPool::kv_views).transpose();
+        let worker = pool.kv_views().and_then(|kv| {
+            let draft_kv = draft_kv?.flatten();
+            self.loaded
+                .prompt_worker(pool.capacity(), (kv, draft_kv), prompt_width)
+        });
         match worker {
             Ok((program, draft)) => {
                 self.worker = Some(super::Worker {
@@ -886,9 +892,14 @@ impl CudaExecutor {
         Err(last)
     }
 
-    fn prepare_draft_pool(&mut self, width: usize, capacity: usize) -> Option<SlotPool> {
+    fn prepare_draft_pool(
+        &mut self,
+        width: usize,
+        capacity: usize,
+        kv_tokens: Option<usize>,
+    ) -> Option<SlotPool> {
         loop {
-            match self.loaded.draft_slot_pool(width, capacity) {
+            match self.loaded.draft_slot_pool(width, capacity, kv_tokens) {
                 Ok(pool) => return pool,
                 Err(error) => {
                     super::profiling::pool_failure("draft", width, capacity, &error);
@@ -977,40 +988,23 @@ impl CudaExecutor {
         let device = self.loaded.device();
         for &(index, slot) in participants.iter().chain(&homed) {
             let state = &self.states[&tasks[index].state];
-            if !pool.grow(slot, reach(&tasks[index], lanes, state.capacity), device)? {
+            let tokens = reach(&tasks[index], lanes, state.capacity);
+            if !pool.grow(slot, tokens, device)?
+                || !self.drafter.grow_pages(slot, tokens, device)?
+            {
                 return Err(pages_exhausted());
             }
         }
-        let mut newly: Vec<(usize, usize)> = Vec::new();
-        for &index in &unbound {
-            if participants.len() + homed.len() + newly.len() >= pool.width() {
-                break;
-            }
-            let Some(slot) = pool.take_free() else {
-                break;
-            };
-            let tokens = reach(
-                &tasks[index],
-                lanes,
-                self.states[&tasks[index].state].capacity,
-            );
-            match pool.assign(slot, tokens, device) {
-                Ok(true) => {}
-                Ok(false) => {
-                    pool.release(slot);
-                    break;
-                }
-                Err(error) => {
-                    pool.release(slot);
-                    return Err(error);
-                }
-            }
-            newly.push((index, slot));
-        }
+        let mut newly = lease_slots(
+            (pool, &mut self.drafter),
+            (&self.states, tasks, &unbound),
+            (participants.len() + homed.len(), lanes, device),
+        )?;
         let minimum = if pool.verify().is_some() { 1 } else { 2 };
         if participants.is_empty() && homed.is_empty() && newly.len() < minimum {
             for (_, slot) in newly {
                 pool.release(slot);
+                self.drafter.release_pages(slot);
             }
             return Ok(Vec::new());
         }
@@ -1045,6 +1039,7 @@ impl CudaExecutor {
                 }
                 state.slot = None;
                 pool.release(slot);
+                self.drafter.release_pages(slot);
             }
             return Err(error);
         }
@@ -1070,10 +1065,13 @@ impl CudaExecutor {
                 "slot-leased CUDA sequence cannot run serially",
             ));
         }
-        if let (Some(slot), Some(pool)) = (state.home, self.slots.as_mut())
-            && !pool.grow(slot, reach(task, 1, state.capacity), self.loaded.device())?
-        {
-            return Err(pages_exhausted());
+        if let (Some(slot), Some(pool)) = (state.home, self.slots.as_mut()) {
+            let (tokens, device) = (reach(task, 1, state.capacity), self.loaded.device());
+            if !pool.grow(slot, tokens, device)?
+                || !self.drafter.grow_pages(slot, tokens, device)?
+            {
+                return Err(pages_exhausted());
+            }
         }
         // A slot-resident sequence's programs capture no prompt graph: every prompt chunk runs
         // on the worker.
@@ -1115,6 +1113,42 @@ fn reach(task: &ExecutionTask, lanes: usize, capacity: usize) -> usize {
         _ => task.tokens.len(),
     }
     .min(capacity)
+}
+
+/// Lease free slots, with their target and draft pages, to the `unbound` tasks while the pool
+/// has room beside its `bound` sequences, stopping at the first whose pages are not free.
+fn lease_slots(
+    (pool, drafter): (&mut SlotPool, &mut Drafter),
+    (states, tasks, unbound): (&BTreeMap<StateId, Sequence>, &[ExecutionTask], &[usize]),
+    (bound, lanes, device): (usize, usize, &CudaDevice),
+) -> Result<Vec<(usize, usize)>> {
+    let mut newly = Vec::new();
+    for &index in unbound {
+        if bound + newly.len() >= pool.width() {
+            break;
+        }
+        let Some(slot) = pool.take_free() else {
+            break;
+        };
+        let tokens = reach(&tasks[index], lanes, states[&tasks[index].state].capacity);
+        let assigned = pool
+            .assign(slot, tokens, device)
+            .and_then(|assigned| Ok(assigned && drafter.assign_pages(slot, tokens, device)?));
+        match assigned {
+            Ok(true) => newly.push((index, slot)),
+            Ok(false) => {
+                pool.release(slot);
+                drafter.release_pages(slot);
+                break;
+            }
+            Err(error) => {
+                pool.release(slot);
+                drafter.release_pages(slot);
+                return Err(error);
+            }
+        }
+    }
+    Ok(newly)
 }
 
 /// The engine schedules a step only when its pages are free, so a slot that cannot grow means
@@ -2259,16 +2293,18 @@ async fn propose(
     Ok(proposals)
 }
 
-/// Plan only for requests that fit the pool and request its logits readout.
-fn candidate_pool_capacity(states: impl Iterator<Item = (usize, OutputReadout)>) -> Option<usize> {
+/// Plan only for requests that fit a slot of at most `limit` positions and request its logits
+/// readout. The bucket rounds up to a power of two but never past `limit`.
+fn candidate_pool_capacity(
+    states: impl Iterator<Item = (usize, OutputReadout)>,
+    limit: usize,
+) -> Option<usize> {
     let (count, capacity) = states
-        .filter(|&(capacity, readout)| {
-            readout == OutputReadout::Logits && capacity <= CB_SLOT_TOKENS
-        })
+        .filter(|&(capacity, readout)| readout == OutputReadout::Logits && capacity <= limit)
         .fold((0, 1), |(count, maximum), (capacity, _)| {
             (count + 1, maximum.max(capacity))
         });
-    (count >= 2).then(|| capacity.next_power_of_two())
+    (count >= 2).then(|| capacity.next_power_of_two().min(limit))
 }
 
 // Private programs keep their reservation and shared prompt scratch while a lazy

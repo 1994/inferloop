@@ -1,9 +1,11 @@
 use super::*;
 use crate::AttentionProfile;
-use crate::constants::KV_BLOCK_TOKENS;
+use crate::constants::{KV_BLOCK_TOKENS, MTP_KV_OFFSET};
 use crate::device::{CudaDevice, asynchronous::block_on};
 use crate::executor::SlotPool;
 use crate::loading::{LoadOptions, LoadedModel};
+use crate::resident::narrow_kv::NarrowState;
+use crate::resident::shaped::StateTensor;
 use infer_core::{ModelId, RequestId, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask, TokenBuffer};
 use std::env::var;
@@ -65,12 +67,16 @@ fn committed_state(backend: &CudaExecutor, state: StateId) -> Result<Vec<Vec<u32
         .values()
         .flatten()
         .map(|part| {
-            backend
-                .loaded
-                .device()
-                .runtime()
-                .read(part.f32()?.memory())
-                .map(|values| values.into_iter().map(f32::to_bits).collect())
+            let runtime = backend.loaded.device().runtime();
+            // Gated-delta states default to BF16; compare every state by its stored bits.
+            match part {
+                StateTensor::F32(tensor) => runtime
+                    .read(tensor.memory())
+                    .map(|values| values.into_iter().map(f32::to_bits).collect()),
+                StateTensor::Bf16(tensor) => runtime
+                    .read(tensor.memory())
+                    .map(|values| values.into_iter().map(|v| u32::from(v.to_bits())).collect()),
+            }
         })
         .collect()
 }
@@ -141,12 +147,22 @@ fn bootstrap_short_pool(backend: &mut CudaExecutor) -> Result<()> {
     Ok(())
 }
 
+/// A request longer than every page of the captured pool, which therefore never joins it.
+fn beyond_pages(backend: &CudaExecutor) -> usize {
+    backend
+        .slots
+        .as_ref()
+        .map_or(0, |pool| pool.kv_pages().0 * KV_BLOCK_TOKENS)
+        + 1
+}
+
 fn restore_after_private(backend: &mut CudaExecutor) -> Result<usize> {
     let solo = StateId::ONE;
     let waiting = StateId::new(2)?;
-    backend.prepare_state_reservation(CB_SLOT_TOKENS + 1, OutputReadout::Logits)?;
+    let long = beyond_pages(backend);
+    backend.prepare_state_reservation(long, OutputReadout::Logits)?;
     assert!(backend.slots.is_none());
-    backend.reserve_state_for(waiting, CB_SLOT_TOKENS + 1, OutputReadout::Logits)?;
+    backend.reserve_state_for(waiting, long, OutputReadout::Logits)?;
     assert!(backend.states[&waiting].home.is_none());
     backend.release_state(waiting)?;
     backend.prepare_state_reservation(384, OutputReadout::Logits)?;
@@ -167,6 +183,11 @@ fn restore_after_private(backend: &mut CudaExecutor) -> Result<usize> {
     backend.release_state(waiting)?;
     let (total, free) = backend.slots.as_ref().unwrap().kv_pages();
     assert_eq!(total, free);
+    // The draft's pages follow the target slot's and come back with them.
+    if let Some(draft) = backend.drafter.pool() {
+        let (total, free) = draft.kv_pages();
+        assert_eq!(total, free, "released draft slot pages");
+    }
     Ok(restored)
 }
 
@@ -348,9 +369,46 @@ fn slot_prefix_snapshot_restores_into_another_slot() -> Result<()> {
         .map(|(left, right)| (left - right).abs())
         .fold(0.0_f32, f32::max);
     assert!(worst == 0.0, "restored logits differ by {worst}");
+    // The draft's paged KV restores by copy into the other slot's own pages.
+    let rows = boundary - MTP_KV_OFFSET;
+    let slots = [first, second].map(|state| backend.states[&state].home);
+    if let [Some(computed), Some(restored)] = slots {
+        assert_eq!(
+            draft_rows(&backend, computed, rows)?,
+            draft_rows(&backend, restored, rows)?,
+            "restored draft KV rows"
+        );
+    }
     backend.release_state(first)?;
     backend.release_state(second)?;
     Ok(())
+}
+
+/// The bits of a draft slot's first `rows` KV positions, gathered through its pages.
+fn draft_rows(backend: &CudaExecutor, slot: usize, rows: usize) -> Result<Vec<Vec<u8>>> {
+    let Some(pool) = backend.drafter.pool() else {
+        return Ok(Vec::new());
+    };
+    let device = backend.loaded.device();
+    let (_, caches) = pool.export(slot, rows, device)?;
+    device.drain()?;
+    let mut bits = Vec::new();
+    for cache in caches.values() {
+        let NarrowState::Fp8(kv) = cache else {
+            return Err(Error::invariant("draft KV element"));
+        };
+        for half in [&kv.keys, &kv.values] {
+            bits.push(
+                device
+                    .runtime()
+                    .read(half)?
+                    .iter()
+                    .map(|code| code.0)
+                    .collect(),
+            );
+        }
+    }
+    Ok(bits)
 }
 
 /// A single cold request must retain a usable draft timeline after its first decode.

@@ -1,6 +1,6 @@
 //! Select physical serving resources from real request lengths at idle boundaries.
 use super::CudaExecutor;
-use crate::constants::{CB_SLOT_TOKENS, KV_BLOCK_TOKENS, MAX_POOL_SLOTS};
+use crate::constants::{KV_BLOCK_TOKENS, MAX_POOL_SLOTS};
 use crate::executor::execution::pooled_envelope;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::OutputReadout;
@@ -46,7 +46,7 @@ impl CudaExecutor {
     /// Capture the zero-demand funded pool unless one exists (`CudaBackend::with_pool_captured`).
     pub(super) fn capture_funded_pool(&mut self) {
         if self.slots.is_none() && self.pool_quote.is_some() {
-            self.warm_slot_pool_for(CB_SLOT_TOKENS.min(self.loaded.model().max_sequence), 0);
+            self.warm_slot_pool_for(self.slot_capacity(), 0);
         }
     }
 
@@ -59,7 +59,7 @@ impl CudaExecutor {
             self.warm_slot_pool();
             return Ok(());
         }
-        let capacity = CB_SLOT_TOKENS.min(self.loaded.model().max_sequence);
+        let capacity = self.slot_capacity();
         let (envelope, _) = self.pool_funding()?;
         let maximum = self.maximum_states.min(MAX_POOL_SLOTS);
         if let Some(plan) = self.pooled_plan_for(capacity, maximum, envelope, 0)? {
@@ -83,7 +83,7 @@ impl CudaExecutor {
         tokens: usize,
         readout: OutputReadout,
     ) -> Result<()> {
-        let capacity = CB_SLOT_TOKENS.min(self.loaded.model().max_sequence);
+        let capacity = self.slot_capacity();
         if readout != OutputReadout::Logits
             || tokens > capacity
             || self
@@ -150,11 +150,7 @@ impl CudaExecutor {
     fn pool_demand(&self, state: StateId, tokens: usize) -> PoolDemand {
         let live = match (self.states.len(), self.states.values().next()) {
             (0, _) => LiveStates::Empty,
-            (1, Some(solo))
-                if solo.readout == OutputReadout::Logits
-                    && solo.capacity <= CB_SLOT_TOKENS
-                    && solo.media.is_none() =>
-            {
+            (1, Some(solo)) if solo.readout == OutputReadout::Logits && solo.media.is_none() => {
                 LiveStates::Solo {
                     capacity: solo.capacity,
                 }

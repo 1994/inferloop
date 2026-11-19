@@ -81,8 +81,14 @@ impl CudaExecutor {
         let max_sequence = self.loaded.model().max_sequence;
         let cached_blocks = self.prefix.cached_tokens().div_ceil(block);
         if let Some(ledger) = pool.and_then(SlotPool::kv_ledger) {
+            // A step grows the draft's pages as many as the target's, but the draft copies the
+            // prefixes the target shares, so it can run short first; offer what both hold.
+            let draft_free = self.drafter.pool().map(|draft| draft.kv_pages().1);
             return KvCacheInspection {
                 total_blocks: logical_kv_blocks(ledger.total_blocks, pending, max_sequence),
+                available_blocks: draft_free.map_or(ledger.available_blocks, |free| {
+                    ledger.available_blocks.min(free)
+                }),
                 active_blocks,
                 cached_blocks,
                 cache_evictions: self.prefix.evictions,
@@ -175,7 +181,10 @@ impl CudaExecutor {
                 return Ok(0);
             };
             // Restored rows land in the slot's pages; without them the prompt prefills instead.
-            if !target.grow(slot, maximum, self.loaded.device())? {
+            let device = self.loaded.device();
+            if !target.grow(slot, maximum, device)?
+                || !self.drafter.grow_pages(slot, maximum, device)?
+            {
                 return Ok(0);
             }
             Some((target, self.drafter.pool_mut()))

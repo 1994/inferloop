@@ -709,10 +709,15 @@ impl LoadedModel {
         .map(Some)
     }
 
+    /// The draft head's slot pool beside a target pool of `width` slots of `capacity` tokens.
+    /// `kv_tokens` pages its KV like the target's, from a ledger of its own.
+    /// # Errors
+    /// Rejects invalid geometry, exceeded device budgets or CUDA capture failures.
     pub(crate) fn draft_slot_pool(
         &self,
         width: usize,
         capacity: usize,
+        kv_tokens: Option<usize>,
     ) -> Result<Option<SlotPool>> {
         self.validate_capacity(capacity)?;
         let Some(draft) = &self.draft else {
@@ -739,7 +744,7 @@ impl LoadedModel {
             capacity,
             self.model.hidden_size,
             (self.model.vocab_size, 0),
-            None,
+            kv_tokens,
         )
         .map(Some)
     }
@@ -750,13 +755,13 @@ impl LoadedModel {
     /// # Errors
     /// Rejects invalid geometry, exceeded device budgets or CUDA capture failures.
     /// Wide-prompt target and draft programs at `capacity` that slot-resident sequences prompt
-    /// through.
+    /// through, over the target and draft pools' shared paged caches when they page.
     /// # Errors
     /// Rejects invalid capacity or CUDA graph capture failures.
     pub(crate) fn prompt_worker(
         &self,
         capacity: usize,
-        kv: Option<NarrowCaches>,
+        (kv, draft_kv): (Option<NarrowCaches>, Option<NarrowCaches>),
         prompt_width: usize,
     ) -> Result<(DeviceProgram, Option<DeviceProgram>)> {
         self.validate_capacity(capacity)?;
@@ -778,7 +783,7 @@ impl LoadedModel {
                     &draft.graph,
                     &draft.weights,
                     geometry,
-                    None,
+                    draft_kv,
                     prompt_width,
                 )
             })

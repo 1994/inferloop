@@ -170,7 +170,7 @@ fn checkpoint_bits(pooled: bool, width: usize) -> Result<()> {
     let build = || {
         if pooled {
             loaded
-                .prompt_worker(4096, Some(pooled_caches(&loaded)?), width)
+                .prompt_worker(4096, (Some(pooled_caches(&loaded)?), None), width)
                 .map(|(program, _)| program)
         } else {
             loaded.sequence(4096)

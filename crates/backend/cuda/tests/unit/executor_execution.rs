@@ -1,15 +1,17 @@
 use super::{SlotPool, candidate_pool_capacity, pool_retry_budget, pooled_envelope};
-use crate::constants::CB_SLOT_TOKENS;
 use crate::executor::CudaExecutor;
 use infer_core::{RequestId, StateId};
 use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{ExecutionInput, ExecutionTask, OutputReadout, TaskOutput, TokenBuffer};
 use std::{env::var, error::Error};
 
+/// The model context the candidate tests plan against.
+const LIMIT: usize = 8192;
+
 #[test]
 fn incompatible_requests_cannot_create_or_enlarge_a_decode_pool() {
     let full = (128, OutputReadout::Full);
-    let long = (CB_SLOT_TOKENS + 1, OutputReadout::Logits);
+    let long = (LIMIT + 1, OutputReadout::Logits);
     let compact = (128, OutputReadout::Logits);
     for states in [
         [full, full],
@@ -18,7 +20,7 @@ fn incompatible_requests_cannot_create_or_enlarge_a_decode_pool() {
         [compact, full],
         [long, compact],
     ] {
-        assert_eq!(candidate_pool_capacity(states.into_iter()), None);
+        assert_eq!(candidate_pool_capacity(states.into_iter(), LIMIT), None);
     }
 }
 
@@ -26,13 +28,26 @@ fn incompatible_requests_cannot_create_or_enlarge_a_decode_pool() {
 fn compatible_pool_geometry_is_independent_of_unrelated_request_order() {
     let short = (128, OutputReadout::Logits);
     let tail = (129, OutputReadout::Logits);
-    let full = (CB_SLOT_TOKENS, OutputReadout::Full);
-    let long = (CB_SLOT_TOKENS + 1, OutputReadout::Logits);
+    let full = (LIMIT, OutputReadout::Full);
+    let long = (LIMIT + 1, OutputReadout::Logits);
     for states in [[short, full, tail, long], [long, tail, full, short]] {
-        assert_eq!(candidate_pool_capacity(states.into_iter()), Some(256));
+        assert_eq!(
+            candidate_pool_capacity(states.into_iter(), LIMIT),
+            Some(256)
+        );
     }
-    assert_eq!(candidate_pool_capacity([short].into_iter()), None);
-    assert_eq!(candidate_pool_capacity([].into_iter()), None);
+    assert_eq!(candidate_pool_capacity([short].into_iter(), LIMIT), None);
+    assert_eq!(candidate_pool_capacity([].into_iter(), LIMIT), None);
+}
+
+#[test]
+fn the_pool_bucket_never_exceeds_the_model_context() {
+    let context = 40_960;
+    let long = (context - 1, OutputReadout::Logits);
+    assert_eq!(
+        candidate_pool_capacity([long, long].into_iter(), context),
+        Some(context)
+    );
 }
 
 #[test]
@@ -76,11 +91,12 @@ fn lazy_pool_retries_after_a_live_private_reservation_is_released() -> Result<()
     )?;
     assert!(loaded.model().max_sequence >= 32768);
     let budget = loaded.device().allocatable_memory_bytes()?;
-    // Start without a pool, then admit one long and two short private programs.
+    // Start without a pool, then admit one long and two short private programs. The long one
+    // reads its full history, so no pool serves it and it is not a solo the others wait for.
     let mut backend = CudaExecutor::new(loaded, budget, 1)?;
     backend.maximum_states = 16;
     let long = StateId::new(1)?;
-    backend.reserve(long, 32768, OutputReadout::Logits, true)?;
+    backend.reserve(long, 32768, OutputReadout::Full, true)?;
     backend.reserve(StateId::new(2)?, 512, OutputReadout::Logits, true)?;
     backend.reserve(StateId::new(3)?, 512, OutputReadout::Logits, true)?;
     let mut lower = 0;

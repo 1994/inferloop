@@ -137,12 +137,11 @@ impl Support {
             lanes,
             usize::try_from(window).unwrap_or(usize::MAX),
         ) && lanes <= self.lanes
-            && capacity == self.capacity
+            // The staging holds every position a sequence reaches: its capacity, or a paged
+            // pool's physical rows when they are fewer. The bridge clamps to those rows.
+            && b.cache.rows().is_some_and(|rows| capacity.min(rows) == self.capacity)
             && b.query.len() == lanes * HEADS * DIM
             && (b.cache.groups, b.cache.dim) == (KV_HEADS, DIM)
-            // A paged pool's cache holds more physical rows than one sequence's capacity; the
-            // table maps the sequence's positions into them.
-            && b.cache.rows().is_some_and(|rows| rows >= capacity)
             && b.output.len() == lanes * HEADS * DIM
             && b.metadata.len() >= catalog::METADATA_FIELDS
             && b.table.len() >= capacity / KV_BLOCK_TOKENS
@@ -179,7 +178,8 @@ impl Support {
         window: i32,
         variant: Variant,
     ) -> Result<()> {
-        let (_, _, _, lanes, capacity) = shape;
+        let (_, _, _, lanes, _) = shape;
+        let capacity = self.capacity;
         if !self.accepts(&b, shape, window) {
             return Err(rejected());
         }

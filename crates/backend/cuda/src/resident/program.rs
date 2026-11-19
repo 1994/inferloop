@@ -42,6 +42,17 @@ type SlotState = (
     super::narrow_kv::NarrowCaches,
     Allocation<i32>,
 );
+
+/// Positions a program over `kv` can reach: its capacity, or fewer when the caches are a paged
+/// pool's shared pages, which no sequence outgrows ([`super::slot_batch::SlotPool::admits`]).
+/// Staging sized past them would be paid for and never written.
+pub(super) fn reach(capacity: usize, kv: &super::narrow_kv::NarrowCaches) -> usize {
+    kv.values()
+        .map(|cache| cache.layout().rows)
+        .min()
+        .map_or(capacity, |rows| rows.min(capacity))
+}
+
 type InitialState = (
     super::batch::States,
     super::narrow_kv::NarrowCaches,
@@ -760,7 +771,7 @@ impl DeviceProgram {
         graph: &DataflowGraph,
         weights: &ProgramWeights,
         geometry: ProgramGeometry,
-        capacity: usize,
+        (capacity, reach): (usize, usize),
         forward_captured: bool,
     ) -> Result<(
         super::nvfp4_gemm::Workspace,
@@ -776,7 +787,7 @@ impl DeviceProgram {
                 device,
                 graph,
                 weights,
-                capacity,
+                reach,
                 geometry.prompts.into_iter().max().unwrap_or(0),
             )?;
             prepare(device, graph, weights, &geometry.prompt_widths());
@@ -829,8 +840,13 @@ impl DeviceProgram {
         let capacity = program_capacity(graph, weights, capacity, hidden, vocabulary)?;
         let mut arena = ActivationArena::new(device, graph, arena_budget(device)?)?;
         let activation_bytes = arena.bytes();
+        let lengths = (
+            capacity,
+            slot.as_ref()
+                .map_or(capacity, |(_, kv, _)| reach(capacity, kv)),
+        );
         let (mut nvfp4, mut delegated, mut attention) =
-            Self::program_workspaces(device, graph, weights, geometry, capacity, forward_captured)?;
+            Self::program_workspaces(device, graph, weights, geometry, lengths, forward_captured)?;
         let (mut states, mut fp8_states, slot_table) =
             initial_state(device, graph, weights, capacity, slot)?;
         let (metadata, external, identity) = Self::constant_inputs(device, hidden, capacity)?;
@@ -839,7 +855,6 @@ impl DeviceProgram {
         let mut fusion = FusionWorkspace::allocate(device, hidden, weights.fusion.is_some())?;
         let (lane_external_memory, mut lane_external, mut lane_fusion) =
             allocate_lane_fusion(device, hidden, weights, geometry)?;
-        let prime_previous = Self::zero_row(device, hidden)?;
         let mut builder = super::batch::BatchBuilder {
             device,
             graph,
@@ -899,7 +914,7 @@ impl DeviceProgram {
             external,
             lane_external,
             lane_external_memory,
-            prime_previous,
+            prime_previous: Self::zero_row(device, hidden)?,
             states,
             kv_states: attention_states(graph),
             fp8_states,
