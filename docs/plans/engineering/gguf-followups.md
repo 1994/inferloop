@@ -20,22 +20,13 @@
 
 ## 2. deepstack 文本注入
 
-已完成：
+**已完成（#282）**：deepstack 特征经 `TensorOp::MediaFeature` 加到前 3 个 decoder 层的输出上，safetensors 与 GGUF 共用同一条路径。与 HF Qwen3-VL-2B（含 deepstack）对照：特征相对误差 3.9e-4，logits 最大绝对误差 0.10，greedy token 一致。
 
-- mmproj 的 3 组 deepstack merger 权重可加载；
-- 4×4 图片产出 3×8192 特征，两图差异 3.72；
-- 文本图注入点已定位：前 3 个 decoder 层输出 Add（tensor 50/80/98）。
-
-未完成：
-
-- `ProgramWeights` 的 deepstack 特征/位置缓冲；
-- capture 在前 3 层输出后插入 `add_rows`；
-- prefill 写入特征并在 replay 前生效；
-- 与 HF 多模态输出做数值对齐。
+未完成：GGUF 包没有 preprocessor 配置，多模态端到端还跑不起来（#283），GGUF 的 deepstack 因此只验证了导入和图结构。
 
 ## 3. 质量与性能收口
 
-- 多模态输出尚未与 HF 做数值/质量配对；
+- safetensors 包的多模态输出已与 HF 做数值配对（#282）；GGUF 多模态先要补 preprocessor（#283），之后再做配对；
 - 当前 tokenizer、preprocessor、mmproj 映射有真实制品验证，但没有全量图片集；
 - 需要把 native 文本、视觉、多模态的 TTFT/TPOT 与 llama.cpp/参考包分项记录；
 - Q4_K GEMV 仍低于带宽 roofline，prompt GEMV 仍是逐行路径。
