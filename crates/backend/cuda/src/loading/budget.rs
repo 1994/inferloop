@@ -861,6 +861,7 @@ fn program_price(
     }
     bytes = add(bytes, projection_workspace(graph, weights, geometry)?)?;
     bytes = add(bytes, external_bytes(weights, hidden, geometry, profile)?)?;
+    bytes = add(bytes, media_feature_bytes(graph, hidden, geometry)?)?;
     // Pinned readback is allocated on demand and capped per batch (device/readback.rs), so
     // charge what a step actually stages: one decode lane, the verification batch when it is
     // private, and the last prompt lane (prompt modes read only the last logits row).
@@ -954,6 +955,19 @@ fn prompt_partials_bytes(
         }
     }
     Ok(bytes)
+}
+
+/// The program's media feature store: one row per feature level and lane of its widest prompt.
+fn media_feature_bytes(
+    graph: &DataflowGraph,
+    hidden: usize,
+    geometry: ProgramGeometry,
+) -> Result<u64> {
+    let lanes = geometry.prompts.into_iter().max().unwrap_or(0) as u64;
+    mul(
+        mul(mul(graph.media_features() as u64, lanes)?, hidden as u64)?,
+        F32,
+    )
 }
 
 fn external_bytes(

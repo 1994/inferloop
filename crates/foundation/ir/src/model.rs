@@ -102,6 +102,10 @@ pub struct ModelIr {
     pub modalities: Vec<Modality>,
     pub state: Vec<StateRequirement>,
     pub tied_embeddings: bool,
+    /// Leading decoder layers whose output adds one per-token media feature, in layer order
+    /// (vision deepstack); zero for families without them.
+    #[serde(default)]
+    pub media_features: usize,
 }
 impl ModelIr {
     /// # Errors
@@ -184,6 +188,9 @@ impl ModelIr {
                 return Err(Error::invalid("invalid MoE"));
             }
             _ => {}
+        }
+        if self.media_features > self.mixers.len() {
+            return Err(Error::invalid("media features exceed the decoder layers"));
         }
         for state in &self.state {
             if state.layer >= self.mixers.len() || state.elements == 0 {

@@ -41,6 +41,8 @@ const BLOCK_MLP_INTERMEDIATE_ACTIVATIONS: usize = 2;
 const DEVICE_TOWER_HIDDEN_ACTIVATIONS: usize = 6;
 /// First MLP projection and its activated output remain live for the tower graph.
 const DEVICE_TOWER_INTERMEDIATE_ACTIVATIONS: usize = 2;
+/// Staged input, normalized rows, first projection and its activation of the in-graph mergers.
+const DEVICE_MERGER_WIDE_BUFFERS: usize = 4;
 
 fn bytes(elements: usize) -> Result<u64> {
     u64::try_from(elements)
@@ -137,13 +139,14 @@ fn one_item_peak(encoder: &ModalityEncoder, grid: (usize, usize, usize)) -> Resu
         .max()
         .ok_or_else(|| Error::invalid("vision block footprint empty"))?;
     if device_tower::supports(encoder)? {
-        block = block.max(resident_tower_bytes(
-            attention_rows,
-            hidden,
-            projections,
-            mlp,
-            head_width,
-        )?);
+        let tower = resident_tower_bytes(attention_rows, hidden, projections, mlp, head_width)?;
+        block = block.max(if device_tower::supports_mergers(encoder)? {
+            tower
+                .checked_add(device_merger_bytes(encoder, patches, attention_rows)?)
+                .ok_or_else(|| Error::invalid("vision encode footprint overflow"))?
+        } else {
+            tower
+        });
     }
 
     let merger_peak = merger_peak(encoder, patches, hidden)?;
@@ -166,6 +169,33 @@ fn resident_tower_bytes(
     bytes(
         rows.checked_mul(per_row)
             .ok_or_else(|| Error::invalid("vision tower footprint overflow"))?,
+    )
+}
+
+/// What the one-graph encode keeps beside the tower: each tapped state and every merger buffer,
+/// all live until the graph completes.
+fn device_merger_bytes(
+    encoder: &ModalityEncoder,
+    patches: usize,
+    attention_rows: usize,
+) -> Result<u64> {
+    let levels = encoder.deepstack_layers.len();
+    let rows = padded(patches / merge_unit(encoder)?, TOKEN_TILE)?;
+    let taps = attention_rows
+        .checked_mul(encoder.hidden_size)
+        .and_then(|n| n.checked_mul(levels));
+    let wide = rows
+        .checked_mul(merged_width(encoder)?)
+        .and_then(|n| n.checked_mul(DEVICE_MERGER_WIDE_BUFFERS));
+    let outputs = rows
+        .checked_mul(encoder.out_hidden_size)
+        .and_then(|n| n.checked_mul(levels.checked_add(1)?));
+    bytes(
+        taps.zip(wide)
+            .and_then(|(taps, wide)| taps.checked_add(wide))
+            .zip(outputs)
+            .and_then(|(sum, outputs)| sum.checked_add(outputs))
+            .ok_or_else(|| Error::invalid("vision merger footprint overflow"))?,
     )
 }
 
@@ -261,9 +291,16 @@ pub fn footprint(encoder: &ModalityEncoder, media: &MediaPlan) -> Result<u64> {
         let rows = patches
             .checked_div(merge_unit(encoder)?)
             .ok_or_else(|| Error::invalid("vision merge unit"))?;
+        // The text decoder keeps the merged rows plus one feature copy per deepstack level.
+        let copies = encoder
+            .deepstack_layers
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| Error::invalid("vision feature copies overflow"))?;
         retained = retained
             .checked_add(bytes(
                 rows.checked_mul(encoder.out_hidden_size)
+                    .and_then(|elements| elements.checked_mul(copies))
                     .ok_or_else(|| Error::invalid("vision retained row overflow"))?,
             )?)
             .ok_or_else(|| Error::invalid("vision retained footprint overflow"))?;

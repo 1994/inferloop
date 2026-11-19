@@ -37,6 +37,37 @@ pub mod aux {
     }
 
     #[cutile::entry()]
+    fn copy(out: &mut Tensor<f32, { [256] }>, input: &Tensor<f32, { [-1] }>) {
+        out.store(input.load_like(out));
+    }
+
+    /// Row `pid.0` of `a` plus that row's media feature when its metadata marks media (field 3
+    /// of `FIELDS`); the row unchanged otherwise. Column tile `pid.1`.
+    #[cutile::entry()]
+    fn media_feature_rows<const D: i32, const FIELDS: i32>(
+        out: &mut Tensor<f32, { [1, 256] }>,
+        a: &Tensor<f32, { [-1, D] }>,
+        feature: &Tensor<f32, { [-1, D] }>,
+        metadata: &Tensor<i32, { [-1] }>,
+    ) {
+        let pid = get_tile_block_id();
+        let media: i32 = tile_to_scalar(
+            metadata
+                .partition(shape![1])
+                .load([pid.0 * FIELDS + 3i32])
+                .reshape(shape![]),
+        );
+        let value: Tile<f32, { [1, 256] }> = a.load_like(out);
+        if media == 1 {
+            let row: Tile<f32, { [1, 256] }> =
+                feature.partition(shape![1, 256]).load([pid.0, pid.1]);
+            out.store(value + row);
+        } else {
+            out.store(value);
+        }
+    }
+
+    #[cutile::entry()]
     fn norm<const D: i32, const B: i32, const GATED: i32>(
         out: &mut Tensor<f32, { [1, B] }>,
         x: &Tensor<f32, { [-1, D] }>,

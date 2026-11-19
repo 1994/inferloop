@@ -28,13 +28,11 @@ use crate::resident::narrow_kv::NarrowCaches;
 use crate::resident::slot_batch::SlotPool;
 use crate::tuning::attention::mma::prepare;
 use crate::vision::VisionWeights;
+use crate::vision::encode_media;
 use crate::vision::footprint;
-use crate::vision::merger;
 use crate::vision::patch_width;
 use crate::vision::program::patch_embed_device_pixels;
 use crate::vision::program::patch_embed_device_positions;
-use crate::vision::tower;
-use crate::vision::tower_with_deepstack;
 use infer_models::vision::position_taps;
 pub use kv_scales::load as load_kv_scales;
 mod bindings;
@@ -268,37 +266,19 @@ impl LoadedVision {
         device: &CudaDevice,
         image: &infer_models::PromptImage,
     ) -> Result<(Vec<f32>, Vec<Vec<f32>>)> {
-        let (temporal, height, width) = image.grid;
-        let patches = temporal
-            .checked_mul(height)
-            .and_then(|value| value.checked_mul(width))
-            .ok_or_else(|| Error::invalid("image patch grid overflow"))?;
-        if patches == 0 {
-            return Err(Error::invalid("image patch grid is empty"));
-        }
-        let width = patch_width(&self.encoder)?;
-        if patches.checked_mul(width) != Some(image.pixels.len()) {
-            return Err(Error::invalid("image pixels do not match the patch grid"));
-        }
-        let taps = position_taps(image.grid, &self.encoder)?;
-        let embedded = patch_embed_device_positions(
-            device,
-            &self.encoder,
-            &self.weights,
-            &image.pixels,
-            &taps,
-            patches,
-        )?;
-        let (hidden, features) = tower_with_deepstack(
-            device,
-            &self.weights,
-            &self.encoder,
-            &embedded,
-            image.grid,
-            patches,
-        )?;
-        let merged = merger(device, &self.weights, &self.encoder, &hidden, patches)?;
-        Ok((merged, features))
+        let encoded = self.encode_media(device, image)?;
+        Ok((encoded.embeddings, encoded.features))
+    }
+
+    /// Encode one image into everything the text decoder reads for it.
+    /// # Errors
+    /// Rejects a patch grid that disagrees with the pixel buffer or failed CUDA execution.
+    pub fn encode_media(
+        &self,
+        device: &CudaDevice,
+        image: &infer_models::PromptImage,
+    ) -> Result<MediaEncoding> {
+        self.encode_pixels(device, image.grid, &image.pixels)
     }
 
     /// Encode one preprocessed image into `merged_tokens × text_hidden` embeddings.
@@ -310,6 +290,7 @@ impl LoadedVision {
         image: &infer_models::PromptImage,
     ) -> Result<Vec<f32>> {
         self.encode_pixels(device, image.grid, &image.pixels)
+            .map(|encoded| encoded.embeddings)
     }
 
     pub(crate) fn encode_pixels(
@@ -317,7 +298,7 @@ impl LoadedVision {
         device: &CudaDevice,
         grid: (usize, usize, usize),
         pixels: &[f32],
-    ) -> Result<Vec<f32>> {
+    ) -> Result<MediaEncoding> {
         let (temporal, height, width) = grid;
         let patches = temporal
             .checked_mul(height)
@@ -348,7 +329,7 @@ impl LoadedVision {
         device: &CudaDevice,
         grid: (usize, usize, usize),
         image: &ImageInput,
-    ) -> Result<Vec<f32>> {
+    ) -> Result<MediaEncoding> {
         let transform = image.transform();
         let patches = self.validate_image_transform(grid, transform)?;
         let processor = self.image_preprocessor()?;
@@ -362,7 +343,7 @@ impl LoadedVision {
         device: &CudaDevice,
         grid: (usize, usize, usize),
         image: &EncodedImageInput,
-    ) -> Result<Vec<f32>> {
+    ) -> Result<MediaEncoding> {
         let patches = self.validate_image_transform(grid, image.transform())?;
         let input = self
             .image_preprocessor()?
@@ -406,7 +387,7 @@ impl LoadedVision {
         grid: (usize, usize, usize),
         patches: usize,
         input: &Allocation<f32>,
-    ) -> Result<Vec<f32>> {
+    ) -> Result<MediaEncoding> {
         let taps = position_taps(grid, &self.encoder)?;
         let embedded =
             patch_embed_device_pixels(device, &self.encoder, &self.weights, input, &taps, patches)?;
@@ -419,8 +400,8 @@ impl LoadedVision {
         grid: (usize, usize, usize),
         patches: usize,
         embedded: &[f32],
-    ) -> Result<Vec<f32>> {
-        let hidden = tower(
+    ) -> Result<MediaEncoding> {
+        let (embeddings, features) = encode_media(
             device,
             &self.weights,
             &self.encoder,
@@ -428,8 +409,19 @@ impl LoadedVision {
             grid,
             patches,
         )?;
-        merger(device, &self.weights, &self.encoder, &hidden, patches)
+        Ok(MediaEncoding {
+            embeddings,
+            features,
+        })
     }
+}
+
+/// One image in text width: its merged embedding rows and, per declared deepstack level, the
+/// feature rows the text decoder adds to the same tokens.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MediaEncoding {
+    pub embeddings: Vec<f32>,
+    pub features: Vec<Vec<f32>>,
 }
 
 impl LoadedModel {

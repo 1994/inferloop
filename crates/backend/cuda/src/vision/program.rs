@@ -1211,6 +1211,35 @@ pub fn merger_with(
     )
 }
 
+/// Encode patch embeddings into merged rows plus each deepstack level's feature rows.
+///
+/// Compatible towers run tower and mergers in one device graph; the rest run block by block and
+/// merge on the host's schedule.
+///
+/// # Errors
+/// Rejects malformed geometry or failed CUDA computation.
+pub fn encode_media(
+    device: &CudaDevice,
+    weights: &VisionWeights,
+    encoder: &ModalityEncoder,
+    input: &[f32],
+    grid: (usize, usize, usize),
+    tokens: usize,
+) -> Result<(Vec<f32>, Vec<Vec<f32>>)> {
+    if device_tower::supports_mergers(encoder)? {
+        return device_tower::encode(device, weights, encoder, (input, grid, tokens));
+    }
+    let (hidden, features) = if encoder.deepstack_layers.is_empty() {
+        (
+            tower(device, weights, encoder, input, grid, tokens)?,
+            Vec::new(),
+        )
+    } else {
+        tower_with_deepstack(device, weights, encoder, input, grid, tokens)?
+    };
+    Ok((merger(device, weights, encoder, &hidden, tokens)?, features))
+}
+
 /// Run the tower and return its final state plus each declared deepstack feature.
 ///
 /// # Errors
@@ -1223,24 +1252,41 @@ pub fn tower_with_deepstack(
     grid: (usize, usize, usize),
     tokens: usize,
 ) -> Result<(Vec<f32>, Vec<Vec<f32>>)> {
-    let mut state = input.to_vec();
-    let mut features = Vec::with_capacity(encoder.deepstack_layers.len());
-    for layer in 0..encoder.depth {
-        state = block(device, weights, encoder, layer, &state, grid, tokens)?;
-        if let Some(ordinal) = encoder
-            .deepstack_layers
-            .iter()
-            .position(|target| *target == layer)
-        {
-            features.push(deepstack_merger(
+    let (state, tapped) = if device_tower::supports(encoder)? {
+        device_tower::run_tapped(
+            device,
+            weights,
+            encoder,
+            (input, grid, tokens),
+            &encoder.deepstack_layers,
+        )?
+    } else {
+        let mut state = input.to_vec();
+        let mut tapped = Vec::with_capacity(encoder.deepstack_layers.len());
+        for layer in 0..encoder.depth {
+            state = block(device, weights, encoder, layer, &state, grid, tokens)?;
+            if encoder.deepstack_layers.contains(&layer) {
+                tapped.push(state.clone());
+            }
+        }
+        (state, tapped)
+    };
+    if tapped.len() != encoder.deepstack_layers.len() {
+        return Err(Error::invalid("deepstack layers are not tower layers"));
+    }
+    let features = tapped
+        .iter()
+        .enumerate()
+        .map(|(ordinal, state)| {
+            deepstack_merger(
                 device,
                 weights.deepstack_merger(ordinal)?,
                 encoder,
-                &state,
+                state,
                 tokens,
-            )?);
-        }
-    }
+            )
+        })
+        .collect::<Result<_>>()?;
     Ok((state, features))
 }
 

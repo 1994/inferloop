@@ -262,7 +262,7 @@ fn run(
     let hidden = loaded.model().hidden_size;
     let mut encodings = Vec::with_capacity(prepared.images.len());
     for image in &prepared.images {
-        encodings.push(tower.encode(loaded.device(), image)?);
+        encodings.push(tower.encode_media(loaded.device(), image)?);
     }
     let started = Instant::now();
     let prefilled = vision::prefill(

@@ -5,8 +5,8 @@
 //! and tokenizer assemble the prompt, the vision tower encodes the image, the encodings are placed
 //! at the media tokens and the resident program prefills and decodes.
 //!
-//! Both sides run with deepstack disabled, so this measures the shared path rather than the
-//! released checkpoint's feature set.
+//! Both sides run the released configuration, `DeepStack` included: the dump's per-level features
+//! are compared with this tower's, and the logits and continuation follow from both.
 #[cfg(cuda_backend)]
 use cutile::jit_cache::enable_default;
 #[cfg(cuda_backend)]
@@ -69,8 +69,10 @@ fn main() -> Result<(), Box<dyn StdError>> {
     } else {
         &prepared.images[0]
     };
-    let encoded = vision.encode(loaded.device(), image)?;
-    let (vision_abs, vision_rel) = compare_media(&encoded, &reference.vision);
+    let encoded = vision.encode_media(loaded.device(), image)?;
+    let (vision_abs, vision_rel) = compare_media(&encoded.embeddings, &reference.vision);
+    let (deepstack_abs, deepstack_rel) = compare_deepstack(&encoded.features, &reference.deepstack);
+    let encoded_levels = encoded.features.len();
     let encodings = [encoded];
     let mut program = loaded.sequence(4096)?;
     let prefilled = vision::prefill(
@@ -99,11 +101,15 @@ fn main() -> Result<(), Box<dyn StdError>> {
         .take_while(|(left, right)| left == right)
         .count();
 
+    let verdict = verdict(
+        tokens_match,
+        mine == theirs && matching == reference.generated.len(),
+        [vision_rel, deepstack_rel],
+    );
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
-            "passed": tokens_match && mine == theirs && matching == reference.generated.len()
-                && vision_rel.is_finite() && vision_rel <= VISION_TOLERANCE,
+            "passed": verdict.is_ok(),
             "package": root,
             "official_pixels": official_pixels,
             "reference": reference_path,
@@ -115,21 +121,40 @@ fn main() -> Result<(), Box<dyn StdError>> {
             "reference_first_token": theirs,
             "vision_max_abs": vision_abs,
             "vision_max_rel": vision_rel,
+            "deepstack_levels": encoded_levels,
+            "deepstack_max_abs": deepstack_abs,
+            "deepstack_max_rel": deepstack_rel,
             "logits_max_abs": max_abs,
             "generated": generated,
             "reference_generated": reference.generated,
             "matching_prefix": matching,
-            "scope": "deepstack disabled on both sides: preprocess -> tower -> merger -> merge -> decode",
+            "scope": "released configuration: preprocess -> tower (+ deepstack) -> merger -> merge -> decode",
         }))?
     );
+    Ok(verdict?)
+}
+
+/// The first parity failure: token streams, then the greedy continuation, then vision rows.
+#[cfg(cuda_backend)]
+fn verdict(
+    tokens_match: bool,
+    continuations_match: bool,
+    relative_errors: [f32; 2],
+) -> Result<(), infer_core::Error> {
+    use infer_core::Error;
     if !tokens_match {
-        return Err(Error::invariant("prompt token streams disagree").into());
+        return Err(Error::invariant("prompt token streams disagree"));
     }
-    if mine != theirs || matching != reference.generated.len() {
-        return Err(Error::invariant("greedy continuations disagree").into());
+    if !continuations_match {
+        return Err(Error::invariant("greedy continuations disagree"));
     }
-    if !vision_rel.is_finite() || vision_rel > VISION_TOLERANCE {
-        return Err(Error::invariant("vision embeddings exceed the parity tolerance").into());
+    if !relative_errors
+        .iter()
+        .all(|rel| rel.is_finite() && *rel <= VISION_TOLERANCE)
+    {
+        return Err(Error::invariant(
+            "vision or deepstack rows exceed the parity tolerance",
+        ));
     }
     Ok(())
 }
@@ -197,6 +222,16 @@ fn compare_media(mine: &[f32], theirs: &[f32]) -> (f32, f32) {
     )
 }
 
+/// [`compare_media`] over every deepstack level; a model and dump without levels agree.
+#[cfg(cuda_backend)]
+fn compare_deepstack(mine: &[Vec<f32>], theirs: &[f32]) -> (f32, f32) {
+    if mine.is_empty() && theirs.is_empty() {
+        (0.0, 0.0)
+    } else {
+        compare_media(&mine.concat(), theirs)
+    }
+}
+
 /// Largest absolute logits difference and the reference's greedy token.
 #[cfg(cuda_backend)]
 fn compare_logits(mine: &[f32], theirs: &[f32]) -> (f32, u32) {
@@ -222,6 +257,8 @@ struct Reference {
     logits: Vec<f32>,
     generated: Vec<u32>,
     vision: Vec<f32>,
+    /// Per-level `DeepStack` features, level-major; empty for a `--no-deepstack` dump.
+    deepstack: Vec<f32>,
     pixels: Vec<f32>,
     grid: (usize, usize, usize),
 }
@@ -249,6 +286,9 @@ fn load_reference(path: &str) -> Result<Reference, Box<dyn StdError>> {
     let logits = file.read_f32("logits", 1 << 30)?.data;
     let generated = decode(&file.read_bytes("generated", 1 << 16)?);
     let vision = file.read_f32("vision_embeddings", 1 << 30)?.data;
+    let deepstack = file
+        .read_f32("deepstack_features", 1 << 30)
+        .map_or_else(|_| Vec::new(), |tensor| tensor.data);
     let pixels = file.read_f32("pixel_values", 1 << 30)?.data;
     let grid = decode_grid(&file.read_bytes("grid_thw", 1 << 12)?)?;
     let dimensions: Vec<i64> = shape
@@ -271,6 +311,7 @@ fn load_reference(path: &str) -> Result<Reference, Box<dyn StdError>> {
         logits,
         generated,
         vision,
+        deepstack,
         pixels,
         grid,
     })

@@ -41,6 +41,7 @@ fn decoder(hidden_size: usize, layers: usize) -> ModelIr {
         modalities: vec![infer_ir::Modality::Text],
         state: vec![],
         tied_embeddings: false,
+        media_features: 0,
     }
 }
 

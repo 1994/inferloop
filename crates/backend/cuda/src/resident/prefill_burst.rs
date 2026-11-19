@@ -408,6 +408,7 @@ impl PromptBurst {
             external: &storage.external_row,
             lane_external: &mut storage.lane_external,
             lane_external_owner: Some(&storage.external),
+            media_features: None,
             lane_fusion: &mut storage.lane_fusion,
             tables: &tables,
             capacity,

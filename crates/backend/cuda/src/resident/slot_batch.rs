@@ -692,6 +692,7 @@ impl SlotPool {
                 external: &external,
                 lane_external: &mut lane_external,
                 lane_external_owner: None,
+                media_features: None,
                 lane_fusion: &mut lane_fusion,
                 tables: &tables.rows,
                 capacity,

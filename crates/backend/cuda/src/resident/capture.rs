@@ -242,6 +242,19 @@ impl Capture<'_> {
             TensorOp::Embedding => {
                 self.embedding(node, output)?;
             }
+            // Outside a media prompt no lane carries media; the prompt graph records the feature
+            // rows itself.
+            TensorOp::MediaFeature { .. } => {
+                self.weights
+                    .kernels
+                    .state
+                    .copy(
+                        self.scope,
+                        buffer(output)?,
+                        self.input_buffer(node.inputs[0])?,
+                    )
+                    .map_err(error)?;
+            }
             TensorOp::Linear => {
                 self.linear(node, output)?;
             }

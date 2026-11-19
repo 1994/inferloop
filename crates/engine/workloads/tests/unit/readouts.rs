@@ -55,6 +55,7 @@ fn model() -> ModelIr {
         modalities: vec![Modality::Text],
         state: vec![],
         tied_embeddings: false,
+        media_features: 0,
     }
 }
 

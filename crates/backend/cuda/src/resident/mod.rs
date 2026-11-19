@@ -54,7 +54,7 @@ mod validation;
 pub use arena::ActivationArena;
 pub use narrow_kv::NarrowElement;
 pub use program::{DeviceProgram, FusionWeights, ProgramWeights};
-pub(crate) use program::{ProgramGeometry, attention_states, spec_state_bytes};
+pub(crate) use program::{MediaRows, ProgramGeometry, attention_states, spec_state_bytes};
 pub use prompt_scratch::Registry as PromptScratchRegistry;
 pub(crate) use validation::require_kernel_geometry;
 

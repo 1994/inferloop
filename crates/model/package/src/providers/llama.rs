@@ -148,6 +148,7 @@ fn import_config(id: ModelId, bytes: &[u8]) -> Result<ImportedModel> {
         modalities: vec![Modality::Text],
         state,
         tied_embeddings: config.tie_word_embeddings,
+        media_features: 0,
     };
     model.validate()?;
     Ok(ImportedModel::new(model, 0))

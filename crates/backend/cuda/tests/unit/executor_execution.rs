@@ -423,6 +423,7 @@ fn failed_media_chunk_retains_its_device_source_until_the_fence() -> Result<(), 
         .ok_or("missing sequence")?;
     sequence.media = Some(super::CachedMedia {
         tensor: Allocation::adopt(Arc::clone(&owner))?,
+        features: None,
         layout: MediaLayout {
             spans: Vec::new(),
             next_rotary: 0,

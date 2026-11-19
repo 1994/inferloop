@@ -34,6 +34,7 @@ use crate::device::{CudaDevice, ReadbackSource, device_error};
 use crate::device::{PinnedUpload, Readbacks};
 use crate::mlp::ProjectionWeight;
 use infer_core::{Error, ErrorCode, Result, TensorId};
+use infer_cuda_kernels::contract::MediaFeatureRowsPlan;
 use infer_cuda_kernels::contract::{DecodePlan, VerifyDecodeBuffers};
 use infer_cuda_kernels::contract::{EmbeddingBatchPlan, LastRowsKind, LastRowsPlan, Recording};
 use infer_cuda_kernels::runtime::{Allocation, Graph};
@@ -177,6 +178,9 @@ pub(super) struct BatchBuilder<'a> {
     pub lane_external: &'a mut Vec<Allocation<f32>>,
     /// Contiguous storage behind `lane_external`, one external hidden row per prompt lane.
     pub lane_external_owner: Option<&'a Allocation<f32>>,
+    /// Media feature rows of the prompt lanes, `[feature][lane][hidden]` over the widest prompt
+    /// graph; absent where no prompt carries media.
+    pub media_features: Option<&'a Allocation<f32>>,
     pub lane_fusion: &'a mut Vec<Option<super::program::FusionWorkspace>>,
     /// One block table per lane, indexed exactly like `lane_external`; batched and prefill
     /// captures use entry 0 because their operators do not resolve KV positions.
@@ -1526,6 +1530,49 @@ impl BatchBuilder<'_> {
         recorded.map(|()| true)
     }
 
+    /// Add each media lane's feature row in one launch; without a feature store the node falls
+    /// through to the generic copy, because no lane of that graph carries media.
+    fn record_prompt_media_feature(
+        &self,
+        scope: &Recording<'_>,
+        node: &TensorNode,
+        arena: &ActivationArena,
+        metadata_batch: &Allocation<i32>,
+    ) -> Result<bool> {
+        let (TensorOp::MediaFeature { index }, Some(store)) = (&node.op, self.media_features)
+        else {
+            return Ok(false);
+        };
+        let lanes = arena.lanes();
+        let size = arena.get(node.outputs[0]).map_err(error)?.len();
+        let dimension = size / lanes;
+        let levels = self.graph.media_features();
+        let store_lanes = store.len() / (levels * dimension).max(1);
+        if size != lanes * dimension || lanes > store_lanes || *index >= levels {
+            return Err(error("media feature store geometry"));
+        }
+        let start = index * store_lanes * dimension;
+        let feature = buffer(store)?.slice(start..start + size).map_err(error)?;
+        let output = arena.activation(node.outputs[0]).map_err(error)?;
+        let input = arena.activation(node.inputs[0]).map_err(error)?;
+        self.weights
+            .kernels
+            .state
+            .media_feature_rows(
+                scope,
+                &MediaFeatureRowsPlan {
+                    rows: lanes,
+                    dimension,
+                    fields: METADATA_FIELDS,
+                },
+                output,
+                input,
+                (feature, buffer(metadata_batch)?),
+            )
+            .map_err(error)?;
+        Ok(true)
+    }
+
     fn record_prompt_node(
         &mut self,
         scope: &Recording<'_>,
@@ -1543,7 +1590,9 @@ impl BatchBuilder<'_> {
         if self.burst.is_some() && self.record_burst_state(scope, node)? {
             return Ok(());
         }
-        if self.record_prompt_embedding(scope, node, arena, metadata_batch)? {
+        if self.record_prompt_embedding(scope, node, arena, metadata_batch)?
+            || self.record_prompt_media_feature(scope, node, arena, metadata_batch)?
+        {
             return Ok(());
         }
         if let Some(workspace) = fusion.as_mut()
@@ -1785,7 +1834,11 @@ pub(super) fn dispatch32(node: &TensorNode, weights: &ProgramWeights) -> Dispatc
     let constant = |index: usize| weights.constants.contains_key(&node.inputs[index]);
     let batched = match &node.op {
         TensorOp::Linear => return Dispatch32::Linear,
-        TensorOp::Silu | TensorOp::Sigmoid | TensorOp::Add | TensorOp::Multiply => !node
+        TensorOp::Silu
+        | TensorOp::Sigmoid
+        | TensorOp::Add
+        | TensorOp::Multiply
+        | TensorOp::MediaFeature { .. } => !node
             .inputs
             .iter()
             .any(|id| weights.constants.contains_key(id)),

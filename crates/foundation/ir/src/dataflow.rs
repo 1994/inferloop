@@ -89,6 +89,11 @@ pub enum TensorOp {
     Multiply,
     Scale,
     Add,
+    /// Adds per-token media feature `index` (for example a vision deepstack level) to a lane
+    /// whose embedding came from media; every other lane passes through unchanged.
+    MediaFeature {
+        index: usize,
+    },
 }
 impl TensorOp {
     #[must_use]
@@ -111,7 +116,7 @@ impl TensorOp {
             Self::Silu => O::Silu,
             Self::Sigmoid => O::Sigmoid,
             Self::Multiply | Self::Scale => O::Multiply,
-            Self::Add => O::Residual,
+            Self::Add | Self::MediaFeature { .. } => O::Residual,
         }
     }
 }
@@ -203,7 +208,30 @@ impl DataflowGraph {
         if self.hidden.is_none() || self.logits.is_none() || self.nodes.is_empty() {
             return Err(Error::invalid("graph has no execution result"));
         }
+        let mut features = self.nodes.iter().filter_map(|node| match node.op {
+            TensorOp::MediaFeature { index } => Some(index),
+            _ => None,
+        });
+        if !features
+            .by_ref()
+            .enumerate()
+            .all(|(order, index)| order == index)
+        {
+            return Err(Error::invalid(
+                "media features must be consumed once, in order",
+            ));
+        }
         Ok(())
+    }
+
+    /// Per-token media feature rows the graph adds after the media embedding itself; a backend
+    /// sizes each lane's request-supplied input as `1 + media_features()` hidden rows.
+    #[must_use]
+    pub fn media_features(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|node| matches!(node.op, TensorOp::MediaFeature { .. }))
+            .count()
     }
     /// # Errors
     /// Returns an invalid-input error for an invalid graph or overflowing scratch-buffer requirements.

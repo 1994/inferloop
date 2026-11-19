@@ -2,7 +2,7 @@
 use crate::device::{CudaDevice, device_error};
 use infer_core::Result;
 use infer_cuda_kernels::contract::{
-    Attention, Buffer, DenseBuffers, DensePlan, Gelu, Pack, PositionTaps, Recording, Vision,
+    Attention, Buffer, DenseBuffers, DensePlan, Gelu, Pack, PositionTaps, Recording, State, Vision,
     VisionDense, VisionNorm, VisionRope,
 };
 use infer_cuda_kernels::kernels;
@@ -21,6 +21,7 @@ pub(super) fn capture(
         record(&Launches {
             vision: &*families.vision,
             attention: &*families.attention,
+            state: &*families.state,
             recording,
         })
         .map_err(device_error)
@@ -31,6 +32,7 @@ pub(super) fn capture(
 pub(super) struct Launches<'a> {
     vision: &'a dyn Vision,
     attention: &'a dyn Attention,
+    state: &'a dyn State,
     recording: &'a Recording<'a>,
 }
 
@@ -51,6 +53,10 @@ impl Launches<'_> {
         right: Buffer<'_, f32>,
     ) -> Result<()> {
         launched(self.vision.add(self.recording, columns, out, left, right))
+    }
+
+    pub(super) fn copy(&self, out: Buffer<'_, f32>, input: Buffer<'_, f32>) -> Result<()> {
+        launched(self.state.copy(self.recording, out, input))
     }
 
     pub(super) fn gelu(

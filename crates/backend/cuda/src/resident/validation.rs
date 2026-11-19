@@ -72,6 +72,7 @@ pub(super) fn validate(graph: &DataflowGraph, weights: &ProgramWeights) -> Resul
             | TensorOp::Silu
             | TensorOp::Sigmoid
             | TensorOp::Rope { .. }
+            | TensorOp::MediaFeature { .. }
             | TensorOp::MoeRoute { .. } => (1, 1, 0),
             TensorOp::Linear
             | TensorOp::Norm { .. }

@@ -177,7 +177,8 @@ impl OpClass {
             | TensorOp::Sigmoid
             | TensorOp::Multiply
             | TensorOp::Scale
-            | TensorOp::Add => Self::Elementwise,
+            | TensorOp::Add
+            | TensorOp::MediaFeature { .. } => Self::Elementwise,
             TensorOp::Split { .. } => Self::Layout,
             TensorOp::MoeRoute { .. } | TensorOp::MoeCombine { .. } => Self::Routing,
         }

@@ -61,8 +61,9 @@ pub fn attach_tap_projection(
             .rposition(|node| node.layer == Some(layer))
             .ok_or_else(|| Error::invalid(format!("draft tap {layer} has no target layer")))?;
         let node = &graph.nodes[position];
+        // A layer returns its residual, or that residual plus its media feature.
         let stream = match (&node.op, node.outputs.as_slice()) {
-            (TensorOp::Add, [output]) => *output,
+            (TensorOp::Add | TensorOp::MediaFeature { .. }, [output]) => *output,
             _ => {
                 return Err(Error::invalid(format!(
                     "target layer {layer} does not end in a residual"

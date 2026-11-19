@@ -154,6 +154,8 @@ impl DraftState {
 /// Device-resident encoded media for one prompt, reused across every prefill chunk.
 pub(super) struct CachedMedia {
     pub tensor: Allocation<f32>,
+    /// Deepstack feature rows, `[level][row][hidden]` over the same rows as `tensor`.
+    pub features: Option<Allocation<f32>>,
     pub layout: MediaLayout,
     pub bases: Vec<usize>,
 }

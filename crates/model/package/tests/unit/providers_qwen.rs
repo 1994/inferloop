@@ -62,6 +62,19 @@ fn qwen3_vl_configuration_imports_with_its_image_encoder() -> Result<()> {
         "the vision inventory must follow the declared depth"
     );
     assert_eq!(placeholders(&imported, &Modality::Image)?, [151_655]);
+    // Each deepstack level is added to the image tokens after one leading decoder layer, in order.
+    assert_eq!(imported.model.media_features, 3);
+    let graph = provider.graph(&imported.model)?;
+    let features: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter_map(|node| match node.op {
+            infer_ir::TensorOp::MediaFeature { index } => Some((index, node.layer)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(features, [(0, Some(0)), (1, Some(1)), (2, Some(2))]);
+    assert_eq!(graph.media_features(), 3);
     Ok(())
 }
 use super::*;

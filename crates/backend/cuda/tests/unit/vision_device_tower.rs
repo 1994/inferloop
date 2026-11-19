@@ -1,5 +1,5 @@
 //! Complete tower comparison across padded rows and multi-frame inputs.
-use super::{AttentionLayer, MlpLayer, Prepared, VisionWeights};
+use super::{AttentionLayer, MergerLayer, MlpLayer, Prepared, VisionWeights};
 use crate::device::CudaDevice;
 use crate::vision::{device_tower, program};
 use cutile::half::bf16;
@@ -112,6 +112,71 @@ fn resident_tower_matches_prior_blocks() -> Result<()> {
                 expected.to_bits(),
                 "grid {grid:?} at {index}"
             );
+        }
+    }
+    Ok(())
+}
+
+fn merger(device: &CudaDevice, encoder: &ModalityEncoder, norm: usize) -> Result<MergerLayer> {
+    let merged = encoder.hidden_size * encoder.spatial_merge_size * encoder.spatial_merge_size;
+    Ok(MergerLayer {
+        norm: (
+            device.runtime().upload(vec![bf16::from_f32(0.75); norm])?,
+            device.runtime().upload(vec![bf16::from_f32(-0.25); norm])?,
+        ),
+        fc1: prepared(device, merged, merged, 0.5)?,
+        fc2: prepared(device, encoder.out_hidden_size, merged, 0.25)?,
+    })
+}
+
+#[test]
+#[ignore = "requires a reserved CUDA device; compares the one-graph encode with the host path"]
+fn one_graph_encode_matches_blockwise_tower_and_host_mergers() -> Result<()> {
+    let device = CudaDevice::new(0)?;
+    let mut encoder = encoder();
+    // The last layer is tapped too: its state is also the final state.
+    encoder.deepstack_layers = vec![0, 1];
+    let merged = encoder.hidden_size * 4;
+    let mut weights = weights(&device, &encoder)?;
+    weights.merger = Some(merger(&device, &encoder, encoder.hidden_size)?);
+    weights.deepstack = vec![
+        merger(&device, &encoder, merged)?,
+        merger(&device, &encoder, merged)?,
+    ];
+    assert!(device_tower::supports_mergers(&encoder)?);
+    for grid in [(1, 2, 2), (1, 4, 10), (2, 4, 10), (1, 24, 24)] {
+        let tokens = grid.0 * grid.1 * grid.2;
+        let values = [-0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75];
+        let input: Vec<f32> = (0..tokens * encoder.hidden_size)
+            .map(|index| values[index % values.len()])
+            .collect();
+        let mut state = input.clone();
+        let mut taps = Vec::new();
+        for layer in 0..encoder.depth {
+            state = program::block(&device, &weights, &encoder, layer, &state, grid, tokens)?;
+            taps.push(state.clone());
+        }
+        let expected = program::merger_with(&device, weights.merger()?, &encoder, &state, tokens)?;
+        let features = taps
+            .iter()
+            .enumerate()
+            .map(|(level, tap)| {
+                program::deepstack_merger(
+                    &device,
+                    weights.deepstack_merger(level)?,
+                    &encoder,
+                    tap,
+                    tokens,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let (actual, actual_features) =
+            device_tower::encode(&device, &weights, &encoder, (&input, grid, tokens))?;
+        let bits = |values: &[f32]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&actual), bits(&expected), "grid {grid:?} merger");
+        assert_eq!(actual_features.len(), features.len());
+        for (level, (actual, expected)) in actual_features.iter().zip(&features).enumerate() {
+            assert_eq!(bits(actual), bits(expected), "grid {grid:?} level {level}");
         }
     }
     Ok(())

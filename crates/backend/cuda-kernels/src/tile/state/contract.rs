@@ -2,7 +2,7 @@
 use super::aux;
 use crate::contract::buffer::Buffer;
 use crate::contract::kernels::State;
-use crate::contract::plan::{BinaryOp, SplitPlan, UnaryOp};
+use crate::contract::plan::{BinaryOp, MediaFeatureRowsPlan, SplitPlan, UnaryOp};
 use crate::contract::recording::Recording;
 use crate::tile::moe::moe as moe_kernels;
 use crate::tile::runtime::Clear;
@@ -72,6 +72,68 @@ impl State for TileState {
             .record(
                 aux::binary((&mut out).partition([TILE]), &a, &b)
                     .generics(vec![i32::from(op == BinaryOp::Multiply).to_string()]),
+            )
+            .map_err(backend_error)?;
+        Ok(())
+    }
+
+    fn copy(
+        &self,
+        recording: &Recording<'_>,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+    ) -> Result<()> {
+        if out.len() != x.len() {
+            return Err(Error::invalid("copy lengths"));
+        }
+        let scope = capture_scope(recording)?;
+        let mut out = self.flat(recording, out)?;
+        let x = self.flat(recording, x)?;
+        scope
+            .record(aux::copy((&mut out).partition([TILE]), &x))
+            .map_err(backend_error)?;
+        Ok(())
+    }
+
+    fn media_feature_rows(
+        &self,
+        recording: &Recording<'_>,
+        plan: &MediaFeatureRowsPlan,
+        out: Buffer<'_, f32>,
+        a: Buffer<'_, f32>,
+        (feature, metadata): (Buffer<'_, f32>, Buffer<'_, i32>),
+    ) -> Result<()> {
+        let MediaFeatureRowsPlan {
+            rows,
+            dimension,
+            fields,
+        } = *plan;
+        let elements = rows
+            .checked_mul(dimension)
+            .ok_or_else(|| Error::invalid("media feature extent"))?;
+        if rows == 0
+            || dimension == 0
+            || !dimension.is_multiple_of(TILE)
+            || out.len() != elements
+            || a.len() != elements
+            || feature.len() != elements
+            || metadata.len() < rows.saturating_mul(fields)
+        {
+            return Err(Error::invalid("media feature buffers"));
+        }
+        let scope = capture_scope(recording)?;
+        let shape = [rows, dimension];
+        recording.retain(out);
+        recording.retain(a);
+        recording.retain(feature);
+        let mut out = borrowed(out, self.ordinal, &shape)?;
+        let a = borrowed(a, self.ordinal, &shape)?;
+        let feature = borrowed(feature, self.ordinal, &shape)?;
+        let metadata = self.flat(recording, metadata)?;
+        scope
+            .record(
+                aux::media_feature_rows((&mut out).partition([1, TILE]), &a, &feature, &metadata)
+                    .generics(vec![dimension.to_string(), fields.to_string()]),
             )
             .map_err(backend_error)?;
         Ok(())

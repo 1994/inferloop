@@ -8,8 +8,8 @@ use crate::contract::grouped_int::{GroupedIntPlan, GroupedIntWeight};
 use crate::contract::plan::{
     BinaryOp, DeltaKernel, DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, ExpertPlan,
     Fp4QuantPlan, Fp4ScalePlan, Fp8QuantPlan, FusionNormPlan, GemmPlan, GreedyPlan, LastRowsPlan,
-    LinearRowsPlan, NormPlan, PoolGemvPlan, PromptPlan, QuantNormPlan, RopePlan, RoutePlan,
-    RowNormPlan, RowsPlan, SplitGemmPlan, SplitPlan, THREE_ROWS, UnaryOp,
+    LinearRowsPlan, MediaFeatureRowsPlan, NormPlan, PoolGemvPlan, PromptPlan, QuantNormPlan,
+    RopePlan, RoutePlan, RowNormPlan, RowsPlan, SplitGemmPlan, SplitPlan, THREE_ROWS, UnaryOp,
 };
 use crate::contract::plan::{
     ConvKernel, DeltaStepPlan, PoolConvPlan, PoolDeltaPlan, RecurrentShape,
@@ -673,6 +673,35 @@ pub trait State: Send + Sync {
     ) -> Result<()> {
         let _ = (recording, op, out, a, b);
         Err(unsupported("State::binary"))
+    }
+
+    /// `out = x`.
+    /// # Errors
+    /// Fails when the buffers differ in length, or the launch is rejected.
+    fn copy(
+        &self,
+        recording: &Recording<'_>,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+    ) -> Result<()> {
+        let _ = (recording, out, x);
+        Err(unsupported("State::copy"))
+    }
+
+    /// Per row, `out = a + feature` where the row's metadata marks media and `out = a`
+    /// elsewhere; all three are `[rows, dimension]`.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn media_feature_rows(
+        &self,
+        recording: &Recording<'_>,
+        plan: &MediaFeatureRowsPlan,
+        out: Buffer<'_, f32>,
+        a: Buffer<'_, f32>,
+        (feature, metadata): (Buffer<'_, f32>, Buffer<'_, i32>),
+    ) -> Result<()> {
+        let _ = (recording, plan, out, a, feature, metadata);
+        Err(unsupported("State::media_feature_rows"))
     }
 
     /// `out = x * scalar`, with `scalar` holding one element.

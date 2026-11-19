@@ -64,6 +64,7 @@ fn protocol_model() -> ModelIr {
             })
             .collect(),
         tied_embeddings: false,
+        media_features: 0,
     }
 }
 

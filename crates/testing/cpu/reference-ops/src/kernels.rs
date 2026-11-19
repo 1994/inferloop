@@ -127,6 +127,8 @@ pub fn execute(
                 .map(|(x, z)| x * silu(*z))
                 .collect())
         }
+        // The reference executes text tokens only, which no media feature reaches.
+        TensorOp::MediaFeature { .. } => one(inputs[0].to_vec()),
         TensorOp::Silu => one(inputs[0].iter().map(|x| silu(*x)).collect()),
         TensorOp::Sigmoid => one(inputs[0].iter().map(|x| sigmoid(*x)).collect()),
         TensorOp::Multiply | TensorOp::Add => {
