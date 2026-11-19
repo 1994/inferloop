@@ -8,9 +8,10 @@ prompt text, the expanded token ids, the final prompt logits and a greedy contin
 The released configuration runs with DeepStack: the tower's intermediate features are merged and
 added to the image tokens after the first decoder layers, and the dump records those features per
 level. `--no-deepstack` disables them on this side only, for diagnosing the shared path
-(preprocess -> vision tower -> merger -> placeholder merge -> text decoding). The comparison is only
-meaningful when the Rust run uses the same package and the same image. F32 with TF32 disabled is the default oracle;
-`--dtype bfloat16` is an explicit alternative precision diagnostic.
+(preprocess -> vision tower -> merger -> placeholder merge -> text decoding). The comparison is
+only meaningful when the Rust run uses the same package and the same image. F32 with TF32
+disabled is the default oracle; `--dtype bfloat16` is an explicit alternative precision
+diagnostic.
 
 Run:
 
@@ -153,7 +154,6 @@ def main() -> int:
         "merged_visual_tokens": len(positions),
         "generated_tokens": new_tokens.tolist(),
         "generated_text": processor.decode(new_tokens.tolist(), skip_special_tokens=True),
-        "deepstack": "disabled on both sides",
         "max_new_tokens": args.max_new_tokens,
         "vision_embeddings_shape": list(vision_embeddings.shape),
     }
