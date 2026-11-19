@@ -3,34 +3,24 @@
 [![Quality](https://github.com/1994/inferloop/actions/workflows/ci.yml/badge.svg)](https://github.com/1994/inferloop/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-**Serve local language models from a single binary.**
+**A GPU inference engine that serves Safetensors and GGUF models from one native binary, behind an OpenAI-compatible API.**
 
-inferloop turns a Safetensors model folder or a GGUF file into an OpenAI-compatible endpoint on GPUs you already own. One native executable, no Python, no conversion step, no serving framework to operate. Built for teams that want the model behind a familiar API without adopting a Python stack to get there.
+Point `infer` at a Hugging Face model folder or a `.gguf` file and it starts an HTTP server. There is no Python in the serving path, no conversion step, and no config file. The engine sizes its memory budget, batch width and KV cache from the device and the model.
 
-> **Status.** Active development: built-in providers cover the Qwen 3.x family, there is no CPU backend, and performance certification is in progress. See [current boundaries](#current-boundaries).
+> **Status:** active development. CUDA (Linux) and Metal (macOS) are the execution backends; there is no CPU backend. Model coverage is the Qwen 3.x family plus dense Llama/Mistral. See [limits](#limits).
 
-## Why inferloop
-
-- **Deploy a file, not a stack.** The runtime artifact is `bin/infer`: no interpreter, virtualenv, conda, PyTorch, or Python serving framework in the serving path. Build and QA tooling uses Python; the thing you run does not.
-- **Your client already speaks it.** `/v1/chat/completions` and `/v1/completions` with SSE streaming, tool calls, and strict JSON schemas. Point the base URL at the server and keep your client code.
-- **The model folder is the artifact.** Safetensors weights are read in place through memory maps, with the tokenizer and chat template taken from the same directory. No export, re-shard, or quantization script between you and a running endpoint.
-- **GGUF without dequantizing.** On CUDA, a `.gguf` file serves directly: Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q4_K, Q5_K and Q6_K weights stay quantized in device memory and run on native grouped-integer kernels, with the tokenizer and chat template rebuilt from the GGUF metadata and the KV cache stored as F16 by default.
-- **One engine, four workloads.** Generate, embed, rerank, and structured decision requests share admission, scheduling, state/KV lifecycle, and observability instead of growing a separate service each.
-- **Fast paths with receipts.** CUDA compute uses non-blocking submit/poll by default; supported checkpoints auto-select MTP depth 2 and BF16 target attention, with a logged fallback to the canonical path. A separate DFlash2 draft is available via `--draft-model`. Defaults pass numerical and quality gates before shipping, and speed claims wait for paired, signed baselines rather than single runs.
-- **Operable by default.** Health, events, Chrome Trace, OTLP, checkpoints, bounded queues, backpressure, and cancellation are part of the engine, not a bolt-on dashboard.
-- **One CLI across CUDA and Metal.** The same commands and HTTP surface on Linux CUDA hosts and Apple Metal machines.
-
-## Start serving
+## Quick start
 
 ```sh
 git clone https://github.com/1994/inferloop.git
 cd inferloop
-make local-build
-target/release/infer /path/to/model          # Safetensors folder
-target/release/infer /path/to/model.gguf     # or a GGUF file (CUDA)
+make local-build                               # release CLI for this host's GPU backend
+
+target/release/infer /models/Qwen3-8B          # a Safetensors folder
+target/release/infer /models/qwen3-vl-2b.Q4_K_M.gguf   # or a GGUF file (CUDA)
 ```
 
-That builds the release CLI with the platform backend and starts an HTTP server on `http://127.0.0.1:8080`, with memory budget and KV sizing derived from the device. No config file, no `serve` subcommand, no flags required.
+The server listens on `http://127.0.0.1:8080`:
 
 ```sh
 curl -s http://127.0.0.1:8080/v1/chat/completions \
@@ -38,84 +28,122 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
   -d '{"model":"model","messages":[{"role":"user","content":"Hello"}],"max_tokens":64}'
 ```
 
-Use `--served-model-name model` to control the model ID your clients send. A sibling `mmproj-*.gguf` next to a GGUF file attaches its vision encoder; `--kv-cache-dtype` overrides the KV storage the package selects. OpenAI routes require a tokenizer in the package; chat completions also require a chat template. `--enable-response-store` opts into in-process Responses state (`store`, `previous_response_id`, retrieval, cancel and non-streaming background jobs); storage is off by default and lost on restart. See the [OpenAI API guide](docs/guides/openai-api.md) for streaming, tools, state, and parameter support.
+The `model` field must match the name from `GET /v1/models`. Set it with `--served-model-name`.
 
-## What you can serve
+## Models and formats
 
-| Workload | What it gives you |
+| Architecture | Safetensors | GGUF |
+|---|---|---|
+| Qwen3, Qwen3-MoE | ✓ | — |
+| Qwen3-Next, Qwen3.5 / Qwen3.5-MoE (hybrid attention, incl. vision) | ✓ | — |
+| Qwen3-VL | ✓ | ✓ (CUDA), with a sibling `mmproj-*.gguf` for vision |
+| Llama, Mistral (dense) | ✓ | — |
+
+| Weights | CUDA | Metal |
+|---|---|---|
+| Safetensors F32 / BF16 / F16 | ✓ | ✓ |
+| Safetensors FP8 (per-channel, block) and NVFP4 | ✓ | — |
+| GGUF F32 / F16 / BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q4_K, Q5_K, Q6_K | ✓ | — |
+
+- **Safetensors:** weights are memory-mapped and read in place. The tokenizer and chat template come from the same folder.
+- **GGUF:** quantized weights stay quantized in device memory and run on the engine's own grouped-integer kernels; nothing is dequantized to BF16 at load. The tokenizer and chat template are rebuilt from the GGUF metadata.
+- **KV cache:** stored as `f32`, `f16` or `fp8`; select with `--kv-cache-dtype`. GGUF models default to `f16`, everything else follows the checkpoint.
+
+An architecture that is not listed is rejected at load. A listed one is not guaranteed to work for every package variant, so validate it with `infer inspect-package --package <path>` first.
+
+## API
+
+| Route | |
 |---|---|
-| **Generate** | Token generation with batching, optional speculative decoding, and streaming |
-| **Embed** | Embedding extraction from a compatible model head |
-| **Rerank** | Candidate ranking from a compatible model head |
-| **Decision** | Structured decisions from a declared schema |
+| `POST /v1/chat/completions` | Chat with SSE streaming, tool calls, strict JSON schemas, images and video (CUDA) |
+| `POST /v1/completions` | Text completion |
+| `POST /v1/responses` | Responses text and function-tool subset; optional in-process store with `--enable-response-store` |
+| `POST /v1/decisions` | Predicate / choice / score decisions answered by the served model |
+| `GET /v1/models` | The served model |
+| `/native/v1/*` | Generate, embed, rerank and decision on one engine, plus runtime state and device timelines |
 
-The native API covers all four. The OpenAI-compatible routes cover chat and text completions. Built-in providers currently handle the Qwen 3.x family, including hybrid and MoE variants; an arbitrary Hugging Face package is not guaranteed to load or run. See [model execution](docs/guides/model-execution.md) and [adding a model](docs/guides/adding-a-model.md).
+Unsupported request fields are rejected instead of silently ignored. Field-level support is in the [OpenAI API guide](docs/guides/openai-api.md); media handling is in the [vision guide](docs/guides/vision.md).
+
+## Serving engine
+
+- **Continuous batching.** Requests share a slot pool with paged KV. A slot addresses the whole model context; memory is spent on pages actually used.
+- **Prefix reuse.** Committed full KV blocks are shared between requests with the same prefix.
+- **Speculative decoding.** Checkpoints with an MTP head select depth 2 automatically on CUDA. `--draft-model` uses a separate DFlash2 draft instead.
+- **Load-time tuning.** Kernel choices are measured on the device at load and cached per hardware, driver and model. Nothing is tuned through environment variables.
+- **Bounded and observable.** Admission, queues and host memory are bounded, with backpressure and cancellation. Health, events, Chrome Trace / Perfetto, OTLP and per-step device timing are built in.
+
+## Common options
+
+| Option | Effect |
+|---|---|
+| `--served-model-name NAME` | Model ID clients send |
+| `--max-model-len TOKENS` | Context per sequence (prompt + output); defaults to the model limit |
+| `--max-num-seqs N` | Cap on concurrent sequences |
+| `--gpu-memory-utilization F` | Fraction of device memory the engine may use |
+| `--kv-cache-dtype f32\|f16\|fp8` | KV storage |
+| `--num-speculative-tokens N\|auto` | MTP draft depth; `0` disables it |
+| `--draft-model PATH` | Separate DFlash2 draft (CUDA) |
+| `--limit-mm-per-prompt JSON` | Media items per prompt, e.g. `{"image":1}`; all zero skips loading the vision tower |
+| `--backend auto\|cuda\|metal` | Backend; `auto` fails if no supported GPU is present |
+
+`infer --help` lists everything. `infer doctor` reports the backends and host environment it detects.
 
 ## Requirements
 
-| Component | Requirement |
+| | |
 |---|---|
-| Model | A supported local Safetensors package with tokenizer assets for text and OpenAI routes, or a supported GGUF file (CUDA only) |
-| Linux / CUDA run | NVIDIA GPU and driver, plus the cuTile JIT toolchain (`tileiras`) |
-| macOS / Metal run | A Metal-capable Apple GPU |
-| Linux / CUDA build | CUDA Toolkit headers, C compiler, and libclang |
-| Build toolchain | `1.99.0` pinned by `rust-toolchain.toml`; MSRV `1.90` |
-| Build helper | `make` entry points use Python 3.12+; a direct `cargo build` does not |
+| Linux / CUDA | NVIDIA GPU and driver, and the cuTile JIT toolchain (`tileiras`) to run; CUDA Toolkit headers, a C compiler and libclang to build |
+| macOS / Metal | A Metal-capable Apple GPU |
+| Rust | `1.99.0`, pinned by `rust-toolchain.toml` (MSRV `1.90`) |
+| Build helper | Python 3.12+ for the `make` entry points; a plain `cargo build` does not need it |
+| Video input | `ffmpeg` and `ffprobe` on the host |
 
-`auto` selects CUDA or Metal and fails if no supported GPU is available. CPU-only hosts can run tests and lint checks, but cannot execute a model.
+Hosts without a supported GPU can build, lint and run the reference tests, but cannot execute a model.
 
-## Deployment
+## Release packages
 
-- **Packages per target.** Linux CUDA (x86_64, AArch64; selectable glibc baselines from 2.17 to 2.41) and macOS Metal (Intel, Apple Silicon) archives come from one cross-compilation pipeline. Each ships `bin/infer`, standalone run instructions, `SHA256SUMS`, and a manifest recording target, features, and verification scope.
-- **Packaged binary, same start.** `./bin/infer --backend cuda serve --package /path/to/model` serves exactly like the native build.
-- **Portable by design.** Weights are read in place rather than rewritten per host, and an archive runs on any host at or above its selected glibc baseline. Metal needs only the OS.
-- **No CPU execution backend.** A supported GPU is required to run a model; hosts without one can still build, lint, and run the reference tests.
+`make build-linux-cuda` and `make build-macos-metal` produce self-contained archives for Linux CUDA (x86_64, AArch64; glibc baselines 2.17–2.41) and macOS Metal (Intel, Apple Silicon). Each holds `bin/infer`, run instructions, `SHA256SUMS` and a manifest of target, features and verification scope:
 
-## Under the hood
-
-```text
-Service   CLI, native HTTP/SSE, OpenAI subset, diagnostic agent
-Runtime   admission, scheduling, state/KV lifecycle, completion, observability
-Model     package loading, provider registry, execution graph, compiler
-Backend   CUDA (cuTile / SIMT) and Metal (MSL) kernels
+```sh
+./bin/infer --backend cuda serve --package /path/to/model
 ```
 
-Model providers own model semantics. A shared IR and kernel API keep model names out of the scheduler and device code, so a new provider or workload does not require a second engine. Read the [code layout](docs/architecture/layout.md), [backend capabilities](docs/architecture/backends.md), and [runtime design](docs/architecture/runtime.md).
+See the [packaging guide](docs/guides/packaging.md).
 
-## Performance, measured
+## Architecture
 
-Performance is a requirement with evidence attached, not a tagline. A candidate is accepted on paired runs against a signed baseline profile: same release, same effective configuration read back from the runtime, raw samples retained and recomputable. A single run, a different configuration, or another engine's setup is not republished here as proof of speed.
+```text
+Service   CLI, native HTTP/SSE, OpenAI-compatible routes, diagnostic agent
+Runtime   admission, scheduling, state/KV lifecycle, completion, observability
+Model     Safetensors and GGUF packages, provider registry, execution graph, compiler
+Backend   CUDA (cuTile / CUDA C++) and Metal (MSL) kernels
+```
 
-That is why this README has no "Nx faster" headline. Speed claims are kept where they can be audited, in the [performance baseline plan](docs/plans/performance/baseline.md) and the [roadmap](docs/plans/README.md).
+Model providers own topology and weight semantics. The compiler lowers their graph through a shared IR and kernel API, so model names stay out of the scheduler and the device code. A GGUF file is presented to the providers as an equivalent Hugging Face package, so the rest of the engine does not know about GGUF. Details: [code layout](docs/architecture/layout.md), [backend contracts](docs/architecture/backends.md), [runtime](docs/architecture/runtime.md).
 
-## Current boundaries
+## Performance
 
-- Built-in model coverage is narrow: the Qwen 3.x family today. Validate a package before relying on it.
-- GGUF runs on CUDA only and covers the Qwen3-VL architecture; other GGUF architectures, the remaining GGML types (Q2_K, Q3_K, IQ*), and quantized KV are not supported yet. Quantized GGUF prompt processing and decode are still behind llama.cpp; see the [GGUF performance plan](docs/plans/performance/gguf-grouped-int.md).
+Speed claims in this repository come from paired release runs on the same hardware, configuration and workload, with raw samples kept. This README does not quote a headline number. Current measurements and open gaps are in the [performance baseline](docs/plans/performance/baseline.md), the [GGUF performance plan](docs/plans/performance/gguf-grouped-int.md) and the [roadmap](docs/plans/README.md).
+
+## Limits
+
+- Model coverage is the architectures listed above.
+- GGUF runs on CUDA only and covers the Qwen3-VL architecture. Q2_K, Q3_K, IQ-family types and quantized (Q8_0/Q4_0) KV are not supported.
+- Quantized GGUF prompt processing and decode are still slower than llama.cpp on the same file.
+- Media requests do not use prefix reuse or speculative decoding, and one prompt carries one media modality.
+- CUDA kernels depend on the cuTile JIT toolchain; ahead-of-time coverage is in progress.
 - No CPU execution backend.
-- CUDA still depends on the cuTile JIT toolchain; ahead-of-time kernel coverage is in progress.
-- Execution overlap is currently per submit/poll, not a depth-2 batch queue.
-- Multimodal execution exists in examples, not in the serving scheduler.
-- Performance and production SLO validation are incomplete; no cross-engine parity is claimed.
 
 ## Documentation
 
-Start with the [documentation index](docs/README.md). In-depth guides are currently in Chinese.
+Start at the [documentation index](docs/README.md). Most in-depth guides are in Chinese.
 
-- [Development](docs/guides/development.md)
-- [Adding a model](docs/guides/adding-a-model.md)
-- [Model execution](docs/guides/model-execution.md)
-- [OpenAI-compatible API](docs/guides/openai-api.md)
-- [CUDA performance](docs/guides/cuda-performance.md)
-- [Tuning for new hardware and models](docs/guides/tuning-new-hardware-and-models.md)
+- [Development](docs/guides/development.md) · [Quality gates](docs/guides/quality-gates.md)
+- [Model execution](docs/guides/model-execution.md) · [Adding a model](docs/guides/adding-a-model.md)
+- [OpenAI-compatible API](docs/guides/openai-api.md) · [Vision](docs/guides/vision.md)
+- [CUDA performance](docs/guides/cuda-performance.md) · [Tuning for new hardware and models](docs/guides/tuning-new-hardware-and-models.md)
 - [Roadmap](docs/plans/README.md)
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
-
-## Implementation notes
-
-The engine is written in Rust, with CUDA paths in cuTile/CUDA C++ and Metal paths in Metal Shading Language. These are implementation choices made for memory safety without a garbage collector, predictable latency, and direct access to the two target GPU APIs.
-
-They are not a goal in themselves and do not shape the project's contracts. The CLI, the HTTP/OpenAI surface, and the Safetensors and GGUF package formats are language-agnostic; changing a toolchain is an engineering decision that has to be justified by correctness and measured performance, not a change in what the project is.
 
 ## License
 
