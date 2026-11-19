@@ -29,7 +29,7 @@ pub(crate) fn driver_build() -> Option<String> {
 }
 
 /// Device and driver identity; `None` when the driver cannot be named, so nothing is reused.
-fn device_identity() -> Option<Vec<u8>> {
+pub(crate) fn device_identity() -> Option<Vec<u8>> {
     let device = CudaDevice::new(0).ok()?;
     let hardware = serde_json::to_string(device.profile().ok()?).ok()?;
     let version = CudaDevice::driver_version().ok()?;
