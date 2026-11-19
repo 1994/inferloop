@@ -5,6 +5,7 @@ use crate::mlp::Matrix;
 use crate::resident::buffers::{Operand, buffer};
 use crate::strategy::LinearTiling;
 use crate::tuning::memory::arena_budget;
+use crate::tuning::preparation::device_identity;
 use infer_core::{Error as InferError, ErrorCode, Result};
 use infer_cuda_kernels::contract::MatvecGeometry;
 use infer_cuda_kernels::contract::target::Arch;
@@ -185,11 +186,16 @@ pub(crate) fn device_error(error: impl Display) -> InferError {
 }
 
 impl CudaDevice {
-    /// Enable cuTile's persistent compiled-kernel cache for subsequent captures.
+    /// Enable cuTile's persistent compiled-kernel cache for subsequent captures, and the kernel
+    /// identities tuning records are keyed by, scoped to this device and driver.
     /// # Errors
     /// Returns cache initialization errors.
     pub fn enable_kernel_cache() -> Result<()> {
-        jit::enable_cache()
+        jit::enable_cache()?;
+        if let Some(scope) = device_identity() {
+            jit::enable_identity_cache(&scope);
+        }
+        Ok(())
     }
     /// # Errors
     /// Fails when the requested CUDA device or stream is unavailable.

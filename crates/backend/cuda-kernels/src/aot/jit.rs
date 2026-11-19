@@ -35,6 +35,13 @@ pub fn enable_cache() -> Result<()> {
     Ok(())
 }
 
+/// Precompiled kernels have fixed identities, so there is nothing to remember.
+#[expect(
+    clippy::missing_const_for_fn,
+    reason = "Not const in the cuTile build, so host callers compile under either source"
+)]
+pub fn enable_identity_cache(_scope: &[u8]) {}
+
 /// Programmatic dependent launch needs the cuTile runtime's launch attributes.
 /// # Errors
 /// Always: this kernel source does not provide it.
