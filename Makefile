@@ -61,7 +61,7 @@ accept:
 
 # Device and tool entries use the documented verbs; the check-* names remain as aliases while the
 # rest of the tree migrates.
-.PHONY: check test-cuda test-cuda-hosted test-kernels-aot test-metal bench check-rust check-tools check-security check-metal check-cuda check-attention check-msrv check-cpu check-linux check-linux-numa check-package
+.PHONY: check test-cuda test-cuda-hosted test-kernels-aot test-metal bench check-rust check-rust-lint check-rust-release check-tools check-security check-metal check-cuda check-attention check-msrv check-cpu check-linux check-linux-numa check-package
 check:
 	./tools/check/gate.sh all
 
@@ -87,7 +87,7 @@ check-cuda: test-cuda
 check-metal: test-metal
 check-cpu: bench
 
-check-rust check-tools check-security check-attention check-msrv check-linux check-linux-numa:
+check-rust check-rust-lint check-rust-release check-tools check-security check-attention check-msrv check-linux check-linux-numa:
 	./tools/check/gate.sh $(patsubst check-%,%,$@)
 
 check-package:

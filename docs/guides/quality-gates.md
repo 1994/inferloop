@@ -30,6 +30,7 @@
 ```sh
 make check            # 全部（macOS 上包含 Metal 实机）
 make check-rust       # 目录、lint、测试、文档、release、CPU 分配与 golden
+                      # = check-rust-lint + test + check-rust-release，CI 中三者并行
 make check-tools      # Ruff 与 actionlint
 make check-security   # cargo-deny、cargo-audit、Gitleaks
 make check-msrv       # Rust 1.90

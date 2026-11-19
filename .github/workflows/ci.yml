@@ -31,12 +31,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # `make check-rust` split into its three gate.sh parts, which run as parallel jobs; each keeps
+  # its own build cache because the parts build different profiles and targets.
   rust:
-    name: Rust (${{ matrix.os }})
+    name: Rust ${{ matrix.part }} (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-15]
+        part: [rust-lint, test, rust-release]
+        # macOS arm64 runners are capacity-constrained: a queued job can be dropped unacquired.
+        # The macOS package jobs already build the release CLI there, and the Linux part builds
+        # this same no-default-features configuration.
+        exclude:
+          - os: macos-15
+            part: rust-release
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -50,16 +59,17 @@ jobs:
           python-version: '3.12'
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: ${{ matrix.os }}
+          shared-key: ${{ matrix.os }}-${{ matrix.part }}
           cache-workspace-crates: true
+      # Only the test suite spawns ffmpeg/ffprobe.
       - name: Cache ffmpeg packages
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.part == 'test'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/apt-archives
           key: apt-ffmpeg-${{ runner.arch }}-${{ hashFiles('.github/workflows/ci.yml') }}
       - name: Install media subprocesses (ffmpeg, ffprobe)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.part == 'test'
         timeout-minutes: 5
         run: |
           if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null && \
@@ -94,11 +104,11 @@ jobs:
           ffmpeg -version >/dev/null
           ffprobe -version >/dev/null
       - name: Install media subprocesses (ffmpeg, ffprobe)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && matrix.part == 'test'
         run: brew install ffmpeg
-      - run: make check-rust
+      - run: ./tools/check/gate.sh ${{ matrix.part }}
       - name: Linux placement acceptance
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.part == 'rust-release'
         run: make check-linux
 
   tools:
