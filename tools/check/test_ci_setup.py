@@ -32,6 +32,8 @@ with Path(os.environ["CASE_LOG"]).open("a") as log:
     log.write(json.dumps([name, *args]) + "\n")
 if name in {"ffmpeg", "ffprobe"}:
     raise SystemExit(0)
+if name == "timeout":
+    raise SystemExit(subprocess.run(args[1:]).returncode)
 if name == "curl":
     Path(args[args.index("--output") + 1]).write_text("keyring")
 elif name == "dpkg-query":
@@ -42,13 +44,17 @@ elif name == "sudo" and args[0] == "sed":
         Path(path).write_bytes(data)
 elif name == "sudo" and args[0] == "apt-get":
     effective = Path(os.environ["CASE_EFFECTIVE"]).read_text()
-    if "azure.archive" in effective or "https://archive.ubuntu.com/ubuntu" not in effective:
+    if ".archive.ubuntu.com" in effective or "https://archive.ubuntu.com/ubuntu" not in effective:
         raise SystemExit(91)
     if os.environ["CASE_FAILURE"] == "update" and "update" in args:
         raise SystemExit(9)
     if "install" in args:
         if os.environ["CASE_FAILURE"] == "install":
             raise SystemExit(7)
+        stalled = Path(os.environ["CASE_LOG"]).with_name("stalled")
+        if os.environ["CASE_FAILURE"] == "stall" and not stalled.exists():
+            stalled.touch()
+            raise SystemExit(124)
         tool = Path(os.environ["CASE_BIN"]) / "sudo"
         for binary in ["ffmpeg", "ffprobe"]:
             destination = tool.with_name(binary)
@@ -82,6 +88,7 @@ class CiSetupTests(unittest.TestCase):
     def test_setup_shortcuts_failures_and_mirror_layouts(self):
         for job, (_, script) in setup_steps().items():
             cases = ["present", "missing", "install"] if job == "rust" else ["missing", "update"]
+            cases.append("stall")
             for layout in ["direct", "mirror-file"]:
                 for case in cases:
                     with self.subTest(job=job, layout=layout, case=case):
@@ -96,7 +103,7 @@ class CiSetupTests(unittest.TestCase):
             (apt / "sources.list.d").mkdir(parents=True)
             sources = apt / "sources.list.d/ubuntu.sources"
             mirrors = apt / "apt-mirrors.txt"
-            mirrors.write_text("http://azure.archive.ubuntu.com/ubuntu\n")
+            mirrors.write_text("http://us-east-2.ec2.archive.ubuntu.com/ubuntu\tpriority:1\n")
             uri = (
                 "http://azure.archive.ubuntu.com/ubuntu"
                 if layout == "direct"
@@ -112,7 +119,7 @@ class CiSetupTests(unittest.TestCase):
             github_env = root / "github-env"
             github_env.touch()
             stub = f"#!{sys.executable}\n" + STUB
-            for name in ["sudo", "curl", "dpkg-query"]:
+            for name in ["sudo", "timeout", "curl", "dpkg-query"]:
                 path = binaries / name
                 path.write_text(stub)
                 path.chmod(0o755)
@@ -155,12 +162,12 @@ class CiSetupTests(unittest.TestCase):
                 self.assertFalse(apt_calls)
                 self.assertEqual(sources.read_text(), original)
             else:
-                self.assertEqual(len(apt_calls), 1 if case == "update" else 2)
+                self.assertEqual(len(apt_calls), {"update": 1, "stall": 3}.get(case, 2))
                 for args in apt_calls:
                     self.assertIn("Acquire::Retries=1", args)
                     self.assertIn("Acquire::http::Timeout=20", args)
                     self.assertIn("DPkg::Lock::Timeout=60", args)
-                if job != "rust" and case == "missing":
+                if job != "rust" and case in {"missing", "stall"}:
                     self.assertIn("CUDA_TOOLKIT_CACHE_KEY=", github_env.read_text())
                 if case in {"install", "update"}:
                     self.assertFalse(github_env.read_text())
