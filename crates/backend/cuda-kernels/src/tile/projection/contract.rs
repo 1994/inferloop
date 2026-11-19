@@ -49,6 +49,8 @@ const TILE_WORDS: usize = 4;
 /// Code words, four rows each, one split GEMV CTA covers: half a tile per CTA doubles the grid
 /// without any cross-CTA reduction.
 const SPLIT_WORDS: usize = 2;
+/// Generics the high-bit plane adds to a launch: bits, mask, slots and lanes.
+const HIGH_GENERICS: usize = 4;
 /// Reductions longer than this keep whole nibble tiles per CTA and take longer byte steps.
 ///
 /// Measured on RTX 5090 over the Qwen3-VL-2B projections (cold L2): splitting took the
@@ -439,7 +441,7 @@ fn gemv_generics(
 
 /// The high-plane generics of `high_bits` per code: the bit count, its mask, and the slots and
 /// lanes of one span's words.
-fn high_generics(high_bits: u32) -> [String; 4] {
+fn high_generics(high_bits: u32) -> [String; HIGH_GENERICS] {
     let wide = NIBBLE_LANES * high_bits as usize;
     [
         high_bits.to_string(),
