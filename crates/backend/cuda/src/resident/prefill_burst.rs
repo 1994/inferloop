@@ -227,18 +227,19 @@ fn check_covered(segments: usize, weights: &ProgramWeights, hidden: usize) -> Re
     Ok(())
 }
 
-/// Attention and recurrent workspaces of one capture.
+/// Attention and recurrent workspaces of one capture over sequences of `capacity` positions
+/// that reach at most `reach` of them.
 fn workspaces(
     device: &CudaDevice,
     graph: &DataflowGraph,
     weights: &ProgramWeights,
-    capacity: usize,
+    (capacity, reach): (usize, usize),
 ) -> Result<(
     super::attention_decode::Workspace,
     super::recurrent_prefill::Workspace,
 )> {
     let mut attention = super::attention_decode::Workspace::new(device, graph, capacity)?;
-    attention.prepare_mma(device, graph, weights, capacity, SEGMENT_ROWS)?;
+    attention.prepare_mma(device, graph, weights, reach, SEGMENT_ROWS)?;
     attention.prepare_prefill(device, graph, weights, SEGMENT_ROWS);
     let recurrent = super::recurrent_prefill::Workspace::new(device, graph, weights, SEGMENT_ROWS)?;
     Ok((attention, recurrent))
@@ -376,7 +377,12 @@ impl PromptBurst {
         nvfp4.ensure_width(device, graph, weights, rows)?;
         nvfp4.ensure_width(device, graph, weights, segments)?;
         nvfp4.prepare_prompt_rows(device, graph, weights, rows)?;
-        let (mut attention, recurrent) = workspaces(device, graph, weights, capacity)?;
+        let reach = programs
+            .iter()
+            .map(|program| super::program::reach(capacity, program.fp8_states()))
+            .min()
+            .unwrap_or(capacity);
+        let (mut attention, recurrent) = workspaces(device, graph, weights, (capacity, reach))?;
         let views = storage.segment_views(graph, segments)?;
         let bound = bind_segments(programs, views, (&storage.info_rows, &storage.rotary_rows));
         let mut placeholder_states = States::new();

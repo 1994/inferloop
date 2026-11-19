@@ -659,7 +659,7 @@ impl SlotPool {
         let plan = copy_plan(graph, weights)?;
         let headroom = device.profile()?.device_headroom_bytes();
         let budget = device.allocatable_memory_bytes()?.saturating_sub(headroom);
-        let paging = Self::paging(device, graph, weights, (width, capacity), kv_tokens)?;
+        let paging = Self::paging(device, graph, weights, width, kv_tokens)?;
         let (mut states, mut fp8, tables) = Self::allocate_slots(
             device,
             graph,
@@ -961,6 +961,18 @@ impl SlotPool {
         (self.leases.allocations, self.leases.releases)
     }
 
+    /// Whether a sequence of `tokens` positions can run in this pool: within the slot capacity,
+    /// and, when the pool pages, within its pages, so that once the others release theirs it
+    /// can finish alone. A longer one keeps its private program.
+    #[must_use]
+    pub fn admits(&self, tokens: usize) -> bool {
+        tokens <= self.capacity
+            && self
+                .paging
+                .as_ref()
+                .is_none_or(|paging| tokens.div_ceil(KV_BLOCK_TOKENS) <= paging.pages.capacity())
+    }
+
     pub const fn capacity(&self) -> usize {
         self.capacity
     }
@@ -1192,20 +1204,21 @@ impl SlotPool {
             .transpose()
     }
 
-    /// The physical KV pool for a pool of `width` slots of `capacity` tokens: `kv_tokens`
-    /// shared positions, or `None` to give each slot its own whole-capacity cache.
+    /// The physical KV pool for a pool of `width` slots: `kv_tokens` shared positions, or
+    /// `None` to give each slot its own whole-capacity cache.
     fn paging(
         device: &CudaDevice,
         graph: &DataflowGraph,
         weights: &ProgramWeights,
-        (width, capacity): (usize, usize),
+        width: usize,
         kv_tokens: Option<usize>,
     ) -> Result<Option<Paging>> {
         let Some(tokens) = kv_tokens.filter(|_| !weights.kv_scales.is_empty()) else {
             return Ok(None);
         };
         let block = KV_BLOCK_TOKENS;
-        let blocks = tokens.div_ceil(block).max(capacity.div_ceil(block));
+        // One page per slot keeps every slot's table addressable; nothing funds a whole context.
+        let blocks = tokens.div_ceil(block).max(width);
         let shared = narrow_kv::allocate(
             device,
             graph,

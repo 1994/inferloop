@@ -112,7 +112,7 @@ fn repeated_media_reservations_do_not_accumulate_transient_bytes() -> infer_core
 fn quotes_do_not_recapture_a_retired_pool_and_reservation_restores_it() -> infer_core::Result<()> {
     use crate::{
         AttentionProfile,
-        constants::{CB_DECODE_SLOTS, CB_SLOT_TOKENS},
+        constants::{CB_DECODE_SLOTS, KV_BLOCK_TOKENS},
         device::CudaDevice,
         executor::CudaExecutor,
         loading::{LoadOptions, LoadedModel},
@@ -141,8 +141,14 @@ fn quotes_do_not_recapture_a_retired_pool_and_reservation_restores_it() -> infer
         .saturating_sub(loaded.device().profile()?.device_headroom_bytes())
         .saturating_sub(loaded.shared_scratch_bytes()?);
     let mut backend = CudaExecutor::new(loaded, budget, CB_DECODE_SLOTS)?;
+    // Longer than every captured page, so the idle pool cannot serve it.
+    let long = backend
+        .slots
+        .as_ref()
+        .map_or(0, |pool| pool.kv_pages().0 * KV_BLOCK_TOKENS)
+        + 1;
     assert!(backend.slots.is_some());
-    backend.prepare_state_reservation(CB_SLOT_TOKENS + 1, OutputReadout::Logits)?;
+    backend.prepare_state_reservation(long, OutputReadout::Logits)?;
     assert!(backend.slots.is_none());
     backend.prepare_state_reservation(512, OutputReadout::Logits)?;
     let quoted = backend

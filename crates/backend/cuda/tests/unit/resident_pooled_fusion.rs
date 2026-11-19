@@ -60,7 +60,7 @@ fn extended_concurrency_preserves_checkpoint_draft_states() -> Result<()> {
 fn compare_pool(loaded: &LoadedModel, width: usize) -> Result<()> {
     let before = captures();
     let mut candidate = loaded
-        .draft_slot_pool(width, 64)?
+        .draft_slot_pool(width, 64, None)?
         .ok_or_else(|| Error::invariant("checkpoint draft pool missing"))?;
     // The pool also captures a graph per narrow decode rung, and each qualifies on its own width.
     let rungs = narrow_widths(loaded.draft_graph().unwrap(), width, 0)
@@ -74,7 +74,7 @@ fn compare_pool(loaded: &LoadedModel, width: usize) -> Result<()> {
         "qualified fusion or original row captures must match the actual pool geometry"
     );
     let before = captures();
-    let mut reference = with_row_reference(|| loaded.draft_slot_pool(width, 64))?
+    let mut reference = with_row_reference(|| loaded.draft_slot_pool(width, 64, None))?
         .ok_or_else(|| Error::invariant("checkpoint reference pool missing"))?;
     assert_eq!(
         captures(),

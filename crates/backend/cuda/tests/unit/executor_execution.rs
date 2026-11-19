@@ -1,15 +1,17 @@
 use super::{SlotPool, candidate_pool_capacity, pool_retry_budget, pooled_envelope};
-use crate::constants::CB_SLOT_TOKENS;
 use crate::executor::CudaExecutor;
 use infer_core::{RequestId, StateId};
 use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{ExecutionInput, ExecutionTask, OutputReadout, TaskOutput, TokenBuffer};
 use std::{env::var, error::Error};
 
+/// The model context the candidate tests plan against.
+const LIMIT: usize = 8192;
+
 #[test]
 fn incompatible_requests_cannot_create_or_enlarge_a_decode_pool() {
     let full = (128, OutputReadout::Full);
-    let long = (CB_SLOT_TOKENS + 1, OutputReadout::Logits);
+    let long = (LIMIT + 1, OutputReadout::Logits);
     let compact = (128, OutputReadout::Logits);
     for states in [
         [full, full],
@@ -18,7 +20,7 @@ fn incompatible_requests_cannot_create_or_enlarge_a_decode_pool() {
         [compact, full],
         [long, compact],
     ] {
-        assert_eq!(candidate_pool_capacity(states.into_iter()), None);
+        assert_eq!(candidate_pool_capacity(states.into_iter(), LIMIT), None);
     }
 }
 
@@ -26,13 +28,26 @@ fn incompatible_requests_cannot_create_or_enlarge_a_decode_pool() {
 fn compatible_pool_geometry_is_independent_of_unrelated_request_order() {
     let short = (128, OutputReadout::Logits);
     let tail = (129, OutputReadout::Logits);
-    let full = (CB_SLOT_TOKENS, OutputReadout::Full);
-    let long = (CB_SLOT_TOKENS + 1, OutputReadout::Logits);
+    let full = (LIMIT, OutputReadout::Full);
+    let long = (LIMIT + 1, OutputReadout::Logits);
     for states in [[short, full, tail, long], [long, tail, full, short]] {
-        assert_eq!(candidate_pool_capacity(states.into_iter()), Some(256));
+        assert_eq!(
+            candidate_pool_capacity(states.into_iter(), LIMIT),
+            Some(256)
+        );
     }
-    assert_eq!(candidate_pool_capacity([short].into_iter()), None);
-    assert_eq!(candidate_pool_capacity([].into_iter()), None);
+    assert_eq!(candidate_pool_capacity([short].into_iter(), LIMIT), None);
+    assert_eq!(candidate_pool_capacity([].into_iter(), LIMIT), None);
+}
+
+#[test]
+fn the_pool_bucket_never_exceeds_the_model_context() {
+    let context = 40_960;
+    let long = (context - 1, OutputReadout::Logits);
+    assert_eq!(
+        candidate_pool_capacity([long, long].into_iter(), context),
+        Some(context)
+    );
 }
 
 #[test]
