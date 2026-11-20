@@ -230,7 +230,6 @@ pub fn artifact_identity() -> &'static str {
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_attention_oxide_resources.rs"]
 mod resources_tests;
 
 pub fn shared_identity() -> &'static str {

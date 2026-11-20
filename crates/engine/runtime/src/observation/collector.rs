@@ -369,5 +369,4 @@ impl CollectionState {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/observation_collector.rs"]
 mod tests;

@@ -174,5 +174,4 @@ impl Drop for WorkSender {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/cpu_queue.rs"]
 mod tests;

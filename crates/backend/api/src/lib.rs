@@ -8,7 +8,6 @@ pub const MAX_SUBMISSION_BATCH: usize = 64;
 pub const SUBMISSION_ABI_VERSION: u32 = 1;
 mod descriptor;
 #[cfg(test)]
-#[path = "../tests/unit/cases.rs"]
 mod tests;
 pub use descriptor::{SubmissionDescriptor, WorkDescriptor};
 mod slots;

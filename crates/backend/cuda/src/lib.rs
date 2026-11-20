@@ -25,5 +25,4 @@ pub mod registry;
 // Fixtures shared by tests in different module trees.
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../tests/unit/test_support.rs"]
 pub(crate) mod test_support;

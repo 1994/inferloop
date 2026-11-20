@@ -5,7 +5,6 @@ pub use infer_cuda_kernels::tile::recurrent::recurrent_prefill as kernels;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_recurrent_prefill.rs"]
 mod tests;
 
 /// Key/value dimension whose scalar F32 reduction trees are preserved.
@@ -26,16 +25,13 @@ pub use workspace::Workspace;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_recurrent_prefill_integration_tests.rs"]
 mod integration;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_recurrent_prefill_benchmark_tests.rs"]
 mod benchmark;
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_recurrent_prefill_model_check.rs"]
 mod model_check;
 
 #[cfg(test)]

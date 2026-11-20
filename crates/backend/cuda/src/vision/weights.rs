@@ -18,7 +18,6 @@ use std::collections::BTreeMap;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/vision_device_tower.rs"]
 mod device_tower_tests;
 
 /// Encoded staging limit for one vision tensor; the largest is a 4608×4608 merger projection.

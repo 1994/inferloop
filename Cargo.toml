@@ -24,6 +24,8 @@ members = [
     "crates/service/agent",
     "crates/service/cli",
     "crates/testing/cpu/reference-ops",
+    "crates/testing/cpu/support",
+    "crates/testing/cpu/cuda-acceptance",
     # Development tool: a member so it shares the lock, versions and lints, but not part of the
     # default product build set.
     "tools/bench/cpu",
@@ -120,6 +122,8 @@ infer-backend-metal = { version = "=0.1.0", path = "crates/backend/metal" }
 
 # Model loading and compilation
 infer-model-recipes = { version = "=0.1.0", path = "crates/model/recipes" }
+infer-test-support = { version = "=0.1.0", path = "crates/testing/cpu/support" }
+infer-cuda-acceptance = { version = "=0.1.0", path = "crates/testing/cpu/cuda-acceptance" }
 infer-models = { version = "=0.1.0", path = "crates/model/package" }
 infer-compiler = { version = "=0.1.0", path = "crates/model/compiler" }
 

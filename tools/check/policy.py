@@ -2,8 +2,12 @@
 
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_sources import test_source_paths
 
 ROOT = Path(__file__).resolve().parents[2]
 TILE_KERNELS = ROOT / "crates/backend/cuda-kernels/src/tile"
@@ -242,7 +246,8 @@ def check_exceptions():
                         ROOT / "crates/backend/cuda/src/resident/attention_mma/mod.rs",
                         # Conversion measurement: fixed buffers and access leases;
                         # synchronize on the owning stream before releasing storage.
-                        ROOT / "crates/backend/cuda/tests/unit/tuning_attention_fp8_convert.rs",
+                        ROOT
+                        / "crates/backend/cuda/src/tuning/attention/exact/fp8_convert_tests.rs",
                         # Slot state aliases: source pools outlive programs and captured
                         # graphs; only the current lease holder replays on the device stream.
                         ROOT / "crates/backend/cuda/src/resident/slot_batch.rs",
@@ -350,6 +355,7 @@ def magic_number_lines(path):
 
 def magic_number_files():
     """Production Rust sources under every workspace crate's `src` directory."""
+    test_sources = test_source_paths(ROOT)
     for path in sorted((ROOT / "crates").rglob("*.rs")):
         relative = path.relative_to(ROOT)
         if "src" not in relative.parts:
@@ -358,6 +364,8 @@ def magic_number_files():
         if name == "tests.rs" or name.endswith(("_tests.rs", "_check.rs")):
             continue
         if MAGIC_TEST_PARTS.intersection(relative.parts):
+            continue
+        if path.resolve() in test_sources:
             continue
         yield path
 
@@ -469,10 +477,25 @@ def _symbols_in(path, symbols):
 PRODUCTION_ROOTS = ("crates", "tools")
 
 
-def is_test_source(path, root):
+_TEST_SOURCES = {}
+
+
+def is_test_source(path, root=ROOT):
     """Whether a file is test source, where unwrapping a failed expectation is the point."""
+    root = Path(root)
     relative = path.relative_to(root)
-    return "tests" in relative.parts or path.name == "tests.rs" or path.name.startswith("test_")
+    if (
+        "tests" in relative.parts
+        or "testing" in relative.parts
+        or path.name == "tests.rs"
+        or path.name.startswith("test_")
+    ):
+        return True
+    sources = _TEST_SOURCES.get(root)
+    if sources is None:
+        sources = test_source_paths(root)
+        _TEST_SOURCES[root] = sources
+    return path.resolve() in sources
 
 
 def check_production_unwraps(root=ROOT):
@@ -509,6 +532,8 @@ def check_typed_api_json():
     """
     require(API_ROOT.is_dir(), f"API adapter root is missing: {API_ROOT}")
     for path in sorted(API_ROOT.rglob("*.rs")):
+        if is_test_source(path):
+            continue
         relative = path.relative_to(API_ROOT).as_posix()
         for lineno, line in enumerate(path.read_text().splitlines(), 1):
             code = line.split("//", 1)[0]

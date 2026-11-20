@@ -85,14 +85,12 @@ pub(crate) use small_gemm::kernels as small_gemm_kernels;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_gated_norm_discovery.rs"]
 pub(crate) mod gated_norm_discovery;
 
 #[cfg(test)]
 pub(crate) use prefill_projection::{narrow_dense_captures, with_dense_reference};
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_pooled_verify_model.rs"]
 mod pooled_verify_model_tests;
 
 mod norm_lowering;

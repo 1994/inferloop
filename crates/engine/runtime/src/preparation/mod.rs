@@ -9,7 +9,6 @@ use std::sync::Arc;
 pub use memory::request_bytes;
 
 #[cfg(test)]
-#[path = "../../tests/unit/media_plan.rs"]
 mod media_plan_tests;
 
 /// Fixed retained overhead beyond token, page and projection storage.

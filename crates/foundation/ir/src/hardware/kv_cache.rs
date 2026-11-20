@@ -60,5 +60,4 @@ impl FromStr for KvCacheEncoding {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/hardware_kv_cache.rs"]
 mod tests;

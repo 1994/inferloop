@@ -179,4 +179,4 @@ Runtime、Frontdoor、Agent 的多数场景需要的是确定的完成结果、�
 - 无设备测试不依赖 CUDA Toolkit、Metal 设备或模型下载；真实设备 suite 缺少所需硬件时明确失败。
 - CPU benchmark 继续测量正式 CPU 协议与分配，并明确排除模型执行，不依赖推理参考后端。
 
-实现前的消费者入口包括 [runtime capacity 测试](../../../crates/engine/runtime/tests/capacity.rs)、[actor 测试](../../../crates/service/frontdoor/tests/unit/actor.rs)、[CLI smoke](../../../crates/service/cli/tests/smoke.rs)、[CPU benchmark](../../../tools/bench/cpu/src/engine/mod.rs) 和 [Metal 验收](../../../tools/check/metal.py)。这些位置是迁移清单，不是拟议保留的新目录。
+实现前的消费者入口包括 [runtime capacity 测试](../../../crates/engine/runtime/tests/capacity.rs)、[actor 测试](../../../crates/service/frontdoor/src/actor/tests.rs)、[CLI smoke](../../../crates/service/cli/tests/smoke.rs)、[CPU benchmark](../../../tools/bench/cpu/src/engine/mod.rs) 和 [Metal 验收](../../../tools/check/metal.py)。这些位置是迁移清单，不是拟议保留的新目录。

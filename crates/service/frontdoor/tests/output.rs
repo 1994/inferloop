@@ -1,5 +1,3 @@
-#[path = "../../../engine/runtime/tests/support/mod.rs"]
-mod support;
 use infer_core::{Error, FinishReason, ModelId, ProgramId, RequestId, Result};
 use infer_frontdoor::RuntimeHandle;
 use infer_ir::{
@@ -8,6 +6,7 @@ use infer_ir::{
 use infer_kernel_api::KernelRegistry;
 use infer_runtime::{Engine, EngineOutput, RuntimeConfig};
 use infer_spi::WorkloadProvider;
+use infer_test_support::fixtures as support;
 use infer_workloads::NativeWorkloads;
 use std::{sync::Arc, sync::Mutex, sync::mpsc, time::Duration};
 use tokio::sync::mpsc::Receiver;

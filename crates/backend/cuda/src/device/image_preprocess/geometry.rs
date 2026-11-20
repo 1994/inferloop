@@ -78,5 +78,4 @@ fn checked_i32(value: usize) -> Result<i32> {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/vision_image_geometry.rs"]
 mod tests;

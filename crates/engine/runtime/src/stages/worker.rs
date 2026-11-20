@@ -12,7 +12,6 @@ use std::{
 };
 
 #[cfg(test)]
-#[path = "../../tests/unit/stages_worker.rs"]
 mod tests;
 type Wake = Arc<dyn Fn() + Send + Sync>;
 struct Shared {

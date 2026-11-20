@@ -160,5 +160,4 @@ impl LoadedModel {
     }
 }
 #[cfg(test)]
-#[path = "../../tests/unit/loading_concurrency.rs"]
 mod tests;

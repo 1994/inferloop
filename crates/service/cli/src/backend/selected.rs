@@ -515,5 +515,4 @@ pub fn load(path: &Path, memory_mib: u64, selection: &Selection) -> Result<Selec
 }
 
 #[cfg(all(test, metal_backend))]
-#[path = "../../tests/unit/backend_selected.rs"]
 mod readout_tests;

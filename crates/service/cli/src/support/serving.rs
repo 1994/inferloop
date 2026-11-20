@@ -115,5 +115,4 @@ fn cuda_prefill_limits(config: &mut RuntimeConfig, width: usize, automatic: bool
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/support_serving.rs"]
 mod tests;

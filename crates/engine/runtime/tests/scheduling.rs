@@ -1,4 +1,4 @@
-mod support;
+use infer_test_support::fixtures as support;
 
 use infer_kernel_api::KernelRegistry;
 use infer_spi::{AdmissionPolicy, BackendProvider, SchedulingPolicy};

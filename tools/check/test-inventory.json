@@ -3,44 +3,44 @@
     "agent": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 12
+      "src_near": 12,
+      "tests": 0
     },
     "api": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 6
+      "src_near": 6,
+      "tests": 0
     },
     "cli": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 32
+      "src_near": 33,
+      "tests": 2
     },
     "compiler": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 8
+      "src_near": 8,
+      "tests": 0
     },
     "core": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 18
+      "src_near": 18,
+      "tests": 0
     },
     "cuda": {
       "benches": 0,
-      "src_inline": 0,
-      "src_near": 0,
-      "tests": 522
+      "src_inline": 33,
+      "src_near": 493,
+      "tests": 1
     },
     "cuda-kernels": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 20
+      "src_near": 23,
+      "tests": 0
     },
     "format": {
       "benches": 0,
@@ -51,86 +51,86 @@
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 197
+      "src_near": 185,
+      "tests": 13
     },
     "ir": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 29
+      "src_near": 14,
+      "tests": 15
     },
     "kernel-api": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 6
+      "src_near": 6,
+      "tests": 0
     },
     "media": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 12
+      "src_near": 2,
+      "tests": 10
     },
     "metal": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 19
+      "src_near": 3,
+      "tests": 16
     },
     "observe": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 12
+      "src_near": 12,
+      "tests": 0
     },
     "package": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 194
+      "src_near": 177,
+      "tests": 18
     },
     "quality": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 3
+      "src_near": 3,
+      "tests": 0
     },
     "recipes": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 3
+      "src_near": 6,
+      "tests": 0
     },
     "runtime": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 114
+      "src_near": 26,
+      "tests": 92
     },
     "scheduler": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 63
+      "src_near": 16,
+      "tests": 47
     },
     "spi": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 9
+      "src_near": 9,
+      "tests": 0
     },
     "state": {
       "benches": 0,
-      "src_inline": 0,
-      "src_near": 0,
-      "tests": 33
+      "src_inline": 4,
+      "src_near": 12,
+      "tests": 17
     },
     "workloads": {
       "benches": 0,
-      "src_inline": 0,
-      "src_near": 0,
-      "tests": 34
+      "src_inline": 10,
+      "src_near": 24,
+      "tests": 0
     }
   },
   "executor_consumers": [
@@ -289,7 +289,7 @@
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
     "requires a CUDA device": 14,
     "requires a CUDA device and INFER_TEST_MODEL with gated-delta layers": 3,
-    "requires a CUDA device; run inside safe-run": 5,
+    "requires a CUDA device; run inside safe-run": 6,
     "requires a CUDA device; timing": 1,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
     "requires a qualified CUDA device": 4,
@@ -297,6 +297,7 @@
     "requires a reserved CUDA device": 1,
     "requires a reserved CUDA device; compares every output with the prior tower": 1,
     "requires a reserved CUDA device; compares full outputs with scalar and existing paths": 1,
+    "requires a reserved CUDA device; compares the one-graph encode with the host path": 1,
     "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 9,
     "requires nvJPEG hardware and JPEG fixture in INFER_NVJPEG_JPEG_FIXTURE": 1,
     "requires nvJPEG hardware and JPEG/RGB fixtures in INFER_NVJPEG_JPEG_FIXTURE and INFER_NVJPEG_RGB_FIXTURE": 1,
@@ -306,961 +307,6 @@
     "requires release CUDA O3, completed CI and complete bitwise gate; safe-run; internal paired prefill cost only": 1
   },
   "path_mounts": [
-    {
-      "crate": "api",
-      "file": "src/batches.rs",
-      "mount": "../tests/unit/batches.rs"
-    },
-    {
-      "crate": "api",
-      "file": "src/lib.rs",
-      "mount": "../tests/unit/cases.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/attention/mod.rs",
-      "mount": "../../tests/unit/attention_gate_check.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/attention/mod.rs",
-      "mount": "../../tests/unit/attention_benchmark_check.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/attention/mod.rs",
-      "mount": "../../tests/unit/attention.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/attention_profile.rs",
-      "mount": "../tests/unit/attention_profile_capabilities.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device/cublaslt.rs",
-      "mount": "../../tests/unit/device_cublaslt.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device/device_timer.rs",
-      "mount": "../../tests/unit/device_timer.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device/image_preprocess/axis.rs",
-      "mount": "../../../tests/unit/vision_image_axis.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device/image_preprocess/capability.rs",
-      "mount": "../../../tests/unit/vision_image_capability.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device/image_preprocess/geometry.rs",
-      "mount": "../../../tests/unit/vision_image_geometry.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device/image_preprocess/mod.rs",
-      "mount": "../../../tests/unit/vision_image_preprocess.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device/image_preprocess/tables.rs",
-      "mount": "../../../tests/unit/vision_image_tables.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device/readback.rs",
-      "mount": "../../tests/unit/device_readback_check.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device/step_clock.rs",
-      "mount": "../../tests/unit/device_step_clock.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device/vendor_fp8/nvfp4.rs",
-      "mount": "../../../tests/unit/vendor_nvfp4_numerics.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device/vendor_fp8/nvfp4.rs",
-      "mount": "../../../tests/unit/vendor_nvfp4.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device/vision_position.rs",
-      "mount": "../../tests/unit/vision_position.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device.rs",
-      "mount": "../tests/unit/device_tensors.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device.rs",
-      "mount": "../tests/unit/device.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/device.rs",
-      "mount": "../tests/unit/device_transfers.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/admission_pool.rs",
-      "mount": "../../tests/unit/executor_request_kv.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/admission_pool.rs",
-      "mount": "../../tests/unit/executor_recurrent_profile.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/admission_pool.rs",
-      "mount": "../../tests/unit/executor_recurrent_drift.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/execution.rs",
-      "mount": "../../tests/unit/executor_execution.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/execution.rs",
-      "mount": "../../tests/unit/executor_prompt_burst.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/mod.rs",
-      "mount": "../../tests/unit/executor_mod.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/mod.rs",
-      "mount": "../../tests/unit/resident_mtp_fusion_model.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/owner/notification.rs",
-      "mount": "../../../tests/unit/executor_notification.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/owner.rs",
-      "mount": "../../tests/unit/executor_owner.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/prefix.rs",
-      "mount": "../../tests/unit/executor_prefix.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/prefix_state.rs",
-      "mount": "../../tests/unit/executor_prefix_state.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/profiling.rs",
-      "mount": "../../tests/unit/executor_profiling.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/provider.rs",
-      "mount": "../../tests/unit/executor_kv_inspection.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/executor/state.rs",
-      "mount": "../../tests/unit/executor_state.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/lib.rs",
-      "mount": "../tests/unit/test_support.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/budget.rs",
-      "mount": "../../tests/unit/loading_budget.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/concurrency.rs",
-      "mount": "../../tests/unit/loading_concurrency.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/grouped_int_tiled.rs",
-      "mount": "../../tests/unit/grouped_int_tiled.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/head_padding.rs",
-      "mount": "../../tests/unit/head_padding.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_mod.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_support.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_shape_ab.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_prefill_width.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/resident_quant_reuse_model.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/resident_attention_prefill_model.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/resident_decode_path.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/resident_prefill_demand_model.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_parallel_quant.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_parallel_quant_pool.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_pool_gemv_cost.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_pool_gemv_model.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_pool_greedy_lifecycle.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_oxide_attention.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_gated_norm_model.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_prompt_width_buckets.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/resident_norm_maximum_model.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/resident_norm_fp4_quant.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/resident_norm_fp4_model.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/vendor_nvfp4_fixture.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/resident_vendor_fp4_model.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/mlp/projection.rs",
-      "mount": "../../tests/unit/projection_tensors.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/nvfp4.rs",
-      "mount": "../tests/unit/nvfp4.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/arena.rs",
-      "mount": "../../tests/unit/arena_tensors.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/attention.rs",
-      "mount": "../../tests/unit/resident_embedding_rows.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/attention_decode/pooled.rs",
-      "mount": "../../../tests/unit/resident_pooled_attention.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/attention_decode/workspace.rs",
-      "mount": "../../../tests/unit/resident_attention_prefill_taps.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/attention_decode.rs",
-      "mount": "../../tests/unit/resident_attention_decode.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/attention_lowering.rs",
-      "mount": "../../tests/unit/attention_lowering.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/attention_mma/catalog.rs",
-      "mount": "../../../tests/unit/resident_attention_mma_catalog.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/attention_mma/f16.rs",
-      "mount": "../../../tests/unit/resident_attention_mma_f16.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/attention_oxide.rs",
-      "mount": "../../tests/unit/resident_attention_oxide_resources.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/attention_prefill.rs",
-      "mount": "../../tests/unit/resident_attention_prefill.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/attention_prefill.rs",
-      "mount": "../../tests/unit/resident_prefill_page_append.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/batch.rs",
-      "mount": "../../tests/unit/resident_batch_ba_pair.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/batch.rs",
-      "mount": "../../tests/unit/resident_metadata_batch.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/buffers.rs",
-      "mount": "../../tests/unit/resident_runtime_replay.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/buffers.rs",
-      "mount": "../../tests/unit/buffer_tensors.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/capacity.rs",
-      "mount": "../../tests/unit/resident_capacity.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/capture.rs",
-      "mount": "../../tests/unit/resident_elementwise_cell.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/capture_checkpoint.rs",
-      "mount": "../../tests/unit/resident_capture_checkpoint.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/capture_rope.rs",
-      "mount": "../../tests/unit/resident_rope_cell.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/capture_state.rs",
-      "mount": "../../tests/unit/resident_recurrent_cell.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/conv_prefill.rs",
-      "mount": "../../tests/unit/resident_conv_prefill.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/dflash2/kernels.rs",
-      "mount": "../../../tests/unit/resident_dflash2_kernels.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/dflash2/mod.rs",
-      "mount": "../../../tests/unit/resident_dflash2_budget.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/fp8_gemm.rs",
-      "mount": "../../tests/unit/resident_fp8_gemm.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/fp8_quant_reduction.rs",
-      "mount": "../../tests/unit/resident_fp8_quant_reduction.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/fusion_batch.rs",
-      "mount": "../../tests/unit/resident_fusion_batch.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/fusion_batch.rs",
-      "mount": "../../tests/unit/resident_pooled_fusion.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/greedy.rs",
-      "mount": "../../tests/unit/resident_greedy.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/metadata.rs",
-      "mount": "../../tests/unit/resident_metadata_check.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/mod.rs",
-      "mount": "../../tests/unit/resident_gated_norm_discovery.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/mod.rs",
-      "mount": "../../tests/unit/resident_pooled_verify_model.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/moe.rs",
-      "mount": "../../tests/unit/moe.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/norm_lowering.rs",
-      "mount": "../../tests/unit/norm_lowering.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/norm_lowering.rs",
-      "mount": "../../tests/unit/resident_norm_cell.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/nvfp4_gemm/quant_reuse.rs",
-      "mount": "../../../tests/unit/resident_quant_reuse_plan.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/nvfp4_gemm/workspace.rs",
-      "mount": "../../../tests/unit/resident_norm_fp4_permissions.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/nvfp4_gemm.rs",
-      "mount": "../../tests/unit/resident_nvfp4_gemm.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/nvfp4_gemm.rs",
-      "mount": "../../tests/unit/resident_nvfp4_pipeline.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/nvfp4_gemm.rs",
-      "mount": "../../tests/unit/resident_vendor_fp8.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/nvfp4_gemm.rs",
-      "mount": "../../tests/unit/resident_quant_reuse.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/pool_gemv.rs",
-      "mount": "../../tests/unit/resident_pool_gemv_cell.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/prefill_demand.rs",
-      "mount": "../../tests/unit/resident_prefill_demand.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/prefill_gemm.rs",
-      "mount": "../../tests/unit/resident_prefill_gemm_bench_check.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/prefill_projection.rs",
-      "mount": "../../tests/unit/resident_prefill_projection.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/profile.rs",
-      "mount": "../../tests/unit/resident_profile.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/program/greedy.rs",
-      "mount": "../../../tests/unit/resident_program_greedy.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/projection_lowering.rs",
-      "mount": "../../tests/unit/projection_lowering.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/recurrent_checkpoint.rs",
-      "mount": "../../tests/unit/resident_recurrent_checkpoint.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/recurrent_lowering.rs",
-      "mount": "../../tests/unit/recurrent_lowering.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/recurrent_prefill/chunk.rs",
-      "mount": "../../../tests/unit/resident_recurrent_scan_tiling.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/recurrent_prefill.rs",
-      "mount": "../../tests/unit/resident_recurrent_prefill.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/recurrent_prefill.rs",
-      "mount": "../../tests/unit/resident_recurrent_prefill_integration_tests.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/recurrent_prefill.rs",
-      "mount": "../../tests/unit/resident_recurrent_prefill_benchmark_tests.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/recurrent_prefill.rs",
-      "mount": "../../tests/unit/resident_recurrent_prefill_model_check.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/reset.rs",
-      "mount": "../../tests/unit/resident_reset.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/slot_batch.rs",
-      "mount": "../../tests/unit/resident_slot_batch_draft_tests.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/slot_convolution.rs",
-      "mount": "../../tests/unit/resident_slot_convolution.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/slot_recurrent.rs",
-      "mount": "../../tests/unit/resident_slot_recurrent.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/slot_recurrent.rs",
-      "mount": "../../tests/unit/slot_staging.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/slot_rope.rs",
-      "mount": "../../tests/unit/resident_slot_rope.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/slot_verify.rs",
-      "mount": "../../tests/unit/resident_slot_verify.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/small_gemm.rs",
-      "mount": "../../tests/unit/resident_small_gemm.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/resident/validation.rs",
-      "mount": "../../tests/unit/resident_validation.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/strategy.rs",
-      "mount": "../tests/unit/strategy.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/attention/capture.rs",
-      "mount": "../../../tests/unit/tuning_attention_append_headers.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/attention/decode.rs",
-      "mount": "../../../tests/unit/resident_attention_decode_workspace.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/attention/exact.rs",
-      "mount": "../../../tests/unit/tuning_attention_exact.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/attention/exact.rs",
-      "mount": "../../../tests/unit/tuning_attention_fp8_convert.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/attention/mma.rs",
-      "mount": "../../../tests/unit/tuning_attention_mma.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/attention/mma_f32/capture.rs",
-      "mount": "../../../../tests/unit/tuning_attention_f32_append_headers.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/attention/mma_f32.rs",
-      "mount": "../../../tests/unit/tuning_attention_mma_f32.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/attention/shared.rs",
-      "mount": "../../../tests/unit/tuning_attention_shared.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/attention/vector.rs",
-      "mount": "../../../tests/unit/tuning_attention_vector.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/attention/vector_combined.rs",
-      "mount": "../../../tests/unit/tuning_attention_vector_combined.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/attention.rs",
-      "mount": "../../tests/unit/tuning_attention.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/fp8_gemm/probe_inputs.rs",
-      "mount": "../../../tests/unit/fp8_probe_inputs.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/fp8_gemm.rs",
-      "mount": "../../tests/unit/fp8_gemm_tuning.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/gated_norm.rs",
-      "mount": "../../tests/unit/tuning_gated_norm.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/greedy.rs",
-      "mount": "../../tests/unit/tuning_greedy.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/nvfp4_lt.rs",
-      "mount": "../../tests/unit/tuning_nvfp4_lt.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/pool_dense.rs",
-      "mount": "../../tests/unit/pool_dense_tuning.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/preparation.rs",
-      "mount": "../../tests/unit/tuning_preparation.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/projection_budget.rs",
-      "mount": "../../tests/unit/projection_search_budget.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/recurrent.rs",
-      "mount": "../../tests/unit/tuning_recurrent.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/resident_gemm/swiglu.rs",
-      "mount": "../../../tests/unit/resident_swiglu_tuning.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/resident_gemm.rs",
-      "mount": "../../tests/unit/resident_gemm_tuning.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning/search.rs",
-      "mount": "../../tests/unit/tuning_search.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/tuning.rs",
-      "mount": "../tests/unit/tuning.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/vision/block_mlp.rs",
-      "mount": "../../tests/unit/vision_block_mlp.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/vision/mod.rs",
-      "mount": "../../tests/unit/vision_attention_bench_check.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/vision/mod.rs",
-      "mount": "../../tests/unit/vision_attention_check.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/vision/mod.rs",
-      "mount": "../../tests/unit/vision_padding.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/vision/program.rs",
-      "mount": "../../tests/unit/vision_projection_output.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/vision/session.rs",
-      "mount": "../../tests/unit/vision_session.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/vision/weights.rs",
-      "mount": "../../tests/unit/vision_device_tower.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "tests/unit/executor_owner.rs",
-      "mount": "executor_fixed_batch.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "tests/unit/executor_owner.rs",
-      "mount": "executor_preparation.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "tests/unit/loading_budget.rs",
-      "mount": "loading_budget_recurrent.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "tests/unit/resident_batch_ba_pair.rs",
-      "mount": "resident_gdn_projection_gpu.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "tests/unit/resident_elementwise_cell.rs",
-      "mount": "../../../cuda-kernels/acceptance/elementwise.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "tests/unit/resident_norm_cell.rs",
-      "mount": "../../../cuda-kernels/acceptance/norm.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "tests/unit/resident_pool_gemv_cell.rs",
-      "mount": "../../../cuda-kernels/acceptance/pool_gemv.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "tests/unit/resident_recurrent_cell.rs",
-      "mount": "../../../cuda-kernels/acceptance/recurrent.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "tests/unit/resident_rope_cell.rs",
-      "mount": "../../../cuda-kernels/acceptance/rope.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "tests/unit/resident_slot_recurrent.rs",
-      "mount": "resident_slot_recurrent_batch.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "tests/unit/resident_slot_recurrent.rs",
-      "mount": "resident_slot_recurrent_lanes.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "tests/unit/resident_slot_recurrent_batch.rs",
-      "mount": "resident_slot_recurrent_wave.rs"
-    },
-    {
-      "crate": "cuda-kernels",
-      "file": "src/aot/artifact.rs",
-      "mount": "../../tests/unit/aot_artifact.rs"
-    },
-    {
-      "crate": "cuda-kernels",
-      "file": "src/aot/runtime.rs",
-      "mount": "../../tests/unit/aot_runtime.rs"
-    },
-    {
-      "crate": "cuda-kernels",
-      "file": "src/contract/buffer.rs",
-      "mount": "../../tests/unit/contract_buffer.rs"
-    },
-    {
-      "crate": "cuda-kernels",
-      "file": "src/contract/target.rs",
-      "mount": "../../tests/unit/target.rs"
-    },
-    {
-      "crate": "kernel-api",
-      "file": "src/attention.rs",
-      "mount": "../tests/unit/attention_tests.rs"
-    },
-    {
-      "crate": "kernel-api",
-      "file": "src/registry.rs",
-      "mount": "../tests/unit/registry.rs"
-    },
-    {
-      "crate": "metal",
-      "file": "src/device.rs",
-      "mount": "../tests/unit/device.rs"
-    },
-    {
-      "crate": "metal",
-      "file": "src/executor/mod.rs",
-      "mount": "../../tests/unit/executor_state_tests.rs"
-    },
-    {
-      "crate": "metal",
-      "file": "src/executor/submission.rs",
-      "mount": "../../tests/unit/executor_submission.rs"
-    },
-    {
-      "crate": "observe",
-      "file": "src/device.rs",
-      "mount": "../tests/unit/device.rs"
-    },
-    {
-      "crate": "observe",
-      "file": "src/lib.rs",
-      "mount": "../tests/unit/cases.rs"
-    },
-    {
-      "crate": "quality",
-      "file": "src/lib.rs",
-      "mount": "../tests/unit/cases.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/config.rs",
-      "mount": "../tests/unit/config_concurrency.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/cpu/plans.rs",
-      "mount": "../../tests/unit/cpu_plans.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/lengths.rs",
-      "mount": "../tests/unit/lengths.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/observation/collector.rs",
-      "mount": "../../tests/unit/observation_collector.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/observation/mod.rs",
-      "mount": "../../tests/unit/observation.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/preparation/mod.rs",
-      "mount": "../../tests/unit/media_plan.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/resource/waiters.rs",
-      "mount": "../../tests/unit/resource_waiters.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/stages/output.rs",
-      "mount": "../../tests/unit/backend_token_output.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/stages/worker.rs",
-      "mount": "../../tests/unit/stages_worker.rs"
-    },
     {
       "crate": "runtime",
       "file": "tests/runner.rs",
@@ -1287,467 +333,17 @@
       "mount": "unit/runner_reservation.rs"
     },
     {
-      "crate": "runtime",
-      "file": "tests/unit/observation.rs",
-      "mount": "../support/mod.rs"
-    },
-    {
-      "crate": "scheduler",
-      "file": "src/cost/summary.rs",
-      "mount": "../../tests/unit/cost_summary.rs"
-    },
-    {
-      "crate": "scheduler",
-      "file": "src/policy/packing.rs",
-      "mount": "../../tests/unit/policy_packing.rs"
-    },
-    {
-      "crate": "scheduler",
-      "file": "src/pool_demand.rs",
-      "mount": "../tests/unit/pool_demand.rs"
-    },
-    {
-      "crate": "scheduler",
-      "file": "src/queue/ordered.rs",
-      "mount": "../../tests/unit/ordered.rs"
-    },
-    {
-      "crate": "scheduler",
-      "file": "src/room.rs",
-      "mount": "../tests/unit/room.rs"
-    },
-    {
-      "crate": "state",
-      "file": "src/cache.rs",
-      "mount": "../tests/unit/cache.rs"
-    },
-    {
-      "crate": "state",
-      "file": "src/kv/prefix.rs",
-      "mount": "../../tests/unit/prefix_pages.rs"
-    },
-    {
-      "crate": "state",
-      "file": "src/logical/mod.rs",
-      "mount": "../../tests/unit/logical.rs"
-    },
-    {
-      "crate": "state",
-      "file": "src/physical.rs",
-      "mount": "../tests/unit/recurrent_reference.rs"
-    },
-    {
-      "crate": "state",
-      "file": "src/physical.rs",
-      "mount": "../tests/unit/physical.rs"
-    },
-    {
-      "crate": "workloads",
-      "file": "src/lib.rs",
-      "mount": "../tests/unit/recurrent_reference.rs"
-    },
-    {
-      "crate": "workloads",
-      "file": "src/lib.rs",
-      "mount": "../tests/unit/cases.rs"
-    },
-    {
-      "crate": "workloads",
-      "file": "src/readouts.rs",
-      "mount": "../tests/unit/readouts.rs"
-    },
-    {
-      "crate": "workloads",
-      "file": "src/sampling.rs",
-      "mount": "../tests/unit/sampling.rs"
-    },
-    {
-      "crate": "workloads",
-      "file": "src/speculative.rs",
-      "mount": "../tests/unit/speculative.rs"
-    },
-    {
-      "crate": "core",
-      "file": "src/arena.rs",
-      "mount": "../tests/unit/arena.rs"
-    },
-    {
-      "crate": "core",
-      "file": "src/credits.rs",
-      "mount": "../tests/unit/credits.rs"
-    },
-    {
-      "crate": "core",
-      "file": "src/event.rs",
-      "mount": "../tests/unit/event.rs"
-    },
-    {
-      "crate": "core",
-      "file": "src/map.rs",
-      "mount": "../tests/unit/map.rs"
-    },
-    {
-      "crate": "core",
-      "file": "src/placement/mod.rs",
-      "mount": "../../tests/unit/placement.rs"
-    },
-    {
-      "crate": "core",
-      "file": "src/placement/native/mask.rs",
-      "mount": "../../../tests/unit/placement_native_mask.rs"
-    },
-    {
-      "crate": "core",
-      "file": "src/placement/native/numa.rs",
-      "mount": "../../../tests/unit/placement_native_numa_tests.rs"
-    },
-    {
-      "crate": "core",
-      "file": "src/placement/native/numa.rs",
-      "mount": "../../../tests/unit/placement_native_numa.rs"
-    },
-    {
-      "crate": "core",
-      "file": "src/placement/topology.rs",
-      "mount": "../../tests/unit/placement_topology.rs"
-    },
-    {
-      "crate": "core",
-      "file": "src/set.rs",
-      "mount": "../tests/unit/set.rs"
-    },
-    {
-      "crate": "ir",
-      "file": "src/hardware/kv_cache.rs",
-      "mount": "../../tests/unit/hardware_kv_cache.rs"
-    },
-    {
-      "crate": "ir",
-      "file": "src/image.rs",
-      "mount": "../tests/unit/image.rs"
-    },
-    {
-      "crate": "ir",
-      "file": "src/state_recipe/mod.rs",
-      "mount": "../../tests/unit/state_recipe.rs"
-    },
-    {
-      "crate": "ir",
-      "file": "src/workload.rs",
-      "mount": "../tests/unit/workload_speculation.rs"
-    },
-    {
-      "crate": "ir",
-      "file": "src/workload.rs",
-      "mount": "../tests/unit/workload_decision.rs"
-    },
-    {
-      "crate": "spi",
-      "file": "src/resource.rs",
-      "mount": "../tests/unit/resource.rs"
-    },
-    {
-      "crate": "spi",
-      "file": "src/responses.rs",
-      "mount": "../tests/unit/responses.rs"
-    },
-    {
-      "crate": "compiler",
-      "file": "src/compilation.rs",
-      "mount": "../tests/unit/compilation.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/generation/mod.rs",
-      "mount": "../../tests/unit/generation.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/constraint/mod.rs",
-      "mount": "../../../tests/unit/tool_constraint.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/image.rs",
-      "mount": "../../tests/unit/input_image.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/mrope.rs",
-      "mount": "../../tests/unit/input_mrope.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/prompt.rs",
-      "mount": "../../tests/unit/input_prompt.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/tool.rs",
-      "mount": "../../tests/unit/input_tool.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/video.rs",
-      "mount": "../../tests/unit/input_video.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/vision.rs",
-      "mount": "../../tests/unit/input_vision.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/providers/dflash2.rs",
-      "mount": "../../tests/unit/providers_dflash2.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/providers/llama.rs",
-      "mount": "../../tests/unit/providers_llama.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/providers/qwen/gguf/mod.rs",
-      "mount": "../../../../tests/unit/providers_gguf.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/providers/qwen/gguf/tokenizer.rs",
-      "mount": "../../../../tests/unit/providers_gguf_tokenizer.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/providers/qwen/mod.rs",
-      "mount": "../../../tests/unit/providers_qwen.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/providers/registry.rs",
-      "mount": "../../tests/unit/providers_registry.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/storage/gguf_requirements.rs",
-      "mount": "../../tests/unit/gguf_requirements.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/storage/mod.rs",
-      "mount": "../../tests/unit/storage_shards_tests.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/storage/quantized/activations.rs",
-      "mount": "../../../tests/unit/storage_quantized_activations.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/storage/quantized.rs",
-      "mount": "../../tests/unit/storage_quantized.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/storage/source.rs",
-      "mount": "../../tests/unit/source.rs"
-    },
-    {
-      "crate": "recipes",
-      "file": "src/features.rs",
-      "mount": "../tests/unit/features.rs"
-    },
-    {
-      "crate": "agent",
-      "file": "src/lib.rs",
-      "mount": "../tests/unit/cases.rs"
-    },
-    {
-      "crate": "agent",
-      "file": "tests/unit/cases.rs",
-      "mount": "../../../../engine/runtime/tests/support/mod.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/arguments.rs",
-      "mount": "../tests/unit/arguments.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/backend/defaults.rs",
-      "mount": "../../tests/unit/backend_defaults.rs"
-    },
-    {
       "crate": "cli",
       "file": "src/backend/mod.rs",
       "mount": "cuda_unavailable.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/backend/mod.rs",
-      "mount": "../../tests/unit/backend_mod.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/backend/selected.rs",
-      "mount": "../../tests/unit/backend_selected.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/backend/speculation.rs",
-      "mount": "../../tests/unit/backend_speculation.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/commands/tuning_worker.rs",
-      "mount": "../../tests/unit/tuning_worker.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/support/logging.rs",
-      "mount": "../../tests/unit/support_logging.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/support/memory.rs",
-      "mount": "../../tests/unit/support_memory.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/support/serving.rs",
-      "mount": "../../tests/unit/support_serving.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/actor/mod.rs",
-      "mount": "../../tests/unit/actor.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/cpu/queue.rs",
-      "mount": "../../tests/unit/cpu_queue.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/logging.rs",
-      "mount": "../../tests/unit/http_logging.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/mod.rs",
-      "mount": "../../tests/unit/http.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/decisions/mod.rs",
-      "mount": "../../../../tests/unit/http_openai_decisions_request.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/execution.rs",
-      "mount": "../../../tests/unit/http_openai_execution.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/ids.rs",
-      "mount": "../../../tests/unit/ids.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/mod.rs",
-      "mount": "../../../tests/unit/http_openai.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/request.rs",
-      "mount": "../../../tests/unit/http_openai_request.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/responses/mod.rs",
-      "mount": "../../../../tests/unit/http_responses.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/responses/output.rs",
-      "mount": "../../../../tests/unit/http_responses_output.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/responses/request.rs",
-      "mount": "../../../../tests/unit/http_responses_request.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/stream.rs",
-      "mount": "../../../tests/unit/http_openai_stream.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/ingress.rs",
-      "mount": "../tests/unit/ingress.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/media/options.rs",
-      "mount": "../../tests/unit/media_options.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/media/source.rs",
-      "mount": "../../tests/unit/media_source.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/media.rs",
-      "mount": "../tests/unit/media.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/responses_store.rs",
-      "mount": "../tests/unit/responses_store.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "tests/isolation.rs",
-      "mount": "../../../engine/runtime/tests/support/mod.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "tests/output.rs",
-      "mount": "../../../engine/runtime/tests/support/mod.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "tests/unit/actor.rs",
-      "mount": "../../../../engine/runtime/tests/support/mod.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "tests/unit/http.rs",
-      "mount": "../../../../engine/runtime/tests/support/mod.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "tests/unit/http_openai.rs",
-      "mount": "http_strict_tools.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "tests/unit/http_openai.rs",
-      "mount": "http_openai_decisions.rs"
-    },
-    {
-      "crate": "media",
-      "file": "src/video.rs",
-      "mount": "../tests/unit/video.rs"
     }
   ],
   "totals": {
-    "all": 1360,
+    "all": 1380,
     "benches": 0,
-    "src": 0,
-    "src_inline": 0,
-    "src_near": 0,
-    "tests": 1360
+    "src": 1135,
+    "src_inline": 47,
+    "src_near": 1088,
+    "tests": 245
   }
 }

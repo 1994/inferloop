@@ -11,5 +11,4 @@ use types::{
 };
 pub use types::{MAX_TOOL_CALLS, ParsedOutput, ParsedToolCall, StreamEvent, ToolCall, ToolDialect};
 #[cfg(test)]
-#[path = "../../tests/unit/input_tool.rs"]
 mod tests;

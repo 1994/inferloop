@@ -243,14 +243,10 @@ class RoleTest(unittest.TestCase):
 
 
 class RatchetTest(unittest.TestCase):
-    def test_growth_in_src_is_refused(self):
-        recorded = inventory(src=10)
-        problems = module.regressions(inventory(src=11), recorded)
-        self.assertTrue(any("test bodies in src grew" in problem for problem in problems))
-
-    def test_moving_tests_out_of_src_is_progress(self):
+    def test_placement_between_src_and_tests_is_not_a_regression(self):
+        # Unit bodies sit next to their module and integration bodies in tests/; either way the
+        # collected corpus is the same, so a re-layout must not trip the ratchet.
         recorded = inventory(src=10, tests=4)
-        # Four entries left src and joined tests/: the plan's direction.
         moved = inventory(src=6, tests=8)
         self.assertEqual(module.regressions(moved, recorded), [])
 

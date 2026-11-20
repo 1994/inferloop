@@ -87,5 +87,4 @@ pub(super) fn upload(
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/fp8_probe_inputs.rs"]
 mod tests;

@@ -33,7 +33,6 @@ use infer_spi::ModalityEncoder;
 use std::env::var;
 
 #[cfg(test)]
-#[path = "../../tests/unit/vision_projection_output.rs"]
 mod projection_output_tests;
 
 /// Token tile of every vision projection, matching the prompt GEMM.

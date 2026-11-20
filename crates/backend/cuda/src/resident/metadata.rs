@@ -6,7 +6,6 @@ use infer_cuda_kernels::runtime::Allocation;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_metadata_check.rs"]
 mod check;
 
 pub(super) use infer_cuda_kernels::ops::{update_metadata as update, update_rotary};

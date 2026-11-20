@@ -101,5 +101,4 @@ impl DeviceTimelines {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/device.rs"]
 mod tests;

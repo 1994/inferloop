@@ -61,6 +61,7 @@ libloading.workspace = true
 futures-channel = { workspace = true, optional = true }
 
 [dev-dependencies]
+infer-cuda-acceptance.workspace = true
 infer-format.workspace = true
 infer-models = { workspace = true, features = ["gguf"] }
 infer-runtime.workspace = true

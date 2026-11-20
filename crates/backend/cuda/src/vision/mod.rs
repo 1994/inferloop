@@ -1,11 +1,9 @@
 //! Vision-modality execution: provider-declared geometry, bound weights, captured programs.
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/vision_attention_bench_check.rs"]
 pub(crate) mod attention_bench;
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/vision_attention_check.rs"]
 mod attention_check;
 mod block_mlp;
 mod device_tower;
@@ -14,7 +12,6 @@ pub(crate) mod kernels;
 mod launches;
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/vision_padding.rs"]
 mod padding_check;
 pub(crate) mod program;
 mod session;

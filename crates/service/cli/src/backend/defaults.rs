@@ -15,5 +15,4 @@ pub(super) fn resolve(
     }
 }
 #[cfg(test)]
-#[path = "../../tests/unit/backend_defaults.rs"]
 mod tests;

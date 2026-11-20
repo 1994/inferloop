@@ -859,7 +859,6 @@ pub fn with_dense_reference<T>(run: impl FnOnce() -> T) -> T {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_prefill_projection.rs"]
 mod tests;
 
 /// The input and output slots of a fused down projection, or `None` when the

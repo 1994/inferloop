@@ -57,5 +57,4 @@ pub fn human_bytes(bytes: u64) -> String {
 }
 
 #[cfg(all(test, cuda_backend))]
-#[path = "../../tests/unit/support_logging.rs"]
 mod tests;

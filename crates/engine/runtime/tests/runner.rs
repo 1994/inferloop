@@ -8,7 +8,6 @@ mod maintenance;
 mod queue_deadline;
 #[path = "unit/runner_reservation.rs"]
 mod reservation;
-mod support;
 use infer_core::{Error, ErrorCode, FinishReason, ModelId, Result, StateId};
 use infer_ir::{
     CanonicalRequest, DeviceCapabilities, ExecutionProgram, ExecutionTask, ModelIr, ModelOutput,
@@ -16,6 +15,7 @@ use infer_ir::{
 };
 use infer_kernel_api::KernelRegistry;
 use infer_runtime::{Engine, RuntimeConfig, runner::ThreadedBackend};
+use infer_test_support::fixtures as support;
 use std::collections::{BTreeMap, BTreeSet};
 use std::thread::sleep;
 

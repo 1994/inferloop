@@ -403,5 +403,4 @@ fn axis_taps(index: usize, size: usize, table_side: usize) -> ([usize; 2], [f32;
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/input_vision.rs"]
 mod tests;

@@ -409,5 +409,4 @@ fn bool_array(metadata: &Metadata, key: &str) -> Result<Vec<bool>> {
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/unit/providers_gguf.rs"]
 mod tests;

@@ -134,5 +134,4 @@ fn activation(graph: &mut DataflowGraph, raw: u64, width: usize) -> Result<Tenso
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/features.rs"]
 mod tests;

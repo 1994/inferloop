@@ -486,7 +486,6 @@ impl super::workspace::Workspace {
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../../tests/unit/resident_pooled_attention.rs"]
 mod tests;
 
 #[cfg(test)]

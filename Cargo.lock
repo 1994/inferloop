@@ -1420,6 +1420,7 @@ dependencies = [
  "infer-quality",
  "infer-runtime",
  "infer-spi",
+ "infer-test-support",
  "serde",
  "serde_json",
  "sha2",
@@ -1435,6 +1436,7 @@ dependencies = [
  "futures-channel",
  "infer-compiler",
  "infer-core",
+ "infer-cuda-acceptance",
  "infer-cuda-kernels",
  "infer-format",
  "infer-gpu-api",
@@ -1543,6 +1545,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "infer-cuda-acceptance"
+version = "0.1.0"
+
+[[package]]
 name = "infer-cuda-kernels"
 version = "0.1.0"
 dependencies = [
@@ -1550,6 +1556,7 @@ dependencies = [
  "cutile",
  "half",
  "infer-core",
+ "infer-cuda-acceptance",
  "infer-ir",
  "libloading",
  "serde",
@@ -1583,6 +1590,7 @@ dependencies = [
  "infer-observe",
  "infer-runtime",
  "infer-spi",
+ "infer-test-support",
  "infer-workloads",
  "mime",
  "serde",
@@ -1712,6 +1720,7 @@ dependencies = [
  "infer-scheduler",
  "infer-spi",
  "infer-state",
+ "infer-test-support",
  "infer-workloads",
  "serde",
  "serde_json",
@@ -1748,6 +1757,17 @@ dependencies = [
  "infer-core",
  "infer-ir",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "infer-test-support"
+version = "0.1.0"
+dependencies = [
+ "infer-core",
+ "infer-ir",
+ "infer-model-recipes",
+ "infer-spi",
  "serde_json",
 ]
 

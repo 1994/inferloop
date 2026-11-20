@@ -205,5 +205,4 @@ fn observation_bytes(config: &infer_runtime::RuntimeConfig) -> Result<usize> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/actor.rs"]
 mod tests;

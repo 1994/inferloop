@@ -76,5 +76,4 @@ impl KernelRegistry {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/registry.rs"]
 mod tests;

@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_prefill_gemm_bench_check.rs"]
 mod bench_check;
 #[cfg(test)]
 #[cfg(feature = "cuda")]

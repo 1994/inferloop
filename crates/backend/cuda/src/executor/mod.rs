@@ -399,11 +399,9 @@ impl CudaExecutor {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/executor_mod.rs"]
 mod prefix_capacity_tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_mtp_fusion_model.rs"]
 mod mtp_fusion_model_tests;
 
 impl Drop for CudaExecutor {

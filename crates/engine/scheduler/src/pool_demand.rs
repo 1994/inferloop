@@ -95,5 +95,4 @@ pub fn decide_pool(demand: &PoolDemand, retry: &mut PoolRetry) -> PoolAction {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/pool_demand.rs"]
 mod tests;

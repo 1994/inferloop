@@ -139,5 +139,4 @@ pub fn default_registry() -> &'static ModelRegistry {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/providers_registry.rs"]
 mod tests;

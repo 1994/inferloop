@@ -102,5 +102,4 @@ pub fn default_tiling() -> Result<LinearTiling> {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/strategy.rs"]
 mod tests;

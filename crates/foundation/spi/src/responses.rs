@@ -514,5 +514,4 @@ impl fmt::Debug for ResponsesExtensions {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/responses.rs"]
 mod tests;

@@ -887,5 +887,4 @@ fn overlaps((left, left_bytes): (u64, usize), (right, right_bytes): (u64, usize)
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/aot_runtime.rs"]
 mod tests;

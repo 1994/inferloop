@@ -1,14 +1,12 @@
 //! The group protocol a tensor-parallel backend owes the engine, pinned on host doubles before any
 //! device code exists (`docs/plans/engineering/parallelism.md`, P0.4).
-#[path = "support/rank_group.rs"]
-mod rank_group;
-mod support;
+use infer_test_support::fixtures as support;
 
 use infer_core::*;
 use infer_ir::*;
 use infer_kernel_api::KernelRegistry;
 use infer_runtime::*;
-use rank_group::RankGroup;
+use infer_test_support::rank_group::RankGroup;
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use support::ProtocolBackend;

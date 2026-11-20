@@ -398,7 +398,6 @@ pub fn with_row_reference<T>(run: impl FnOnce() -> T) -> T {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_fusion_batch.rs"]
 mod tests;
 
 /// Captured nodes per fused chunk after the batched gather: one gather, one projection,
@@ -409,5 +408,4 @@ pub(super) const fn captured_nodes(width: usize) -> usize {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_pooled_fusion.rs"]
 mod pooled_tests;

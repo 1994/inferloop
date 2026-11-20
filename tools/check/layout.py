@@ -1,11 +1,16 @@
 """Keep crate ownership, API facades, dependency direction, and local links coherent."""
 
 import re
+import sys
 import tomllib
 from pathlib import Path
 from urllib.parse import unquote
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_sources import test_source_paths
+
 ROOT = Path(__file__).resolve().parents[2]
+_TEST_SOURCES = None
 GROUPS = {"foundation", "backend", "model", "engine", "diagnostics", "service", "testing"}
 # Development tools live outside the responsibility groups: they are members so they share the
 # workspace's lock, versions and lints, but they are not part of the product crate layout.
@@ -33,8 +38,10 @@ CUDA_HOST_TOKENS = {
     "CudaGraph": 0,
     # Every remaining mention of cuTile; M6 ends when the host builds without it.
     "cutile": 5,
-    # Host reach into the cuTile implementation rather than the shared runtime facade.
-    "cuda_kernels::tile": 24,
+    # Host reach into the cuTile implementation rather than the shared runtime facade. Test
+    # bodies are excluded from this budget: they build fixtures, they do not lower production
+    # graphs.
+    "cuda_kernels::tile": 22,
 }
 # Artifact catalogs name the architectures they ship; everything else asks `Arch` what it can do.
 ARCHITECTURE_CATALOGS = ("resident/attention_mma/",)
@@ -166,21 +173,36 @@ def check_crates():
     print(f"Layout: {len(members)} grouped crates, thin facades and dependency boundaries passed")
 
 
+def is_test_source(path):
+    """Test bodies live next to their module under `src` and never ship."""
+    global _TEST_SOURCES
+    if _TEST_SOURCES is None:
+        _TEST_SOURCES = test_source_paths(ROOT)
+    resolved = path.resolve()
+    return resolved in _TEST_SOURCES
+
+
 def check_kernel_boundary():
     """Kernel bodies and driver launches stay in their source directories."""
     host = ROOT / "crates/backend/cuda/src"
     allowed = {host / "resident/small_gemm.rs"}
     for path in host.rglob("*.rs"):
+        if is_test_source(path):
+            continue
         if "#[cutile::module]" in path.read_text() and path not in allowed:
             raise SystemExit(
                 f"{path.relative_to(ROOT)}: "
                 "move the kernel module to crates/backend/cuda-kernels/src/tile"
             )
     for path in host.rglob("*.rs"):
+        if is_test_source(path):
+            continue
         if "infer_cuda_kernels::aot" in path.read_text():
             raise SystemExit(f"{path.relative_to(ROOT)}: the host selects a source by feature")
     for directory in ("resident", "executor"):
         for path in (host / directory).rglob("*.rs"):
+            if is_test_source(path):
+                continue
             text = path.read_text()
             if ".matvec_tiled(" in text or ".matvec(" in text:
                 raise SystemExit(
@@ -240,6 +262,8 @@ def check_sources():
 def count_host_tokens(root=ROOT):
     counts = dict.fromkeys(CUDA_HOST_TOKENS, 0)
     for path in (root / CUDA_HOST).rglob("*.rs"):
+        if is_test_source(path):
+            continue
         text = path.read_text()
         for token in counts:
             counts[token] += text.count(token)
@@ -267,7 +291,7 @@ def check_host_architecture_names(root=ROOT):
     host = root / CUDA_HOST
     for path in sorted(host.rglob("*.rs")):
         relative = path.relative_to(host).as_posix()
-        if relative.startswith(ARCHITECTURE_CATALOGS):
+        if relative.startswith(ARCHITECTURE_CATALOGS) or is_test_source(path):
             continue
         for lineno, line in enumerate(path.read_text().splitlines(), 1):
             require(

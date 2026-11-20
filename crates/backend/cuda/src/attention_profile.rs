@@ -133,5 +133,4 @@ impl AttentionProfile {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/attention_profile_capabilities.rs"]
 mod capability_tests;

@@ -7,7 +7,6 @@
 //! the reply's first token has to be the answer.
 mod request;
 #[cfg(test)]
-#[path = "../../../../tests/unit/http_openai_decisions_request.rs"]
 mod tests;
 
 pub(super) use request::DecisionRequest;

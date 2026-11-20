@@ -287,5 +287,4 @@ fn selection(indices: &[usize]) -> String {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/video.rs"]
 mod tests;

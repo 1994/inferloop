@@ -128,5 +128,4 @@ fn u64_array(metadata: &Metadata, key: &str) -> Result<Vec<u64>> {
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/unit/providers_gguf_tokenizer.rs"]
 mod tests;

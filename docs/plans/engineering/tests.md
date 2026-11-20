@@ -1,6 +1,8 @@
 # 测试目录与执行入口统一方案
 
-状态：**已交付**。测试已完成按 crate 迁移，`src/` 内测试体为 0（见"验收对照"），实现基于 `7c79d99` 起步。
+状态：**已交付**。测试已完成按 crate 迁移，实现基于 `7c79d99` 起步。
+
+2026-11 修订：私有单测正文改放被测模块目录（`src/<module>/tests.rs` 或 `src/<module>/<name>.rs`），用普通 `mod` 挂载，不再用 `#[path]` 指向 `tests/unit/`；原因与残留见文末[修订记录](#修订记录2026-11)。
 
 **记录只描述已提交的语料（实测教训）**：`test-inventory.py --record` 曾经**从磁盘读**所有测试文件 ✓，于是在
 一个共享检出里、当另一个会话的测试改动尚未提交时 ✗，记录会把这些工作树中的用例算进去 ✗ —— 实测出现过
@@ -14,7 +16,7 @@
 
 迁移前的用例身份、门控与消费者清单已随 E1 结束清理；当前用例语料棘轮由 `tools/check/test-inventory.py` 与 `tools/check/test-inventory.json` 执行。
 
-测试正文统一放在所属 crate 的 `tests/` 中，按功能域组织文件；`src/` 保留产品实现和必要的测试模块挂载声明。保留 Rust 单元测试与集成测试的编译边界，减少重复链接、单用例专属目录和不明确的硬件依赖。
+集成测试正文统一放在所属 crate 的 `tests/` 中，按功能域组织文件；私有单元测试正文放在被测模块目录，与产品代码同属一个模块树（Rust 单元测试的惯例位置）。保留 Rust 单元测试与集成测试的编译边界，减少重复链接、单用例专属目录和不明确的硬件依赖。
 
 完整 CPU 测试推理执行器按 [删除方案](remove-test-backends.md) 迁移；构建配置、CI 和命令见 [构建与依赖方案](build-and-dependencies.md)。
 
@@ -22,7 +24,7 @@
 
 按 workspace member 的 Rust 文件中 `#[test]`、`#[tokio::test]` 声明粗统计，119 个文件包含 361 个入口。其中 80 个在普通 `src` 文件内，136 个在 `src` 内的专用 test/check/bench 文件，143 个在 crate 的 `tests/`，2 个在 examples。45 个文件只有一个声明。统计未按 cfg、ignore、平台或宏展开区分实际运行数量。
 
-例如 [waiters 测试](../../../crates/engine/runtime/tests/unit/resource_waiters.rs)、[shards 测试](../../../crates/model/package/tests/unit/storage_shards_tests.rs)、[GPU 投影对照](../../../crates/backend/cuda/tests/unit/resident_prefill_gemm_bench_check.rs) 和 [checkpoint owner 测试](../../../crates/engine/runtime/tests/checkpoint_owner.rs) 分别使用不同路径和执行方式。问题是同类测试没有共同规则，不能仅按文件里的函数数量判断测试价值。
+例如 [waiters 测试](../../../crates/engine/runtime/src/resource/waiters/tests.rs)、[shards 测试](../../../crates/model/package/src/storage/shards_tests.rs)、[GPU 投影对照](../../../crates/backend/cuda/src/resident/prefill_gemm/bench_check.rs) 和 [checkpoint owner 测试](../../../crates/engine/runtime/tests/checkpoint_owner.rs) 分别使用不同路径和执行方式。问题是同类测试没有共同规则，不能仅按文件里的函数数量判断测试价值。
 
 ## 统一目录
 
@@ -31,13 +33,15 @@
 ```text
 crate/
   Cargo.toml
-  src/                         产品实现与测试模块挂载声明
+  src/
+    executor/
+      request_kv.rs            产品实现
+      request_kv/
+        tests.rs               私有单测：被测模块目录内，按功能域命名
+    dispatch.rs
   tests/
     integration.rs             公开接口测试的聚合入口
     gpu.rs                     真实设备公开场景的聚合入口 按需设置
-    unit/
-      sampling.rs              私有逻辑 按功能域命名
-      state.rs
     integration/
       lifecycle.rs             公开接口场景
       http.rs
@@ -55,7 +59,7 @@ crate/
 
 Rust 的集成测试是独立 crate，只能访问公开 API；被测模块的子单元测试可访问其私有实现。目录统一不能靠公开私有字段或增加产品 `test-support` feature 实现。[Cargo 测试目标](https://doc.rust-lang.org/cargo/reference/cargo-targets.html#tests)、[Rust 私有性](https://doc.rust-lang.org/reference/visibility-and-privacy.html)。
 
-私有单元测试由原所属模块用 `#[cfg(test)]` 与 `#[path]` 挂载 `tests/unit/` 文件。源码中只保留声明，用例正文及专用 helper 移出。挂载后仍编译在原模块的测试子模块中，不改变 visibility，不通过 `include!` 大量复制测试，也不增加公开测试 API。
+私有单元测试放在被测模块目录（`src/<module>/tests.rs` 或 `src/<module>/<name>.rs`），由所属模块用 `#[cfg(test)] mod ...;` 挂载，与 Rust 单元测试和代码同模块的惯例一致；模块嵌套与 visibility 不变。不再用 `#[path]` 把正文挂到 `tests/unit/`：`#[path]` 只接受字面量并相对声明文件解析，正文离开 `src/` 后必然产生深度不一的 `../`，还给 rustfmt/rust-analyzer 增加一层挂载间接。`#[path]` 只保留给无法属于单个模块的共享源（crate 级 fixture、跨 crate acceptance）；不通过 `include!` 复制测试，也不增加公开测试 API。
 
 公开行为使用 `tests/integration.rs` 聚合功能模块。显式配置 `[[test]]`，按迁移情况设置 `autotests = false`，避免 unit/support 文件误成为 Cargo target。每个 crate 原则上一个 host integration target；GPU 场景或确需进程隔离的场景另设具名 target。
 
@@ -98,7 +102,7 @@ Python helper 的 import 使用明确工具包或统一测试 bootstrap，不靠
 
 ## Helper 复用与迁移门禁
 
-优先将 helper 放在所属 crate 的 `tests/support/`。多个 crate 确实复用的少量 fixture/脚本/断言可共享测试源文件，并只从测试 target 或开发工具引用；不为少量 helper 新增 Cargo crate，不构建完整模型执行器。
+优先将 helper 放在所属 crate 的 `tests/support/`。被多个 crate 复用的 fixture 与 acceptance 用例放进测试专用 crate（`crates/testing/cpu/support`、`crates/testing/cpu/cuda-acceptance`），作为消费方的 dev-dependency，而不是用 `#[path]` 指向另一个 crate 的测试文件；不为单个 crate 的少量 helper 新增 crate，不构建完整模型执行器。
 
 新增规则检查测试正文是否位于 `tests/`，挂载路径是否唯一且存在，Cargo target 是否登记，support 是否被错误收集，设备/性能场景是否具有明确 runner。规则适用于生产、target-specific 和 build-script 测试；build contract 的用例移到其工具 tests 中，保留必要挂载。
 
@@ -106,4 +110,27 @@ Python helper 的 import 使用明确工具包或统一测试 bootstrap，不靠
 
 先迁移 foundation、model、scheduler 与 workloads，再迁移 runtime/frontdoor/agent，最后迁移 GPU 私有测试、examples 与性能场景。每批只调整目录和收集，不同时改数值公式或产品行为。
 
-完成条件是：源码不再包含用例正文；host 测试可一次收集运行；GPU/模型/性能测试具有明确入口；私有性与现有断言保持；收集变化有去向；完整 CPU 测试推理 backend 已按删除方案移除。
+完成条件是：私有单测正文位于被测模块目录、集成测试正文位于 crate 的 `tests/`；host 测试可一次收集运行；GPU/模型/性能测试具有明确入口；私有性与现有断言保持；收集变化有去向；完整 CPU 测试推理 backend 已按删除方案移除。
+
+## 修订记录（2026-11）
+
+**背景**：2026-11 的树里，私有单测正文全部在 `crates/*/*/tests/unit/`，由 `src/` 中 265 处
+`#[cfg(test)] #[path = "../../tests/unit/<file>.rs"] mod ...;` 挂载。`#[path]` 只能写字面量且相对声明文件
+解析，正文离模块越远 `../` 越多（`../` 48 处、`../../` 172 处、`../../../` 48 处、`../../../../` 10 处），
+同一个 `src/loading/mod.rs` 有 21 个挂载块。
+
+**判断**：`include!(concat!(env!("CARGO_MANIFEST_DIR"), ...))` 能去掉 `../`，但 rustfmt 不再跟进被 include
+的文件（实测写坏格式后 `cargo fmt --check` 仍通过），264 个被挂载文件里 62 个以 `//!`/`#![...]` 开头会在
+`include!` 下直接报 E0753，rust-analyzer 也只能通过宏展开看到用例，因此不采用。
+
+**方案**：按 Rust 惯例把私有单测正文放回被测模块目录：`mod tests;` 对应 `src/<module>/tests.rs`，其余挂载
+名对应 `src/<module>/<name>.rs`；删除 `#[path]`，模块名、嵌套层级和 `cargo test` 过滤名保持不变，`use
+super::*` 语义不变。共享源不再用 `#[path]`：`cuda-kernels/acceptance/*.rs` 成为 `infer-cuda-acceptance` crate，
+`engine/runtime/tests/support/*` 成为 `infer-test-support` crate，`cuda`、`cuda-kernels`、
+`runtime`、`frontdoor`、`agent` 以 dev-dependency 引用。`src/` 中因此没有带 `../` 的测试挂载；
+测试 helper 也移入 `tests/` 子目录用普通 `mod` 声明，只有 `cli` 的 `cuda_unavailable.rs`
+产品开关仍用 `#[path]`。容器 benchmark 改挂 `queue/ordered/mod.rs`，也不再需要测试路径。
+
+**影响**：`tools/check/test-inventory.py` 的“src 用例只降不升”棘轮改为“语料总数只增不减 + 每个
+`tests.rs`/`*_tests.rs` 必须被模块挂载”；`test-inventory.json` 重新记录。用例正文、断言、门控和 Cargo
+target 不变，因此没有执行路径或性能影响。

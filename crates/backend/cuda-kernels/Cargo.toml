@@ -33,3 +33,6 @@ cuda-core = { workspace = true, optional = true }
 [[example]]
 name = "aot-pool-gemv"
 required-features = ["aot"]
+
+[dev-dependencies]
+infer-cuda-acceptance.workspace = true

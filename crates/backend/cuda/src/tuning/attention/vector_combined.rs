@@ -154,5 +154,4 @@ fn resolve(device: &CudaDevice, shape: Shape, baseline: Choice) -> Result<Choice
     Ok(baseline)
 }
 #[cfg(test)]
-#[path = "../../../tests/unit/tuning_attention_vector_combined.rs"]
 mod tests;

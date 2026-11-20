@@ -258,5 +258,4 @@ impl WorkloadProvider for ProjectionWorkloads {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/readouts.rs"]
 mod tests;

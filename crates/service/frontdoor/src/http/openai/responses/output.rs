@@ -367,5 +367,4 @@ pub(super) fn terminal(
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/unit/http_responses_output.rs"]
 mod tests;

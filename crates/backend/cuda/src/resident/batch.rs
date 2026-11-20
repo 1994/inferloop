@@ -2721,9 +2721,7 @@ fn slot_arena(device: &CudaDevice, graph: &DataflowGraph, width: usize) -> Resul
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_batch_ba_pair.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_metadata_batch.rs"]
 mod metadata_batch_tests;

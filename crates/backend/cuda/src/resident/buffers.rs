@@ -122,12 +122,10 @@ pub(super) const fn region<T>(address: u64, len: usize) -> Buffer<'static, T> {
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_runtime_replay.rs"]
 mod runtime_tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/buffer_tensors.rs"]
 mod tensors;
 #[cfg(test)]
 #[cfg(feature = "cuda")]

@@ -224,5 +224,4 @@ fn logical_kv_blocks(
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/executor_kv_inspection.rs"]
 mod tests;

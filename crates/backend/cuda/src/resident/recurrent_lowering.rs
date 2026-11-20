@@ -169,5 +169,4 @@ pub(super) fn lower(recurrence: Recurrence, mode: Mode) -> Lowering {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/recurrent_lowering.rs"]
 mod tests;

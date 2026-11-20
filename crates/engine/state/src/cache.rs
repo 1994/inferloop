@@ -347,5 +347,4 @@ impl<V, M: PrefixPolicy> PrefixCache<V, M> {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/cache.rs"]
 mod tests;

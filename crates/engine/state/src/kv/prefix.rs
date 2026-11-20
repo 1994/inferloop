@@ -86,5 +86,4 @@ impl<P: KvPrefix> KvCacheManager<P> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/prefix_pages.rs"]
 mod tests;

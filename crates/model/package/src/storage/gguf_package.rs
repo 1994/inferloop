@@ -193,5 +193,4 @@ fn sibling(path: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/gguf_sibling.rs"]
 mod tests;

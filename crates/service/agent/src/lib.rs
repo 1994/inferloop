@@ -13,5 +13,4 @@ pub use context::{AgentBackend, AgentContext, CallRecord};
 pub use service::AgentService;
 
 #[cfg(test)]
-#[path = "../tests/unit/cases.rs"]
 mod tests;

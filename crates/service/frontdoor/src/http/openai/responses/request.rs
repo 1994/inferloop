@@ -1036,5 +1036,4 @@ fn check_keys(object: &Map<String, Value>, allowed: &[&str], index: usize) -> Re
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/unit/http_responses_request.rs"]
 mod tests;

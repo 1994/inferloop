@@ -2348,9 +2348,7 @@ fn pool_retry_budget(funding: u64, quoted: u64, allocated: u64, kv_block: u64) -
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/executor_execution.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/executor_prompt_burst.rs"]
 mod prompt_burst_tests;

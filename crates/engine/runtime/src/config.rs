@@ -225,5 +225,4 @@ impl RuntimeConfig {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/config_concurrency.rs"]
 mod concurrency_tests;

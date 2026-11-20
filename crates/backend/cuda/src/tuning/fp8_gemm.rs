@@ -997,5 +997,4 @@ pub(crate) fn select(
 }
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/fp8_gemm_tuning.rs"]
 mod tests;

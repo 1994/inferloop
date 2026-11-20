@@ -177,5 +177,4 @@ thread_local! {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_capture_checkpoint.rs"]
 mod tests;

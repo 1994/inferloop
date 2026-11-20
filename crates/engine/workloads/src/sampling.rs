@@ -225,7 +225,6 @@ fn draw(scratch: &SamplingWorkspace, random: f64) -> Result<u32> {
     )
 }
 #[cfg(test)]
-#[path = "../tests/unit/sampling.rs"]
 mod tests;
 
 fn penalties(

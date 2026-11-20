@@ -91,5 +91,4 @@ pub(super) fn shape(summary: &BatchCostSummary) -> Shape {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/cost_summary.rs"]
 mod tests;

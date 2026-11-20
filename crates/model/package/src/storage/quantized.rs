@@ -1196,5 +1196,4 @@ fn declared_kv_dtype(scheme: &serde_json::Value) -> Result<Option<TensorDtype>> 
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/storage_quantized.rs"]
 mod kv_tests;

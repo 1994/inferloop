@@ -43,6 +43,7 @@ sha2.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+infer-test-support.workspace = true
 tracing-subscriber.workspace = true
 base64.workspace = true
 image.workspace = true

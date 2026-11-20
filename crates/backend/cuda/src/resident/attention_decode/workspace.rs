@@ -28,7 +28,6 @@ use std::collections::BTreeSet;
 use std::mem::swap;
 
 #[cfg(test)]
-#[path = "../../../tests/unit/resident_attention_prefill_taps.rs"]
 pub mod taps;
 
 pub use infer_cuda_kernels::contract::VERIFY_LANES;

@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Inventory the Rust test corpus and hold the migration ratchet.
+"""Inventory the Rust test corpus and hold the collection ratchet.
 
-The test-organization plan migrates test bodies out of `src/` into each crate's `tests/`, one host
-integration target per crate, and then removes the two CPU test executors. Before that migration
-the plan requires recording what exists: where each case lives, what it is gated on, and which
-files consume the executors.
+Private unit tests live next to the module they test (`src/<module>/tests.rs` or
+`src/<module>/<name>.rs`) and are mounted with a plain `#[cfg(test)] mod ...;`; integration tests
+live in each crate's `tests/`. Test bodies are not mounted through `#[path]`; cross-crate fixtures
+and acceptance cases live in the `crates/testing/` support crates instead. The plan also removes
+the two CPU test executors; the inventory records which files still consume them.
 
-This tool records that inventory in `tools/check/test-inventory.json` and enforces the invariants
-that must hold while the migration proceeds:
+This tool records the corpus in `tools/check/test-inventory.json` and enforces the invariants:
 
-* no new test entry may appear in `src/` - the recorded count is a ceiling that only moves down;
-* every `#[path = ...]` test mount must resolve and be mounted exactly once;
+* every `#[path = ...]` mount must resolve and be mounted exactly once;
+* every `tests.rs`/`*_tests.rs`/`*_check.rs` test file under `src/` must be mounted by a module,
+  or its cases never run;
 * no new consumer of the CPU test executors or the `test-backends` feature may appear;
 * a change in the collected total must be recorded with `--record`, so a migration that loses
   assertions cannot be mistaken for progress.
@@ -30,7 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SNAPSHOT = Path(__file__).with_name("test-inventory.json")
 # A test entry, however it is spelled in this workspace.
 TEST_ENTRY = re.compile(r"#\[(?:tokio::)?test\]")
-# `#[path = "....rs"]` is how a module mounts a test file that lives outside `src/`.
+# `#[path = "....rs"]` mounts a shared test source that cannot live inside one module.
 PATH_MOUNT = re.compile(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]')
 # `[[test]] name = "..."` declares an integration target by hand.
 TEST_TARGET = re.compile(r'\[\[test\]\][^\[]*?name\s*=\s*"([^"]+)"', re.DOTALL)
@@ -355,18 +356,6 @@ def check_targets(root=REPO_ROOT):
 def regressions(inventory, recorded, root=REPO_ROOT):
     """The ratchet: what may not get worse while the migration proceeds."""
     problems = check_mounts(inventory, root) + check_targets(root) + check_orphans(root)
-    if inventory["totals"]["src"] > recorded["totals"]["src"]:
-        problems.append(
-            "test bodies in src grew to "
-            f"{inventory['totals']['src']} from {recorded['totals']['src']}; the plan moves them "
-            "into tests/, it does not add more"
-        )
-    for crate, entries in inventory["crates"].items():
-        before = recorded["crates"].get(crate, {})
-        if entries["src_inline"] + entries["src_near"] > before.get("src_inline", 0) + before.get(
-            "src_near", 0
-        ):
-            problems.append(f"{crate}: test bodies in src grew")
     if inventory["totals"]["all"] < recorded["totals"]["all"]:
         problems.append(
             f"collected test entries fell to {inventory['totals']['all']} from "

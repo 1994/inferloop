@@ -188,9 +188,11 @@ environment variable.
 - Reproduce bugs with failing tests before fixing them. Test observable behavior,
   properties, and failure/cleanup paths rather than mirrored branches or constants.
   Preserve API, wire format, checkpoint, and error compatibility unless the task changes them.
-- Put test bodies in the owning crate's `tests/`; mount private unit tests through the
-  existing `#[cfg(test)]`/`#[path]` pattern. Register targets and update the test inventory
-  when collection changes. Do not put new test bodies in `src/` or silently lose cases.
+- Put integration test bodies in the owning crate's `tests/`; keep private unit test bodies
+  next to the module they test (`src/<module>/tests.rs` or `src/<module>/<name>.rs`) and mount
+  them with a plain `#[cfg(test)] mod ...;`. Do not mount test bodies through `#[path]`; only
+  shared fixtures and cross-crate acceptance sources may be mounted that way. Register targets
+  and update the test inventory when collection changes; never silently lose cases.
 - Cover relevant feature/target combinations. Use deterministic inputs, bounded waits,
   isolated ports, and reliable cleanup. A selected hardware suite must fail for missing
   devices/fixtures; zero collected or fully ignored tests are not successful acceptance.

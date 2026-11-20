@@ -67,5 +67,4 @@ pub fn with_parallel_conversion<T>(enabled: bool, run: impl FnOnce() -> T) -> T 
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_fp8_quant_reduction.rs"]
 mod tests;

@@ -839,5 +839,4 @@ fn verify_lanes(
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_slot_verify.rs"]
 mod tests;

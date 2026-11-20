@@ -318,5 +318,4 @@ fn rgb_bytes(dimensions: [usize; 2]) -> Result<usize> {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/image.rs"]
 mod tests;

@@ -172,5 +172,4 @@ impl Drop for SearchScope<'_> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/projection_search_budget.rs"]
 mod tests;

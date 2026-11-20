@@ -53,11 +53,11 @@ class ScanTest(unittest.TestCase):
         return entries, test_inventory.scan_crate.skipped
 
     def test_an_uncommitted_test_file_is_left_out(self):
-        relative = "crates/engine/workloads/tests/unit/recurrent_reference.rs"
+        relative = "crates/engine/workloads/src/recurrent_reference.rs"
         included, _ = self.scan(frozenset())
         excluded, skipped = self.scan(frozenset({relative}))
         self.assertIn(relative, skipped)
-        self.assertLess(excluded["tests"], included["tests"])
+        self.assertLess(excluded["src_inline"], included["src_inline"])
 
     def test_a_clean_scan_skips_nothing(self):
         _, skipped = self.scan(frozenset())

@@ -151,5 +151,4 @@ pub fn placed_positions(
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/input_mrope.rs"]
 mod tests;

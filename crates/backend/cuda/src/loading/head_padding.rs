@@ -604,5 +604,4 @@ fn chain(
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/head_padding.rs"]
 mod tests;

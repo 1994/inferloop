@@ -432,5 +432,4 @@ pub(super) fn native_fingerprint(device: &CudaDevice, shape: Shape) -> Result<St
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../../tests/unit/tuning_attention_append_headers.rs"]
 mod append_header_tests;

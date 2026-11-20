@@ -53,5 +53,4 @@ fn millis_to_micros(milliseconds: f32) -> Option<u64> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/device_step_clock.rs"]
 mod tests;

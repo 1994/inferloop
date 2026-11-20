@@ -241,5 +241,4 @@ impl Arch {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/target.rs"]
 mod tests;

@@ -570,5 +570,4 @@ impl Capture<'_> {
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_elementwise_cell.rs"]
 mod cell_tests;
