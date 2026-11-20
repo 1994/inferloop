@@ -23,7 +23,7 @@ pub fn load(path: &Path, memory_bytes: u64, selection: &Selection) -> Result<Sel
     {
         tracing::warn!(target: "infer::load", %error,
             "automatic execution profile did not fit; retrying canonical attention without MTP");
-        let recovery = CudaDevice::new(0)?;
+        let recovery = open_device(selection.device)?;
         recovery.synchronize()?;
         drop(recovery);
         let conservative = Selection {
@@ -49,7 +49,7 @@ fn load_once(
     }
     let started = Instant::now();
     CudaDevice::enable_kernel_cache()?;
-    let device = CudaDevice::new(0)?;
+    let device = open_device(selection.device)?;
     let (_, total) = device.memory_info()?;
     // A retry may reuse freed blocks still reserved in this context's pool.
     let free = device.allocatable_memory_bytes()?;
@@ -137,6 +137,17 @@ fn load_once(
     )
     .map_err(|error| load_failure(&error, budget, selection))?;
     Ok(SelectedBackend::Cuda(Box::new(backend)))
+}
+
+/// Open the ordinal this deployment selected, naming it in a failure instead of leaving only the
+/// driver's generic "invalid device ordinal".
+fn open_device(ordinal: usize) -> Result<CudaDevice> {
+    CudaDevice::new(ordinal).map_err(|error| {
+        Error::new(
+            error.code,
+            format!("CUDA device {ordinal} is not available: {}", error.message),
+        )
+    })
 }
 
 /// Automatic fast execution requires the complete batching resources it was selected for.
@@ -228,10 +239,12 @@ fn report_environment(
 ) {
     tracing::info!(
         target: "infer::load",
+        device = selection.device,
         gpu = %profile.name,
         architecture = %profile.architecture,
         sms = profile.multiprocessors,
-        "cuda device 0: {} total, {} free",
+        "cuda device {}: {} total, {} free",
+        selection.device,
         human_bytes(budget.total),
         human_bytes(budget.free)
     );

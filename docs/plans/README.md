@@ -32,6 +32,7 @@ P0 优先消除正确性和测量阻塞；P1 交付工程、服务与公共协�
 | P2 · C2 | [CUDA AOT kernel provider 与 12.9 设备接入](engineering/cuda-kernel-provider.md) | L20 需要 12.9 且不走 cuTile；v1 范围以 dense BF16/FP8 为起点 | `cuda` 与 `cuda-aot` 各自可构建且编译期互斥；13.x 行为不回退；L20 的数值、图、KV 与显存验收通过 | **部分**：kernel 搬移与 AOT 骨架见 PR #129；常驻图契约与 L20 实机未开始 |
 | P2 · A1 | [CUDA 架构收口](engineering/cuda-architecture.md) | 第一批已落地（PR #130）；下一步 M1，M8 等 L20 | 调优、换 kernel、多模型、版本兼容、层边界五项判定全部通过；13.x 行为不回退 | 未开始：方案已定，接手入口见方案第 8 节 |
 | P3 · X1 | [MTP 与 DFlash2 同轮组合](speculation/composition.md) | D2 的单 provider 和切换路径稳定，组合模型条件及资源报价明确 | 优于同负载下最佳单 provider，使用相同回滚策略；不能只与关闭推测比较 | 未开始：前置为 D2 单 provider 验收 |
+| P3 · X2 | [多卡并行（DP/TP）](engineering/parallelism.md) | DP 可立即部署；TP 需要 NVLink 两卡验收机型 | DP 的路由与实例身份可用；TP 的 group 后端、图内 collective、分片加载、状态原子事务与单 rank 故障隔离逐项验收，单卡输出不变 | **部分**：方案已定；P0.1（`--device`）已实现，P0.2 起待做 |
 
 B3 不等待全部 E2 或完整 Agent 能力完成。先用经过修正的固定制品和当前实际配置建立基线；S1 或后续策略改变共同约束时，按基线合同创建新 profile 和交接结果。I1 不必等待整套 CI、打包和不相关 crate 的目录整理，但其涉及的测试、feature、构建合同必须已经稳定。共享 IR 的测试 feature 删除需要相关消费者一并迁移，不能只在某个局部构建中隐藏旧分叉。
 

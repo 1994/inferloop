@@ -6,6 +6,8 @@
 
 先读 [工程整理与推理优化路线图](plans/README.md)。该页统一维护 P0–P3 优先级、任务编号、启动条件、并行范围与完成标准；按任务进入详细方案，不必逐份阅读历史研究。工程基础、Agent 服务、推测解码与 CUDA 性能方案归档在 `plans/` 的对应分组。
 
+多卡部署的分阶段方案见[多卡并行（DP/TP）](plans/engineering/parallelism.md)：DP 以每进程单设备部署并补路由，TP 以 rank group 逻辑后端实现，engine 主链路不改。
+
 Agent 接入、tool parser、文本流式、max length 与严格工具约束的实现边界和后续设计见 [Agent 工具调用与服务配置方案](plans/serving/agent-api.md)。该方案按实际使用场景取舍，借鉴 vLLM/SGLang 的机制；当前接口范围仍以使用文档与源码为准。
 
 准备测试或性能对比时，先读 [性能基线与 vLLM 对齐方案](plans/performance/baseline.md)。release、当前配置对齐、矩阵、计时统计和证据规则只在该文维护；模块方案补充自己的接口与数值/资源验收。基线验收完成前，历史矩阵只用于调查线索。

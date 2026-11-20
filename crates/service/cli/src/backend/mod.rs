@@ -107,18 +107,45 @@ pub fn metal_available() -> bool {
 pub const fn metal_available() -> bool {
     false
 }
+
+/// Whether the selected backend exposes `ordinal` to this process.
+///
+/// Metal presents one system device, so only ordinal 0 is selectable; CUDA ordinals are bounded
+/// by `CUDA_VISIBLE_DEVICES` and the installed driver.
+#[cfg(metal_backend)]
+pub fn metal_device_available(ordinal: usize) -> bool {
+    ordinal == 0 && metal_available()
+}
+/// Whether the selected backend exposes `ordinal` to this process.
+///
+/// Metal presents one system device, so only ordinal 0 is selectable; CUDA ordinals are bounded
+/// by `CUDA_VISIBLE_DEVICES` and the installed driver.
+#[cfg(not(metal_backend))]
+pub const fn metal_device_available(ordinal: usize) -> bool {
+    ordinal == 0 && metal_available()
+}
+/// Whether CUDA exposes `ordinal` to this process, bounded by `CUDA_VISIBLE_DEVICES`.
+#[cfg(cuda_backend)]
+pub fn cuda_device_available(ordinal: usize) -> bool {
+    CudaDevice::new(ordinal).is_ok()
+}
+/// Whether CUDA exposes `ordinal` to this process, bounded by `CUDA_VISIBLE_DEVICES`.
+#[cfg(not(cuda_backend))]
+pub const fn cuda_device_available(_ordinal: usize) -> bool {
+    false
+}
 #[cfg(cuda_backend)]
 pub fn cuda_available() -> bool {
-    CudaDevice::new(0).is_ok()
+    cuda_device_available(0)
 }
 #[cfg(not(cuda_backend))]
 pub const fn cuda_available() -> bool {
-    false
+    cuda_device_available(0)
 }
 pub fn catalog() -> serde_json::Value {
     serde_json::json!({"primary_target":"cuda","supported":["cuda","metal"],"auto_priority":["cuda","metal"],
         "cuda":{"implemented":cfg!(cuda_backend),"available":cuda_available(),"execution":"resident CUDA graphs, synchronous provider", "build_feature":"cuda"},
-        "metal":{"implemented":cfg!(metal_backend),"available":metal_available()},
+        "metal":{"implemented":cfg!(metal_backend),"available":metal_device_available(0)},
         "testing_backends":{"enabled":false,"supported_for_deployment":false}})
 }
 /// When a backend captures its shared serving pool.
@@ -147,6 +174,8 @@ pub enum PoolCapture {
 )]
 pub struct Selection {
     pub kind: BackendChoice,
+    /// Device ordinal inside the backend's visible set (`--device`).
+    pub device: usize,
     pub num_gpu_blocks_override: Option<usize>,
     pub block_size: Option<usize>,
     pub max_num_batched_tokens: Option<usize>,

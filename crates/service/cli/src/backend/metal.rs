@@ -12,6 +12,14 @@ pub fn available() -> bool {
     MetalBackend::available()
 }
 pub fn load(path: &Path, memory_bytes: u64, selection: &Selection) -> Result<SelectedBackend> {
+    // Metal presents one system device; an explicit other ordinal is an operator error, not a
+    // silent fallback to device 0.
+    if selection.device != 0 {
+        return Err(Error::unsupported(format!(
+            "Metal exposes one system device as ordinal 0; --device {} is unsupported",
+            selection.device
+        )));
+    }
     // Metal already loads only the text graph; CUDA alone binds an optional vision tower.
     let _ = (
         selection.autotune,
