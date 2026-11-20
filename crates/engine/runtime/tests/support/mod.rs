@@ -181,7 +181,7 @@ impl ProtocolBackend {
     }
     /// Sequences currently reserved.
     #[must_use]
-    pub fn reserved_states(&self) -> usize {
+    pub const fn reserved_states(&self) -> usize {
         self.states.len()
     }
     pub fn with_profile(mut self, profile: infer_ir::ExecutionProfileInspection) -> Self {
