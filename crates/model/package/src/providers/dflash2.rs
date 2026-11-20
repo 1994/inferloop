@@ -4,6 +4,11 @@
 //! be bound to a target at all, and the part of the resource quote that geometry alone determines.
 //! Nothing here touches a device - the draft graph, its CUDA module and the proposal SPI come
 //! later, and the SPI that carries proposals belongs to I1.
+#[cfg(feature = "gguf")]
+mod gguf;
+#[cfg(feature = "gguf")]
+pub use gguf::DFLASH2;
+
 use infer_core::{Error, Result};
 use infer_ir::{BackboneKind, ModelIr, Operation};
 use serde::Deserialize;

@@ -161,6 +161,12 @@ impl GgufPackage {
         self.vision.as_ref()
     }
 
+    /// The `general.architecture` this package was read as.
+    #[must_use]
+    pub fn architecture(&self) -> &'static str {
+        self.architecture.name()
+    }
+
     /// Synthesized `config.json`.
     #[must_use]
     pub fn config(&self) -> &[u8] {
