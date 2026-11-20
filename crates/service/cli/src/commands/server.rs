@@ -19,6 +19,8 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
     // request. A tuning worker captures too: pool geometries are only measured by the process
     // that builds them with autotune on, and the server only reads what the worker cached.
     backend_choice.pool_capture = backend::PoolCapture::AtLoad;
+    #[cfg(cuda_backend)]
+    let device = backend_choice.device;
     let ServeOptions {
         listen,
         config: config_path,
@@ -50,6 +52,7 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
     #[cfg(cuda_backend)]
     if tuning_worker {
         super::tuning_worker::record_prepared(
+            device,
             engine
                 .backend()
                 .execution_profile()

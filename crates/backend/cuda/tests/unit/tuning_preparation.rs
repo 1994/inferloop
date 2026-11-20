@@ -23,3 +23,11 @@ fn stamp_needs_its_table_and_identity() -> Result<(), Box<dyn Error>> {
     remove_dir_all(root)?;
     Ok(())
 }
+
+#[test]
+fn an_absent_device_has_no_identity_and_reuses_no_preparation() {
+    // No host exposes this many devices, so the selected ordinal's identity cannot be named.
+    const ABSENT: usize = 4096;
+    assert_eq!(device_identity(ABSENT), None);
+    assert_eq!(prepared_width(&[b"serve".to_vec()], ABSENT), None);
+}

@@ -37,7 +37,7 @@ pub(super) fn prepare(mut selection: Selection) -> Result<(Selection, bool)> {
     }
     if !selection.autotune
         || selection.kind == BackendChoice::Metal
-        || !backend::cuda_available()
+        || !backend::cuda_device_available(selection.device)
         || !table_path().is_some_and(|path| writable_cache(&path))
     {
         return Ok((selection, false));
@@ -45,7 +45,7 @@ pub(super) fn prepare(mut selection: Selection) -> Result<(Selection, bool)> {
     // A completed preparation for this exact binary, command line and device needs no second
     // capture. It also bounds the pool to the width it measured: the worker sees less free memory
     // than the server, and a wider server pool would replay shapes nothing measured.
-    if let Some(width) = prepared_width(&invocation()) {
+    if let Some(width) = prepared_width(&invocation(), selection.device) {
         selection.autotune = false;
         selection.tuned_pool_width = Some(width);
         tracing::info!(target: "infer::tuning", width, "reusing completed CUDA tuning preparation");
@@ -54,7 +54,7 @@ pub(super) fn prepare(mut selection: Selection) -> Result<(Selection, bool)> {
     run_preparation();
     // The serving process still validates cached choices against its own live weights.
     selection.autotune = false;
-    selection.tuned_pool_width = prepared_width(&invocation());
+    selection.tuned_pool_width = prepared_width(&invocation(), selection.device);
     tracing::info!(target: "infer::tuning", "CUDA preparation exited; serving reuses validated tuning cache");
     Ok((selection, false))
 }
@@ -97,9 +97,9 @@ fn invocation() -> Vec<Vec<u8>> {
 /// Runs in the worker once its pool is captured and measured. A worker that failed or captured
 /// nothing leaves no record, so the next start prepares again.
 #[cfg(cuda_backend)]
-pub(super) fn record_prepared(width: Option<usize>) {
+pub(super) fn record_prepared(device: usize, width: Option<usize>) {
     if let Some(width) = width {
-        record_width(&invocation(), width);
+        record_width(&invocation(), device, width);
     }
 }
 

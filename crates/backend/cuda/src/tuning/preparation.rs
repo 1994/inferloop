@@ -28,12 +28,21 @@ pub(crate) fn driver_build() -> Option<String> {
     None
 }
 
-/// Device and driver identity; `None` when the driver cannot be named, so nothing is reused.
-pub(crate) fn device_identity() -> Option<Vec<u8>> {
-    let device = CudaDevice::new(0).ok()?;
-    let hardware = serde_json::to_string(device.profile().ok()?).ok()?;
+/// Driver version and build; `None` when the driver cannot be named, so nothing is reused. Kernel
+/// identities carry their device in their own key, so the driver alone scopes them.
+pub(crate) fn driver_identity() -> Option<Vec<u8>> {
     let version = CudaDevice::driver_version().ok()?;
-    Some(format!("{hardware}:{version}:{}", driver_build()?).into_bytes())
+    Some(format!("{version}:{}", driver_build()?).into_bytes())
+}
+
+/// Hardware of device `ordinal` and the driver identity.
+fn device_identity(ordinal: usize) -> Option<Vec<u8>> {
+    let device = CudaDevice::new(ordinal).ok()?;
+    let hardware = serde_json::to_string(device.profile().ok()?).ok()?;
+    let mut identity = hardware.into_bytes();
+    identity.push(b':');
+    identity.extend(driver_identity()?);
+    Some(identity)
 }
 
 /// The stamp lives beside the table it describes, so removing the cache removes both.
@@ -61,24 +70,25 @@ fn write_stamp(stamp: &Path, width: usize) -> io::Result<()> {
     rename(&temporary, stamp)
 }
 
-fn stamp_for(invocation: &[Vec<u8>]) -> Option<(PathBuf, PathBuf)> {
+fn stamp_for(invocation: &[Vec<u8>], ordinal: usize) -> Option<(PathBuf, PathBuf)> {
     let table = table_path()?;
     let mut identity = invocation.to_vec();
-    identity.push(device_identity()?);
+    identity.push(device_identity(ordinal)?);
     let stamp = stamp_path(&table, &identity);
     Some((table, stamp))
 }
 
-/// The pool width a completed preparation of this invocation measured on this device.
+/// The pool width a completed preparation of this invocation measured on device `ordinal`.
 #[must_use]
-pub fn prepared_width(invocation: &[Vec<u8>]) -> Option<usize> {
-    let (table, stamp) = stamp_for(invocation)?;
+pub fn prepared_width(invocation: &[Vec<u8>], ordinal: usize) -> Option<usize> {
+    let (table, stamp) = stamp_for(invocation, ordinal)?;
     read_stamp(&table, &stamp)
 }
 
-/// Record a finished preparation. A failure only means the next start prepares again.
-pub fn record_prepared(invocation: &[Vec<u8>], width: usize) {
-    let Some((_, stamp)) = stamp_for(invocation) else {
+/// Record a finished preparation on device `ordinal`. A failure only means the next start
+/// prepares again.
+pub fn record_prepared(invocation: &[Vec<u8>], ordinal: usize, width: usize) {
+    let Some((_, stamp)) = stamp_for(invocation, ordinal) else {
         return;
     };
     if let Err(error) = write_stamp(&stamp, width) {

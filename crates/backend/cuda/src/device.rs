@@ -5,7 +5,7 @@ use crate::mlp::Matrix;
 use crate::resident::buffers::{Operand, buffer};
 use crate::strategy::LinearTiling;
 use crate::tuning::memory::arena_budget;
-use crate::tuning::preparation::device_identity;
+use crate::tuning::preparation::driver_identity;
 use infer_core::{Error as InferError, ErrorCode, Result};
 use infer_cuda_kernels::contract::MatvecGeometry;
 use infer_cuda_kernels::contract::target::Arch;
@@ -187,12 +187,13 @@ pub(crate) fn device_error(error: impl Display) -> InferError {
 
 impl CudaDevice {
     /// Enable cuTile's persistent compiled-kernel cache for subsequent captures, and the kernel
-    /// identities tuning records are keyed by, scoped to this device and driver.
+    /// identities tuning records are keyed by, scoped to this driver; each identity names its
+    /// device, so any ordinal reuses its own.
     /// # Errors
     /// Returns cache initialization errors.
     pub fn enable_kernel_cache() -> Result<()> {
         jit::enable_cache()?;
-        if let Some(scope) = device_identity() {
+        if let Some(scope) = driver_identity() {
             jit::enable_identity_cache(&scope);
         }
         Ok(())
