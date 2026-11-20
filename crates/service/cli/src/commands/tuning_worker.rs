@@ -24,6 +24,8 @@ const WORKER_ENV: &str = "INFER_INTERNAL_CUDA_TUNING_WORKER";
 const WORKER_VALUE: &str = "prepare";
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(600);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Bound on waiting for a sent group SIGKILL to arrive before aborting instead.
+const SELF_KILL_GRACE: Duration = Duration::from_secs(1);
 
 #[cfg(cuda_backend)]
 pub(super) fn prepare(mut selection: Selection) -> Result<(Selection, bool)> {
@@ -202,13 +204,15 @@ fn run_worker_for(command: &mut Command, timeout: Duration) -> Result<()> {
     result
 }
 
-/// The child owns its process group, including any JIT compiler subprocesses.
-fn kill_group(group: u32) {
-    let _ = Command::new("/bin/kill")
+/// The child owns its process group, including any JIT compiler subprocesses. Returns whether
+/// the signal was sent.
+fn kill_group(group: u32) -> bool {
+    Command::new("/bin/kill")
         .args(["-KILL", "--", &format!("-{group}")])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn monitor_parent() -> Result<()> {
@@ -216,7 +220,11 @@ fn monitor_parent() -> Result<()> {
         .name("cuda-tuning-parent".into())
         .spawn(|| {
             let _ = io::stdin().read_exact(&mut [0]);
-            kill_group(id());
+            // A sent SIGKILL reaches this process asynchronously; aborting at once could win the
+            // race and leave the JIT children of the group running.
+            if kill_group(id()) {
+                sleep(SELF_KILL_GRACE);
+            }
             // Fallback for systems without /bin/kill; do not run CUDA atexit handlers.
             abort();
         })

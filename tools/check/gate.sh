@@ -91,6 +91,11 @@ security_checks() {
     # The only accepted advisory is documented with its removal condition in deny.toml.
     cargo deny --locked check --deny warnings
     cargo audit --deny warnings --ignore RUSTSEC-2024-0436
+    secrets_checks
+}
+
+# The secret scan alone: cheap enough for every change, unlike the dependency audits.
+secrets_checks() {
     go run github.com/zricethezav/gitleaks/v8@v8.24.3 dir . --no-banner --redact=100 \
         --ignore-gitleaks-allow --exit-code 1
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -209,6 +214,7 @@ case "${1:-all}" in
     test) test_checks ;;
     tools) tool_checks ;;
     security) security_checks ;;
+    secrets) secrets_checks ;;
     metal) metal_checks ;;
     cuda) cuda_checks ;;
     cuda-hosted) cuda_hosted_checks ;;

@@ -1,0 +1,39 @@
+# Dependency audits (cargo-deny, cargo-audit) and the full secret scan. Installing the audit tools
+# dominates the cost, so this runs when dependencies change, weekly for new advisories, and on
+# demand; `ci.yml` scans secrets on every change.
+name: security
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    paths:
+      - 'Cargo.lock'
+      - '**/Cargo.toml'
+      - 'deny.toml'
+      - '.github/workflows/security.yml'
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: 1.99.0
+      - run: cargo install --locked cargo-deny --version 0.20.2
+      - run: cargo install --locked cargo-audit --version 0.22.2
+      - run: make check-security
