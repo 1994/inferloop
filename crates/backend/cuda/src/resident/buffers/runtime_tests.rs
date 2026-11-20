@@ -1,14 +1,12 @@
 //! The device contract keeps recorded memory alive, and replay costs what raw cuTile replay costs.
 use crate::device::{CudaDevice, asynchronous::block_on, device_error};
-use crate::resident::pool_gemv::{
-    infer_cuda_acceptance::pool_gemv::{Case, OUTPUTS, ROWS},
-    kernels as pool_gemv,
-};
+use crate::resident::pool_gemv::kernels as pool_gemv;
 use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::cuda_async::device_operation::ExecutionContext;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_acceptance::pool_gemv::{Case, OUTPUTS, ROWS};
 use infer_cuda_kernels::contract::PoolGemvPlan;
 use infer_cuda_kernels::runtime::{Allocation, Graph};
 use std::sync::Arc;
