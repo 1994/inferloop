@@ -131,6 +131,13 @@ pub fn lower(model: &ModelIr) -> Result<DataflowGraph> {
             }
             FeedForward::Moe { .. } => b.moe(x, &prefix, model)?,
         };
+        if layer < model.media_features {
+            x = b.one(
+                TensorOp::MediaFeature { index: layer },
+                vec![x],
+                hidden_size,
+            )?;
+        }
     }
     b.layer = None;
     let hidden = b.norm(x, "norm.weight".into(), hidden_size, hidden_size, model)?;

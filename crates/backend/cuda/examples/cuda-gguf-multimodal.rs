@@ -112,7 +112,7 @@ fn run_case(
         .images
         .first()
         .ok_or_else(|| Error::invariant("prepared prompt without an image"))?;
-    let encoded = vision.encode(loaded.device(), image)?;
+    let encoded = vision.encode_media(loaded.device(), image)?;
     let encodings = [encoded];
     let prefill = vision::prefill(
         program,

@@ -317,6 +317,11 @@ impl QwenProvider {
             },
             state,
             tied_embeddings: text.tie_word_embeddings,
+            // Each deepstack merger output is added to the media tokens after one leading
+            // decoder layer, in order.
+            media_features: encoder
+                .as_ref()
+                .map_or(0, |encoder| encoder.deepstack_layers.len()),
         };
         model.validate()?;
         Ok(family_description(

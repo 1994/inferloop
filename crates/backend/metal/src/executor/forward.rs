@@ -383,6 +383,11 @@ impl MetalBackend {
                 threads /= head_dim;
             }
             TensorOp::Sigmoid | TensorOp::Multiply => p.a = 1,
+            TensorOp::MediaFeature { .. } => {
+                return Err(Error::unsupported(
+                    "media feature injection requires a backend with a vision encoder",
+                ));
+            }
             _ => {}
         }
         Ok((p, threads))

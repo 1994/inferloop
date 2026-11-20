@@ -61,6 +61,7 @@ fn omni_model(id: ModelId) -> ModelIr {
         ],
         state: vec![],
         tied_embeddings: false,
+        media_features: 0,
     }
 }
 

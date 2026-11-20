@@ -11,6 +11,7 @@ use crate::constants::WIDER_PREFILL_LANES;
 use crate::device::CudaDevice;
 use crate::loading::{LoadedModel, PooledServingQuote};
 use crate::resident::DeviceProgram;
+use crate::resident::MediaRows;
 use crate::resident::dflash2::{Engine, VerifiedRows};
 use crate::resident::prefill_burst::{self, PromptBurst, SEGMENT_ROWS};
 use crate::resident::slot_batch::SlotPool;
@@ -1913,9 +1914,12 @@ impl Sequence {
                 .prefill_media_chunk_async(
                     chunk,
                     position,
-                    &media.tensor,
-                    &rows,
-                    hidden,
+                    MediaRows {
+                        embeddings: &media.tensor,
+                        features: media.features.as_ref(),
+                        rows: &rows,
+                        hidden,
+                    },
                     rotary,
                     last,
                 )
@@ -1949,7 +1953,9 @@ impl Sequence {
             return Err(Error::invalid("media layout does not cover every item"));
         }
         let hidden = loaded.model().hidden_size;
+        let levels = loaded.graph().media_features();
         let mut data = Vec::new();
+        let mut features = vec![Vec::new(); levels];
         let mut bases = Vec::with_capacity(plan.items.len());
         for image in &plan.items {
             let encoded = match &image.pixels {
@@ -1967,16 +1973,35 @@ impl Sequence {
                         .await?
                 }
             };
+            if encoded.features.len() != levels
+                || encoded
+                    .features
+                    .iter()
+                    .any(|level| level.len() != encoded.embeddings.len())
+            {
+                return Err(Error::invalid(
+                    "vision deepstack features do not match the text graph",
+                ));
+            }
             bases.push(data.len() / hidden);
-            data.extend(encoded);
+            data.extend(encoded.embeddings);
+            for (level, rows) in features.iter_mut().zip(encoded.features) {
+                level.extend(rows);
+            }
         }
         let rows = data.len() / hidden;
         tracing::debug!(target: "infer::executor", rows, bases = ?bases,
             spans = ?layout.spans, positions = layout.positions.as_ref().map(Vec::len),
             "prepared CUDA media embeddings");
         let tensor = loaded.device().runtime().upload(data)?;
+        let features = if levels == 0 {
+            None
+        } else {
+            Some(loaded.device().runtime().upload(features.concat())?)
+        };
         self.media = Some(CachedMedia {
             tensor,
+            features,
             layout,
             bases,
         });

@@ -76,6 +76,7 @@ pub fn model(id: ModelId) -> ModelIr {
             })
             .collect(),
         tied_embeddings: false,
+        media_features: 0,
     }
 }
 

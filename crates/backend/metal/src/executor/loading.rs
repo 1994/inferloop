@@ -194,7 +194,12 @@ impl MetalBackend {
         weights: BTreeMap<String, HostTensor>,
         config: MetalConfig,
     ) -> Result<Self> {
-        let graph = lower(&model)?;
+        // Metal binds no vision encoder, so no lane carries media: the text graph has no media
+        // feature nodes to execute.
+        let graph = lower(&ModelIr {
+            media_features: 0,
+            ..model.clone()
+        })?;
         let gpu = autoreleasepool(MetalDevice::open)?;
         let resident = graph
             .tensors

@@ -309,6 +309,15 @@ pub enum DenseKernel {
     Compensated,
 }
 
+/// Media feature rows over `rows` lanes of `dimension` channels, each lane's media flag read
+/// from a metadata batch of `fields` per row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MediaFeatureRowsPlan {
+    pub rows: usize,
+    pub dimension: usize,
+    pub fields: usize,
+}
+
 /// Token embedding lookup, or the external input when `external` and the metadata asks for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EmbeddingPlan {

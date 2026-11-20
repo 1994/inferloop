@@ -5,11 +5,13 @@ Runs the official `Qwen3VLForConditionalGeneration` on one deterministic image a
 everything the Rust pipeline needs to reproduce the same step: the source pixels, the rendered
 prompt text, the expanded token ids, the final prompt logits and a greedy continuation.
 
-Deepstack is disabled on both sides of the comparison, so this covers the shared path
-(preprocess -> vision tower -> merger -> placeholder merge -> text decoding) rather than the
-released checkpoint's short-circuit features. The comparison is only meaningful when the Rust run
-uses the same package and the same image. F32 with TF32 disabled is the default oracle;
-`--dtype bfloat16` is an explicit alternative precision diagnostic.
+The released configuration runs with DeepStack: the tower's intermediate features are merged and
+added to the image tokens after the first decoder layers, and the dump records those features per
+level. `--no-deepstack` disables them on this side only, for diagnosing the shared path
+(preprocess -> vision tower -> merger -> placeholder merge -> text decoding). The comparison is
+only meaningful when the Rust run uses the same package and the same image. F32 with TF32
+disabled is the default oracle; `--dtype bfloat16` is an explicit alternative precision
+diagnostic.
 
 Run:
 
@@ -50,17 +52,22 @@ def main() -> int:
     parser.add_argument("--out", type=pathlib.Path, required=True)
     parser.add_argument("--max-new-tokens", type=int, default=6)
     parser.add_argument("--dtype", choices=("float32", "bfloat16"), default="float32")
+    parser.add_argument(
+        "--no-deepstack",
+        action="store_true",
+        help="disable DeepStack injection: the shared-path diagnostic, not the released model",
+    )
     args = parser.parse_args()
 
     processor = AutoProcessor.from_pretrained(args.package)
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         args.package, dtype=getattr(torch, args.dtype), device_map="cuda"
     )
-    # Both sides of the parity run cover the shared path: deepstack stays off.
-    if hasattr(model.config, "vision_config"):
-        model.config.vision_config.deepstack_visual_indexes = []
-    if hasattr(model.config, "deepstack_visual_indexes"):
-        model.config.deepstack_visual_indexes = []
+    if args.no_deepstack:
+        if hasattr(model.config, "vision_config"):
+            model.config.vision_config.deepstack_visual_indexes = []
+        if hasattr(model.config, "deepstack_visual_indexes"):
+            model.config.deepstack_visual_indexes = []
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     model.eval()
@@ -85,23 +92,22 @@ def main() -> int:
     visual = getattr(model, "visual", None) or getattr(model.model, "visual", None)
     if visual is None:
         raise SystemExit("the model has no visual tower")
-    # The model copies this list during construction. Changing config alone leaves
-    # DeepStack active and makes the supposedly shared-path oracle incomparable.
-    visual.deepstack_visual_indexes = []
-    handles.append(
-        visual.register_forward_hook(
-            lambda _m, _i, out: captured.__setitem__(
-                "vision_embeddings",
-                out.pooler_output.detach().float(),
-            )
-        )
-    )
+    if args.no_deepstack:
+        # The model copies this list during construction. Changing config alone leaves
+        # DeepStack active and makes the supposedly shared-path oracle incomparable.
+        visual.deepstack_visual_indexes = []
 
-    def verify_shared_path(_module, _inputs, output):
-        if output.deepstack_features:
+    def capture_tower(_module, _inputs, output):
+        captured["vision_embeddings"] = output.pooler_output.detach().float()
+        features = output.deepstack_features or []
+        if args.no_deepstack and features:
             raise RuntimeError("DeepStack must be disabled for shared-path parity")
+        if features:
+            captured["deepstack_features"] = torch.stack(
+                [feature.detach().float() for feature in features]
+            )
 
-    handles.append(visual.register_forward_hook(verify_shared_path))
+    handles.append(visual.register_forward_hook(capture_tower))
     with torch.no_grad():
         logits = model(**inputs, use_cache=True).logits[0, -1].float()
         generated = model.generate(**inputs, max_new_tokens=args.max_new_tokens, do_sample=False)
@@ -127,12 +133,19 @@ def main() -> int:
         "pixel_values": inputs["pixel_values"].float().cpu().contiguous(),
         "grid_thw": inputs["image_grid_thw"].to(torch.int64).reshape(-1),
     }
+    if "deepstack_features" in captured:
+        tensors["deepstack_features"] = (
+            captured["deepstack_features"]
+            .reshape(-1, vision_embeddings.shape[0], vision_embeddings.shape[1])
+            .contiguous()
+        )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     save_file(tensors, str(args.out))
     meta = {
         "model": str(args.package),
         "dtype": args.dtype,
         "tf32": False,
+        "deepstack": not args.no_deepstack,
         "image_token_id": image_token,
         "vision_start_token_id": int(model.config.vision_start_token_id),
         "grid_thw": inputs["image_grid_thw"].tolist(),
@@ -141,7 +154,6 @@ def main() -> int:
         "merged_visual_tokens": len(positions),
         "generated_tokens": new_tokens.tolist(),
         "generated_text": processor.decode(new_tokens.tolist(), skip_special_tokens=True),
-        "deepstack": "disabled on both sides",
         "max_new_tokens": args.max_new_tokens,
         "vision_embeddings_shape": list(vision_embeddings.shape),
     }

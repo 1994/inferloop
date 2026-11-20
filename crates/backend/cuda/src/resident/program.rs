@@ -264,6 +264,8 @@ pub struct DeviceProgram {
     lane_external: Vec<Allocation<f32>>,
     // The allocation the external rows view, which a prompt burst views too.
     lane_external_memory: Allocation<f32>,
+    // Media feature rows the prompt graphs read.
+    media: MediaFeatureStore,
     // Hidden row of the position before the next device-primed chunk.
     prime_previous: Allocation<f32>,
     // Fusion workspaces are referenced by the captured graphs and never touched afterwards.
@@ -283,6 +285,15 @@ pub struct DeviceProgram {
     pub activation_bytes: usize,
     pub(crate) reclaimable_bytes: u64,
     released_verification_bytes: u64,
+}
+
+/// A media prompt chunk's request-owned rows: embedding row `row` replaces lane `lane`'s token
+/// for each `(lane, row)`, and `features` holds the same rows per media feature level.
+pub struct MediaRows<'a> {
+    pub embeddings: &'a Allocation<f32>,
+    pub features: Option<&'a Allocation<f32>>,
+    pub rows: &'a [(usize, usize)],
+    pub hidden: usize,
 }
 
 enum ExternalInput<'a> {
@@ -398,6 +409,92 @@ fn allocate_lane_fusion(
         )?);
     }
     Ok((memory, external, fusion))
+}
+
+/// Media feature rows the prompt graphs read, `[level][lane][hidden]` over the widest prompt.
+struct MediaFeatureStore {
+    /// Levels the graph adds after the media embedding, whether or not a prompt graph reads them.
+    levels: usize,
+    lanes: usize,
+    /// Absent when the graph adds no levels or the program captures no prompt graph.
+    memory: Option<Allocation<f32>>,
+}
+
+impl MediaFeatureStore {
+    fn allocate(
+        device: &CudaDevice,
+        graph: &DataflowGraph,
+        hidden: usize,
+        geometry: ProgramGeometry,
+    ) -> Result<Self> {
+        let lanes = geometry.prompts.into_iter().max().unwrap_or(0);
+        let levels = graph.media_features();
+        let memory = if lanes == 0 || levels == 0 {
+            None
+        } else {
+            let elements = levels
+                .checked_mul(lanes)
+                .and_then(|rows| rows.checked_mul(hidden))
+                .ok_or_else(|| Error::invalid("media feature rows overflow"))?;
+            Some(device.runtime().zeros(elements)?)
+        };
+        Ok(Self {
+            levels,
+            lanes,
+            memory,
+        })
+    }
+
+    const fn memory(&self) -> Option<&Allocation<f32>> {
+        self.memory.as_ref()
+    }
+
+    /// Copy each media lane's feature rows into the store. A graph that adds media features needs
+    /// both the request's features and a store; one that adds none accepts no features.
+    fn stage(
+        &self,
+        device: &CudaDevice,
+        features: Option<&Allocation<f32>>,
+        rows: &[(usize, usize)],
+        hidden: usize,
+    ) -> Result<()> {
+        if self.levels == 0 {
+            return if features.is_none() {
+                Ok(())
+            } else {
+                Err(Error::invalid("the program graph adds no media features"))
+            };
+        }
+        let memory = self
+            .memory
+            .as_ref()
+            .ok_or_else(|| Error::unsupported("media features require a prompt graph"))?;
+        let features = features
+            .ok_or_else(|| Error::invalid("media prefill lacks the request's media features"))?;
+        let (levels, lanes) = (self.levels, self.lanes);
+        let level_elements = features.len() / levels;
+        if hidden == 0 || level_elements * levels != features.len() || level_elements % hidden != 0
+        {
+            return Err(Error::invalid("media feature rows"));
+        }
+        let media_rows = level_elements / hidden;
+        if rows
+            .iter()
+            .any(|&(lane, row)| lane >= lanes || row >= media_rows)
+        {
+            return Err(Error::invalid("media feature lane or row"));
+        }
+        let runs = rows.iter().flat_map(|&(lane, row)| {
+            (0..levels).map(move |level| {
+                (
+                    (level * lanes + lane) * hidden,
+                    (level * media_rows + row) * hidden,
+                    hidden,
+                )
+            })
+        });
+        device.copy_d2d_runs(memory, features, runs)
+    }
 }
 
 /// Lanes that need their own fusion workspace: every lane, unless batched prompt fusion covers
@@ -542,6 +639,7 @@ impl DeviceProgram {
             external: &self.external,
             lane_external: &mut self.lane_external,
             lane_external_owner: Some(&self.lane_external_memory),
+            media_features: self.media.memory(),
             lane_fusion: &mut self.lane_fusion,
             tables: from_ref(&self.table),
             capacity: self.capacity,
@@ -855,6 +953,7 @@ impl DeviceProgram {
         let mut fusion = FusionWorkspace::allocate(device, hidden, weights.fusion.is_some())?;
         let (lane_external_memory, mut lane_external, mut lane_fusion) =
             allocate_lane_fusion(device, hidden, weights, geometry)?;
+        let media = MediaFeatureStore::allocate(device, graph, hidden, geometry)?;
         let mut builder = super::batch::BatchBuilder {
             device,
             graph,
@@ -867,6 +966,7 @@ impl DeviceProgram {
             external: &external,
             lane_external: &mut lane_external,
             lane_external_owner: Some(&lane_external_memory),
+            media_features: media.memory(),
             lane_fusion: &mut lane_fusion,
             tables: from_ref(&table),
             capacity,
@@ -914,6 +1014,7 @@ impl DeviceProgram {
             external,
             lane_external,
             lane_external_memory,
+            media,
             prime_previous: Self::zero_row(device, hidden)?,
             states,
             kv_states: attention_states(graph),
@@ -1606,45 +1707,31 @@ impl DeviceProgram {
     /// Row copies and the replay share the device stream, so the chunk runs once instead of one
     /// decode step per media token. The wide prompt graph is used deliberately: the narrow graph
     /// would split media chunks at its own fixed width.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "The chunk names its media tensor, row map, width, rotary table and readout explicitly"
-    )]
     pub(crate) fn prefill_media_chunk(
         &mut self,
         tokens: &[u32],
         position: usize,
-        media: &Allocation<f32>,
-        rows: &[(usize, usize)],
-        hidden: usize,
+        media: MediaRows<'_>,
         rotary: Option<&[[usize; ROTARY_AXES]]>,
         read_logits: bool,
     ) -> Result<super::BatchOutput> {
-        block_on(self.prefill_media_chunk_async(
-            tokens,
-            position,
-            media,
-            rows,
-            hidden,
-            rotary,
-            read_logits,
-        ))
+        block_on(self.prefill_media_chunk_async(tokens, position, media, rotary, read_logits))
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "The existing media chunk API names its tensor, row map, rotary coordinates and readout explicitly"
-    )]
     pub(crate) async fn prefill_media_chunk_async(
         &mut self,
         tokens: &[u32],
         position: usize,
-        media: &Allocation<f32>,
-        rows: &[(usize, usize)],
-        hidden: usize,
+        media: MediaRows<'_>,
         rotary: Option<&[[usize; ROTARY_AXES]]>,
         read_logits: bool,
     ) -> Result<super::BatchOutput> {
+        let MediaRows {
+            embeddings,
+            features,
+            rows,
+            hidden,
+        } = media;
         let width = self.prefill_width();
         if (self.prompts.is_empty() && self.batch.is_none())
             || tokens.is_empty()
@@ -1683,9 +1770,11 @@ impl DeviceProgram {
             if slot.len() != hidden {
                 return Err(Error::invalid("media external width"));
             }
-            self.device.copy_d2d_at(slot, media, 0, offset, hidden)?;
+            self.device
+                .copy_d2d_at(slot, embeddings, 0, offset, hidden)?;
             overrides[lane] = true;
         }
+        self.media.stage(&self.device, features, rows, hidden)?;
         let prompt = self
             .prompts
             .last_mut()
@@ -1708,6 +1797,12 @@ impl DeviceProgram {
         self.next_position = end.saturating_sub(lag);
         self.last_batch = None;
         Ok(output)
+    }
+
+    /// Media feature levels the program's graph adds after the media embedding.
+    #[must_use]
+    pub const fn media_levels(&self) -> usize {
+        self.media.levels
     }
 
     /// Commit a nonempty prefix of the most recent verification batch.

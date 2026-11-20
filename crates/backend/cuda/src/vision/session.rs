@@ -10,7 +10,8 @@
 //! prompt whose media is not covered would otherwise execute as ordinary text and silently drop
 //! the image or clip.
 use crate::constants::PREFILL_LANES;
-use crate::resident::DeviceProgram;
+use crate::loading::MediaEncoding;
+use crate::resident::{DeviceProgram, MediaRows};
 use infer_core::{Error, Result};
 use infer_ir::Modality;
 use infer_models::{MediaLayout, PreparedPrompt, VisualPlacement, media_layout, mrope};
@@ -101,9 +102,9 @@ pub struct MediaPrefill {
 
 /// Prefill a prompt, overriding media positions with their encoder outputs.
 ///
-/// `encodings[i]` is the flattened `tokens × hidden` output of the `i`-th media item, in
-/// placeholder order. Every encoding is uploaded once; rows are then copied into lane slots on the
-/// device stream inside each chunk.
+/// `encodings[i]` holds the flattened `tokens × hidden` embeddings of the `i`-th media item, in
+/// placeholder order, and its feature rows per deepstack level. Every encoding is uploaded once;
+/// rows are then copied into lane slots on the device stream inside each chunk.
 ///
 /// # Errors
 /// Rejects encodings that disagree with the prompt's media spans, an empty prompt, an invalid base
@@ -113,7 +114,7 @@ pub fn prefill(
     imported: &ImportedModel,
     prepared: &PreparedPrompt,
     modality: &Modality,
-    encodings: &[Vec<f32>],
+    encodings: &[MediaEncoding],
     hidden: usize,
     position: usize,
 ) -> Result<MediaPrefill> {
@@ -136,28 +137,53 @@ pub fn prefill(
     if hidden == 0 {
         return Err(Error::invalid("media hidden size must be nonzero"));
     }
+    let levels = program.media_levels();
     let mut data = Vec::new();
+    let mut features = vec![Vec::new(); levels];
     let mut bases = Vec::with_capacity(encodings.len());
     for (span, encoded) in layout.spans.iter().zip(encodings) {
         let tokens = span.range.len();
         let expected = tokens
             .checked_mul(hidden)
             .ok_or_else(|| Error::invalid("media encoding width overflow"))?;
-        if encoded.len() != expected {
+        if encoded.embeddings.len() != expected {
             return Err(Error::invalid(format!(
                 "media encoding holds {} values for {tokens} tokens of width {hidden}",
-                encoded.len()
+                encoded.embeddings.len()
             )));
         }
+        if encoded.features.len() != levels
+            || encoded.features.iter().any(|level| level.len() != expected)
+        {
+            return Err(Error::invalid(
+                "media encoding features do not match the program graph",
+            ));
+        }
         bases.push(data.len() / hidden);
-        data.extend_from_slice(encoded);
+        data.extend_from_slice(&encoded.embeddings);
+        for (level, rows) in features.iter_mut().zip(&encoded.features) {
+            level.extend_from_slice(rows);
+        }
     }
     let logits = if program.prefill_width() < PREFILL_LANES {
+        if levels > 0 {
+            return Err(Error::unsupported(
+                "media features require a prompt graph; this program steps tokens one at a time",
+            ));
+        }
         // A program loaded without a prompt graph keeps the per-token path; the media still runs
         // through the embedding override, just without chunk fusion.
         prefill_per_token(program, &prepared.tokens, &layout, &data, hidden, position)?
     } else {
-        prefill_chunked(program, prepared, &layout, &bases, data, hidden, position)?
+        prefill_chunked(
+            program,
+            prepared,
+            &layout,
+            &bases,
+            (data, features.concat()),
+            hidden,
+            position,
+        )?
     };
     Ok(MediaPrefill {
         logits,
@@ -171,7 +197,7 @@ fn prefill_chunked(
     prepared: &PreparedPrompt,
     layout: &MediaLayout,
     bases: &[usize],
-    data: Vec<f32>,
+    (data, features): (Vec<f32>, Vec<f32>),
     hidden: usize,
     position: usize,
 ) -> Result<Vec<f32>> {
@@ -183,6 +209,11 @@ fn prefill_chunked(
         None
     } else {
         Some(program.device().runtime().upload(data)?)
+    };
+    let features = if features.is_empty() {
+        None
+    } else {
+        Some(program.device().runtime().upload(features)?)
     };
     let mut logits = Vec::new();
     let mut offset = 0;
@@ -207,9 +238,12 @@ fn prefill_chunked(
             program.prefill_media_chunk(
                 chunk,
                 position + offset,
-                media,
-                &rows,
-                hidden,
+                MediaRows {
+                    embeddings: media,
+                    features: features.as_ref(),
+                    rows: &rows,
+                    hidden,
+                },
                 rotary,
                 last,
             )?
@@ -327,7 +361,7 @@ pub fn generate(
     imported: &ImportedModel,
     prepared: &PreparedPrompt,
     modality: &Modality,
-    encodings: &[Vec<f32>],
+    encodings: &[MediaEncoding],
     hidden: usize,
     budget: usize,
     stop: &[u32],

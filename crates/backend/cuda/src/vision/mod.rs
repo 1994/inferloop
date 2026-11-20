@@ -21,8 +21,8 @@ mod session;
 mod weights;
 pub(crate) use footprint::footprint;
 pub use program::{
-    AttentionMode, add, attention, attention_with, block, gelu, layernorm, merger, mlp_width,
-    patch_embed, patch_width, project, project_with, tower, tower_with_deepstack,
+    AttentionMode, add, attention, attention_with, block, encode_media, gelu, layernorm, merger,
+    mlp_width, patch_embed, patch_width, project, project_with, tower, tower_with_deepstack,
 };
 pub use session::{
     MediaPrefill, argmax, decode, generate, media_positions, placeholder_tokens, prefill,

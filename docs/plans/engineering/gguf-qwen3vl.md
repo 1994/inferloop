@@ -1,6 +1,6 @@
 # Qwen3-VL GGUF 接入
 
-状态：**配置、张量映射与形状/类型校验已实现**（`infer-models` 的 `qwen::gguf` 策略）。真实制品 310/310 文本张量、316/316 视觉张量均有映射并通过校验。**不走离线转换**：`GgufPackage` 已能直接打开真实 GGUF 并 pack Q4_K/Q6_K；用真实 `gate_proj`/`down_proj` 张量跑 projection kernel，相对误差 6.4e-6/7.9e-6，带宽 596/679 GB/s。**native 文本路径已跑通**：CLI 直接打开 `.gguf`，Qwen3-VL-2B Q4_K_M 在 5090 上生成 8 token，TTFT 1.99s、TPOT 5.43ms，token ids 与临时转换路径一致。**native multimodal 已跑通**：真实 GGUF + mmproj 生成 95 token prompt（77 media），两张图片得到不同描述，logit shift 5.03。deepstack 特征已提取并验证（3×8192，两图差异 3.72），但尚未注入文本层。文本图已定位到前 3 个 decoder 层输出 Add（tensor 50/80/98，节点 51/81/99），这是 deepstack 注入点。**OpenAI serve 路径也已验证**：同一 GGUF 包通过 `/v1/chat/completions` 接收红色/蓝色图片，分别回答 `red`/`blue`，prompt 83 token。
+状态：**配置、张量映射与形状/类型校验已实现**（`infer-models` 的 `qwen::gguf` 策略）。真实制品 310/310 文本张量、316/316 视觉张量均有映射并通过校验。**不走离线转换**：`GgufPackage` 已能直接打开真实 GGUF 并 pack Q4_K/Q6_K；用真实 `gate_proj`/`down_proj` 张量跑 projection kernel，相对误差 6.4e-6/7.9e-6，带宽 596/679 GB/s。**native 文本路径已跑通**：CLI 直接打开 `.gguf`，Qwen3-VL-2B Q4_K_M 在 5090 上生成 8 token，TTFT 1.99s、TPOT 5.43ms，token ids 与临时转换路径一致。**native multimodal 已跑通**：真实 GGUF + mmproj 生成 95 token prompt（77 media），两张图片得到不同描述，logit shift 5.03。**deepstack 已注入文本层**（与 safetensors 包共用同一路径）：provider 把 deepstack 层数写入 `ModelIr::media_features`，recipe 在前 3 个 decoder 层输出后各插入一个 `MediaFeature` 节点。prompt 图对 media lane 加上该层特征行，其余 lane 和 decode/verify 原样透传。视觉塔与全部 merger 在同一张 device 图里完成。与 HF（含 deepstack）对照：3 组特征相对误差 3.9e-4，logits 最大绝对误差 0.10，前 6 个 greedy token 一致；HF 自身开/关 deepstack 的 logits 差为 4.6。证据在 45 的 `~/benchmarks/inference.rs/deepstack-2026-11-19/`。**OpenAI serve 路径也已验证**：同一 GGUF 包通过 `/v1/chat/completions` 接收红色/蓝色图片，分别回答 `red`/`blue`，prompt 83 token。
 
 ## 验证制品
 
@@ -46,7 +46,7 @@ ModelScope `Qwen/Qwen3-VL-2B-Instruct-GGUF`：
 | `mm.2.*` | `merger.linear_fc2.*` |
 | `v.position_embd.weight [1024,2304]` | `pos_embed.weight`，需转成 `[2304,1024]` |
 | `v.patch_embd.weight` + `.weight.1` | Conv3D 的两个 temporal slice |
-| `v.deepstack.{5,11,17}.{norm,fc1,fc2}` | 尚无 slot |
+| `v.deepstack.{5,11,17}.{norm,fc1,fc2}` | deepstack merger（已映射并注入文本层） |
 
 ## 三个实现缺口
 

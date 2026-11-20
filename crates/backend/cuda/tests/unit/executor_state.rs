@@ -90,6 +90,7 @@ fn repeated_media_reservations_do_not_accumulate_transient_bytes() -> infer_core
             .ok_or_else(|| Error::invariant("missing media state"))?
             .media = Some(CachedMedia {
             tensor: Allocation::adopt(tensor)?,
+            features: None,
             layout: MediaLayout {
                 spans: Vec::new(),
                 next_rotary: 0,

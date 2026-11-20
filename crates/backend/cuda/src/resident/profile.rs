@@ -237,6 +237,7 @@ const fn category(op: &TensorOp) -> &'static str {
         TensorOp::ExpertLinear { .. } => "expert_linear",
         TensorOp::MoeCombine { .. } => "moe_combine",
         TensorOp::Add => "add",
+        TensorOp::MediaFeature { .. } => "media_feature",
     }
 }
 
