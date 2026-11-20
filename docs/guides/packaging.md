@@ -94,7 +94,7 @@ make accept PACKAGE_FILE=/path/to/infer-....tar.gz \
 
 ## GitHub CI
 
-[工作流](../../.github/workflows/ci.yml) 在 push、pull request、merge queue 和手动触发时运行。Rust 检查覆盖 Ubuntu 24.04 与 macOS 15；格式、Clippy、单元/golden、MSRV、工具和安全检查全部通过后才开始打包。
+[工作流](../../.github/workflows/ci.yml) 在 pull request、merge queue、版本标签和手动触发时运行；合入 main 的 push 不再重跑，因为对应 PR 已经通过同一套门禁。Rust 检查覆盖 Ubuntu 24.04 与 macOS 15，每次变更都做密钥扫描。打包矩阵只在版本标签和手动触发时运行。依赖审计（cargo-deny、cargo-audit）在 [security 工作流](../../.github/workflows/security.yml) 中执行：依赖文件变更时、每周一次，以及手动触发。
 
 打包矩阵为 Linux CUDA x86_64 / AArch64（glibc 2.28）和 macOS Metal Apple Silicon / Intel。Linux 安装 CUDA 13.2 开发头文件，无需 GPU driver；macOS 使用 runner 的 Xcode SDK。两者使用 Python 3.12、Zig 0.16.0 和 Makefile 固定的 cargo-zigbuild。
 
@@ -102,4 +102,4 @@ make accept PACKAGE_FILE=/path/to/infer-....tar.gz \
 
 推送与 workspace 版本一致的标签（例如版本 `0.1.0` 对应 `v0.1.0`）会运行完整门禁；全部通过后自动创建 GitHub Release，附上两个 Linux CUDA 架构的归档、各自的校验和与 manifest。发布前会核对版本、目标、CUDA feature、源码 commit 和归档校验和。已有同名 Release 不会被覆盖。下载同一架构的归档和 `.SHA256SUMS` 后，可用 `sha256sum -c <文件名>.SHA256SUMS` 验证。发布包仍需目标机器上的 NVIDIA driver 和 CUDA/cuTile JIT 工具链。
 
-最终 `quality-gate` 要求所有质量检查和打包项通过，可用作分支保护的必需检查。hosted CI 不证明真实 GPU 的正确性或性能，manifest 保留 `gpu_inference_accepted: false`。设备验收使用 `make accept`、`test-cuda` / `test-metal` 和独立的 Candle attention 门禁。
+最终 `quality-gate` 要求所有质量检查通过，打包项在非发布运行中跳过（跳过不算失败），可用作分支保护的必需检查。hosted CI 不证明真实 GPU 的正确性或性能，manifest 保留 `gpu_inference_accepted: false`。设备验收使用 `make accept`、`test-cuda` / `test-metal` 和独立的 Candle attention 门禁。

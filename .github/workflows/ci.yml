@@ -3,14 +3,12 @@ name: quality
 # spends four package builds and two macOS runners on a markdown edit, and none of that can be
 # affected by prose. Anything touching code still runs every gate.
 #
-# Branches are gated by their pull request, not by the branch push: a push to a branch with an
-# open PR otherwise starts a second full 11-job matrix on the same SHA (push and PR use different
-# concurrency groups, so neither run cancels the other). Main and the merge queue still run the
-# whole matrix, and `workflow_dispatch` remains available for a branch-only check.
+# Changes are gated by their pull request, not by the push: a merged PR already passed this
+# matrix, so main does not rerun it. Release tags and the merge queue run it, and
+# `workflow_dispatch` remains available for a branch-only check. Packages build only for release
+# tags and manual runs; dependency audits run from `security.yml`.
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
     paths-ignore:
@@ -40,9 +38,9 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15]
         part: [rust-lint, test, rust-release]
-        # macOS arm64 runners are capacity-constrained: a queued job can be dropped unacquired.
-        # The macOS package jobs already build the release CLI there, and the Linux part builds
-        # this same no-default-features configuration.
+        # macOS arm64 runners are capacity-constrained and billed at a premium: the Linux part
+        # builds this same no-default-features release configuration, and release tags build
+        # the macOS packages.
         exclude:
           - os: macos-15
             part: rust-release
@@ -132,19 +130,15 @@ jobs:
           toolchain: 1.90.0
       - run: make check-msrv
 
-  security:
+  # Secrets are scanned on every change; dependency audits run from `security.yml`.
+  secrets:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
-        with:
-          toolchain: 1.99.0
-      - run: cargo install --locked cargo-deny --version 0.20.2
-      - run: cargo install --locked cargo-audit --version 0.22.2
-      - run: make check-security
+      - run: ./tools/check/gate.sh secrets
 
   # The header-only half of the CUDA gate. It compiles, lints and tests the cuda-gated modules,
   # which no other job does: `packages` builds the cuda feature but not the test targets, so a
@@ -234,6 +228,7 @@ jobs:
 
   packages:
     name: Package (${{ matrix.target }})
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -334,14 +329,17 @@ jobs:
 
   quality-gate:
     if: ${{ always() }}
-    needs: [rust, tools, msrv, security, packages, cuda, cuda-aot]
+    needs: [rust, tools, msrv, secrets, packages, cuda, cuda-aot]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
+      # Packages are skipped outside releases; anything that failed or was cancelled fails.
       - name: Require every gate to pass
         env:
           RESULTS: ${{ join(needs.*.result, ',') }}
-        run: test "$RESULTS" = 'success,success,success,success,success,success,success'
+        run: |
+          echo "$RESULTS"
+          ! echo "$RESULTS" | tr ',' '\n' | grep -qvE '^(success|skipped)$'
 
   release-cuda:
     name: Publish CUDA release

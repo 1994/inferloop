@@ -1,6 +1,6 @@
 # 质量门禁
 
-所有检查共用统一入口 `make check`，任一步失败即退出。CI 与本地使用同一脚本，`quality-gate` job 汇总 Rust、工具、MSRV、依赖安全、CUDA（无 GPU 的头文件门禁）与四平台打包结果，见 [打包指南](packaging.md)。
+所有检查共用统一入口 `make check`，任一步失败即退出。CI 与本地使用同一脚本，`quality-gate` job 汇总 Rust、工具、MSRV、密钥扫描、CUDA（无 GPU 的头文件门禁）以及发布时的四平台打包结果；依赖审计由单独的 security 工作流执行，见 [打包指南](packaging.md)。
 
 本文描述现有门禁。正式测试与服务对比的共同要求见 [性能基线方案](../plans/performance/baseline.md)；release 构建身份、当前 native/vLLM 配置和证据校验已由基线方案的门禁覆盖，但现有 gate 成功退出不代表对应 profile 已通过性能判定。入口与测试收集的约定见 [构建与依赖方案](../plans/engineering/build-and-dependencies.md)。
 
