@@ -13,62 +13,69 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use support::ProtocolBackend;
 
-/// Ticks a scene runs before it calls a stall a hang.
-const TICKS: u64 = 1000;
+#[cfg(test)]
+mod fixtures {
+    use super::*;
 
-fn rank() -> ProtocolBackend {
-    ProtocolBackend::new(16, 8, &support::model(ModelId::ONE)).unwrap()
-}
+    /// Ticks a scene runs before it calls a stall a hang.
+    pub const TICKS: u64 = 1000;
 
-fn engine(group: RankGroup) -> Engine<RankGroup> {
-    let mut registry = KernelRegistry::default();
-    registry.register(&support::DeclaredKernels).unwrap();
-    Engine::new(
-        group,
-        support::model(ModelId::ONE),
-        PrecisionPlan::f32(),
-        &registry,
-        RuntimeConfig::default(),
-    )
-    .unwrap()
-}
-
-fn request(id: u64) -> CanonicalRequest {
-    CanonicalRequest {
-        id: RequestId::new(id).unwrap(),
-        model: ModelId::ONE,
-        session: None,
-        input: RequestInput::Sequence {
-            tokens: vec![1, 2, 3, 4, 5].into(),
-            media: vec![],
-        },
-        workload: Workload::Generate { max_new_tokens: 2 },
-        qos: Qos::default(),
-        sampling: Sampling::default(),
-        prefix_boundary: None,
-        extensions: BTreeMap::new(),
+    pub fn rank() -> ProtocolBackend {
+        ProtocolBackend::new(16, 8, &support::model(ModelId::ONE)).unwrap()
     }
-}
 
-/// Tick `ticks` times, checking the engine's invariants after each; whether it went idle.
-fn run(engine: &mut Engine<RankGroup>, start: u64, ticks: u64) -> bool {
-    for tick in start..start + ticks {
-        engine.tick(tick * 100).unwrap();
-        engine.check_invariants().unwrap();
-        if engine.is_idle() {
-            return true;
+    pub fn engine(group: RankGroup) -> Engine<RankGroup> {
+        let mut registry = KernelRegistry::default();
+        registry.register(&support::DeclaredKernels).unwrap();
+        Engine::new(
+            group,
+            support::model(ModelId::ONE),
+            PrecisionPlan::f32(),
+            &registry,
+            RuntimeConfig::default(),
+        )
+        .unwrap()
+    }
+
+    pub fn request(id: u64) -> CanonicalRequest {
+        CanonicalRequest {
+            id: RequestId::new(id).unwrap(),
+            model: ModelId::ONE,
+            session: None,
+            input: RequestInput::Sequence {
+                tokens: vec![1, 2, 3, 4, 5].into(),
+                media: vec![],
+            },
+            workload: Workload::Generate { max_new_tokens: 2 },
+            qos: Qos::default(),
+            sampling: Sampling::default(),
+            prefix_boundary: None,
+            extensions: BTreeMap::new(),
         }
     }
-    false
+
+    /// Tick `ticks` times, checking the engine's invariants after each; whether it went idle.
+    pub fn run(engine: &mut Engine<RankGroup>, start: u64, ticks: u64) -> bool {
+        for tick in start..start + ticks {
+            engine.tick(tick * 100).unwrap();
+            engine.check_invariants().unwrap();
+            if engine.is_idle() {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn status(engine: &Engine<RankGroup>, id: u64) -> RequestStatus {
+        engine
+            .request(RequestId::new(id).unwrap())
+            .unwrap()
+            .status
+            .clone()
+    }
 }
 
-fn status(engine: &Engine<RankGroup>, id: u64) -> RequestStatus {
-    engine
-        .request(RequestId::new(id).unwrap())
-        .unwrap()
-        .status
-        .clone()
-}
+use fixtures::*;
 
 #[test]
 fn a_group_step_completes_only_after_every_rank_fences() {

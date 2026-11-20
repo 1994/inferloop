@@ -95,13 +95,13 @@ impl RankGroup {
     }
 
     /// Poll rank `index` once, recording its fenced result in `ticket`.
-    fn poll_rank(&mut self, index: usize, ticket: &mut GroupTicket) -> Result<()> {
+    fn poll_rank(&mut self, index: usize, ticket: &mut GroupTicket) {
         let control = &self.controls[index];
         if control.hold_fence.load(Ordering::Acquire) {
-            return Ok(());
+            return;
         }
         let Some(rank_ticket) = ticket.pending[index].as_mut() else {
-            return Ok(());
+            return;
         };
         let outputs = if control.fail_poll.load(Ordering::Acquire) {
             Err(Error::new(
@@ -112,7 +112,7 @@ impl RankGroup {
             self.ranks[index].poll(rank_ticket)
         };
         let fenced = match outputs {
-            Ok(None) => return Ok(()),
+            Ok(None) => return,
             Ok(Some(outputs)) => Some(outputs),
             Err(error) => {
                 ticket.error.get_or_insert(error);
@@ -124,13 +124,12 @@ impl RankGroup {
         match (fenced, &ticket.primary) {
             (Some(outputs), None) if index == 0 => ticket.primary = Some(outputs),
             (Some(outputs), Some(primary)) if !same_outputs(&outputs, primary) => {
-                ticket.error.get_or_insert(Error::invariant(format!(
-                    "rank {index} diverged from rank 0"
-                )));
+                ticket.error.get_or_insert_with(|| {
+                    Error::invariant(format!("rank {index} diverged from rank 0"))
+                });
             }
             _ => {}
         }
-        Ok(())
     }
 }
 
@@ -239,7 +238,7 @@ impl BackendProvider for RankGroup {
     /// Complete only once every rank fenced; a failure is reported after the last fence.
     fn poll(&mut self, ticket: &mut Self::Ticket) -> Result<Option<Vec<TaskOutput>>> {
         for index in 0..self.ranks.len() {
-            self.poll_rank(index, ticket)?;
+            self.poll_rank(index, ticket);
         }
         if ticket.pending.iter().any(Option::is_some) {
             return Ok(None);
