@@ -48,6 +48,7 @@ infer [--backend auto|metal|cuda] <command> [options]
 | 选项 | 默认值 | 说明 |
 |---|---:|---|
 | `--backend` | `auto` | `auto` 按 CUDA → Metal 选择，无可用 GPU 时报错 |
+| `--device` | `0` | 所选 backend 内可见设备的序号；Metal 只有 0，CUDA 受 `CUDA_VISIBLE_DEVICES` 约束 |
 | `--gpu-memory-utilization` | 0.9 | 允许 engine 使用的显存比例（vLLM 语义，含权重） |
 | `--host-memory-mib` | 自动 | 兼容预算覆盖；未指定时 CUDA/Metal 按设备推导 |
 | `--num-gpu-blocks-override` | 自动 | 物理 KV block 数 |

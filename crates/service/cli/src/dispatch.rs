@@ -16,6 +16,7 @@ pub fn run() {
     let cli = Cli::parse();
     let selection = backend::Selection {
         kind: cli.backend,
+        device: cli.device,
         num_gpu_blocks_override: cli.num_gpu_blocks_override,
         block_size: cli.block_size,
         max_num_batched_tokens: cli.max_num_batched_tokens,

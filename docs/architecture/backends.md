@@ -17,7 +17,7 @@
 
 ## 选择与隔离
 
-发布版提供 `--backend auto|cuda|metal`：`auto` 按 CUDA → Metal 选择已实现且可用的设备，无可用设备时返回 Unsupported。CUDA 需要显式启用 `cuda` feature，并通过设备与模型能力检查。产品不提供 CPU 执行 backend。
+发布版提供 `--backend auto|cuda|metal`：`auto` 按 CUDA → Metal 选择已实现且可用的设备，无可用设备时返回 Unsupported。CUDA 需要显式启用 `cuda` feature，并通过设备与模型能力检查。产品不提供 CPU 执行 backend。`--device N` 选择后端可见集合内的设备序号，并在启动日志、调优身份与健康检查中保持显式；Metal 只有 0，CUDA 的可见集合仍由 `CUDA_VISIBLE_DEVICES` 约束。
 
 `ModelIr` / `DataflowGraph` 描述共有语义，`KernelRegistration` / `ExecutionProgram` 绑定 backend。编译与执行都会校验能力、精度、kernel 与 program target；更换 backend 需要重新编译，checkpoint 不能直接跨 backend 恢复。
 
@@ -76,7 +76,7 @@ CUDA provider 已接入 CLI/HTTP，执行设备驻留图、状态/图复用、�
 | CUDA 执行 | compute 全路径默认采用非阻塞 submit/poll；尚无通用异步多 compute flight、全设备采样或完整生产 SLO 验收。cuTile 运行时 JIT 需要相应工具链，非完整 AOT 制品 |
 | 精度与设备 | 按能力及 `PrecisionPolicy` 选择；Hopper 的 NVFP4→BF16 转换不代表 H200 实机已验收。`test-cuda`（别名 `check-cuda`）含 Blackwell FP4 检查，不能作为所有 CUDA 设备统一通过的证明 |
 | 模型与模态 | 内置 provider 与算子覆盖有限，不保证任意 HF 包可运行。Engine/Scheduler 已支持预处理的图像/视频 media plan 与融合 media prefill；音频、混合 image/video prompt 及完整 DeepStack 路径未覆盖 |
-| 状态与扩展 | 物理分配/淘汰 owner 仍在 backend；跨 GPU、远程 PD、offload 和动态 C ABI/WASM 加载不属于当前支持范围 |
+| 状态与扩展 | 物理分配/淘汰 owner 仍在 backend；DP 通过每进程单设备部署，TP/PP/PD、offload 和动态 C ABI/WASM 加载未实现，方案见[多卡并行](../plans/engineering/parallelism.md) |
 | 性能 | CPU 分配门禁只覆盖指定路径，不代表全进程零分配；单模型/单设备实验不能代表通用 P99 或吞吐达标 |
 
 模型扩展见 [新增模型](../guides/adding-a-model.md)，CUDA 工具链与执行入口见 [CUDA README](../../crates/backend/cuda/README.md)。服务协议限制见 [OpenAI API](../guides/openai-api.md)，诊断能力见 [Agent](agent.md)。

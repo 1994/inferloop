@@ -293,3 +293,23 @@ fn serve_can_enable_the_in_process_response_store() {
     };
     assert!(options.enable_response_store);
 }
+
+#[test]
+fn device_ordinal_defaults_to_zero_and_rejects_malformed_values() {
+    let cli = Cli::try_parse_from(["infer", "/models/example"]).unwrap();
+    assert_eq!(cli.device, 0);
+    let cli = Cli::try_parse_from(["infer", "/models/example", "--device", "3"]).unwrap();
+    assert_eq!(cli.device, 3);
+    let cli = Cli::try_parse_from([
+        "infer",
+        "serve",
+        "--package",
+        "/models/example",
+        "--device=1",
+    ])
+    .unwrap();
+    assert_eq!(cli.device, 1);
+    for invalid in ["-1", "gpu0", "1.5"] {
+        assert!(Cli::try_parse_from(["infer", "/models/example", "--device", invalid]).is_err());
+    }
+}

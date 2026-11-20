@@ -26,6 +26,12 @@ pub struct Cli {
     pub(super) serve: commands::ServeOptions,
     #[arg(long, global = true, value_enum, default_value = "auto")]
     pub(super) backend: backend::BackendChoice,
+    /// Device ordinal within the selected backend's visible devices. Metal exposes one device.
+    ///
+    /// `CUDA_VISIBLE_DEVICES` still bounds which devices a process may see; this option names the
+    /// ordinal inside that set and makes the choice explicit in logs and tuning identity.
+    #[arg(long, global = true, value_name = "ORDINAL", default_value_t = 0)]
+    pub(super) device: usize,
     /// Number of GPU blocks to use, overriding the profiled count; automatic when omitted.
     #[arg(long, global = true)]
     pub(super) num_gpu_blocks_override: Option<usize>,

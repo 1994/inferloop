@@ -1,6 +1,8 @@
 #[cfg(metal_backend)]
 use super::metal;
-use super::{BackendChoice, Selection, cuda, cuda_available, metal_available, resolve};
+use super::{
+    BackendChoice, Selection, cuda, cuda_device_available, metal_device_available, resolve,
+};
 use crate::constants::MIB_U64;
 #[cfg(cuda_backend)]
 use infer_backend_cuda::{
@@ -471,7 +473,26 @@ impl BackendProvider for SelectedBackend {
     }
 }
 pub fn load(path: &Path, memory_mib: u64, selection: &Selection) -> Result<SelectedBackend> {
-    let choice = resolve(selection.kind, cuda_available(), metal_available())?;
+    let choice = resolve(
+        selection.kind,
+        cuda_device_available(selection.device),
+        metal_device_available(selection.device),
+    )
+    .map_err(|error| {
+        // Automatic resolution has no backend-specific error to name the ordinal in, so a
+        // non-default request keeps the device in the message instead of reading as "no GPU".
+        if selection.device == 0 {
+            error
+        } else {
+            Error::new(
+                error.code,
+                format!(
+                    "{}; device {} was requested",
+                    error.message, selection.device
+                ),
+            )
+        }
+    })?;
     // Zero means "derive the budget from the device"; every backend resolves it locally.
     let memory_bytes = if memory_mib == 0 {
         0
