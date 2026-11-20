@@ -4,8 +4,8 @@ use std::env::args;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let path = args().nth(1).ok_or("usage: gguf-vision <mmproj.gguf>")?;
-    let package = GgufVisionPackage::open(path)?;
+    let mmproj = args().nth(1).ok_or("usage: gguf-vision <mmproj.gguf>")?;
+    let package = GgufVisionPackage::open(mmproj)?;
     println!(
         "slots={} patch={} deepstack={}",
         package.slots().len(),
