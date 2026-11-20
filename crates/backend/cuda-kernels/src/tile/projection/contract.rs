@@ -343,7 +343,6 @@ fn grouped_int_gemv(
     x: Buffer<'_, f32>,
     weight: GroupedIntWeight<'_>,
 ) -> Result<()> {
-    let scope = capture_scope(recording)?;
     let format = weight.format;
     let RowsShape {
         rows,
@@ -352,6 +351,10 @@ fn grouped_int_gemv(
     } = shape;
     let packing = CodePacking::of(format);
     let block = gemv_block_rows(rows);
+    if block == 1 && packing == CodePacking::Nibble {
+        return nibble_gemv(projection, recording, columns, out, x, weight);
+    }
+    let scope = capture_scope(recording)?;
     let (spans, words) = gemv_shape(packing, columns, block);
     validate_grouped_int(&weight, outputs, columns, spans)?;
     let mut generics = gemv_generics(&weight, columns, spans, words);
@@ -405,14 +408,14 @@ fn grouped_int_gemv(
         }
         (CodePacking::Nibble, Some(biases), _) => scope
             .record(
-                grouped_int_nibble::gemv(out, &x, &codes, &factors, &biases)
+                grouped_int_nibble::gemv_rows(out, &x, &codes, &factors, &biases)
                     .generics(generics)
                     .compile_options(options),
             )
             .map(drop),
         (CodePacking::Nibble, None, _) => scope
             .record(
-                grouped_int_nibble::gemv_zero(out, &x, &codes, &factors)
+                grouped_int_nibble::gemv_rows_zero(out, &x, &codes, &factors)
                     .generics(generics)
                     .compile_options(options),
             )
@@ -427,6 +430,59 @@ fn grouped_int_gemv(
         (CodePacking::Byte, None, _) => scope
             .record(
                 grouped_int_byte::gemv_zero(out, &x, &codes, &factors)
+                    .generics(generics)
+                    .compile_options(options),
+            )
+            .map(drop),
+    }
+    .map_err(backend_error)
+}
+
+/// The single-row nibble GEMV over flat buffers, with its per-byte accumulators.
+fn nibble_gemv(
+    projection: &TileProjection,
+    recording: &Recording<'_>,
+    columns: usize,
+    out: Buffer<'_, f32>,
+    x: Buffer<'_, f32>,
+    weight: GroupedIntWeight<'_>,
+) -> Result<()> {
+    let scope = capture_scope(recording)?;
+    let (spans, words) = gemv_shape(CodePacking::Nibble, columns, 1);
+    validate_grouped_int(&weight, out.len(), columns, spans)?;
+    let generics = gemv_generics(&weight, columns, spans, words);
+    let (codes, _) = split_codes(&weight, out.len() * columns)?;
+    let mut out = projection.flat(recording, out)?;
+    let out = (&mut out).partition([GROUPED_INT_TILE_ROWS / TILE_WORDS * words]);
+    let x = projection.flat(recording, x)?;
+    let words = codes.words()?;
+    let codes = projection.matrix(
+        recording,
+        words,
+        "grouped-int code words",
+        (words.len() / TILE_WORDS, TILE_WORDS),
+    )?;
+    let terms = |buffer: Buffer<'_, f32>| {
+        projection.matrix(
+            recording,
+            buffer,
+            "grouped-int terms",
+            (buffer.len() / GROUPED_INT_TILE_ROWS, GROUPED_INT_TILE_ROWS),
+        )
+    };
+    let factors = terms(weight.factors)?;
+    let options = CompileOptions::default().occupancy(GEMV_OCCUPANCY);
+    match weight.biases.map(terms).transpose()? {
+        Some(biases) => scope
+            .record(
+                grouped_int_nibble::gemv(out, &x, &codes, &factors, &biases)
+                    .generics(generics)
+                    .compile_options(options),
+            )
+            .map(drop),
+        None => scope
+            .record(
+                grouped_int_nibble::gemv_zero(out, &x, &codes, &factors)
                     .generics(generics)
                     .compile_options(options),
             )

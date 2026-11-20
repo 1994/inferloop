@@ -27,7 +27,7 @@ pub fn resolve(
 
 /// Whether the target stores grouped-integer projections. Their verify GEMV decodes each weight
 /// once per row block but still pays every row's arithmetic: on RTX 5090 (2B `Q4_K_M`, one
-/// request) three verified rows cost about 3x one decode row, so depth 2 took 0.78 s against
+/// request) three verified rows cost about 3x one decode row, so depth 2 took 0.79 s against
 /// 0.68 s without the head. Automatic mode keeps such targets on plain decode; an explicit depth
 /// still loads the head.
 fn grouped_int_target(package: &QuantizedPackage) -> bool {

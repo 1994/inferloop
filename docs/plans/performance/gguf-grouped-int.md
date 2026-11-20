@@ -197,29 +197,34 @@ prompt 路径由 P5（int8 MMA、激活块复用）整体重写，届时解码�
 ## P6 第一步：行块 GEMV
 
 1–8 行（MTP 验证的 3 行、C2–C8 的批量 decode）原先走 32 行的 BF16 rows GEMM：3 行补成 32 行，每个 CTA 只算
-16 个输出，验证图的 linear 耗时是 decode 的 6 倍。现在 `nibble/high/byte::gemv{,_zero}` 多了行块维 `R`：
-每个 CTA 对 `R` 行只解一次码字，每行仍按单行 GEMV 的 F32 顺序累加（`(code - offset) · factor` 先算，
-再乘该行激活）；`R` 取行数的下一个 2 的幂、上限 4（`GROUPED_INT_GEMV_ROWS`），最多 8 行（两个行块），
-多于 8 行仍走 GEMM。每步 span 数按 `R` 等比缩小，使每 CTA 的累加器数与单行相同；单行 decode 的
-kernel 形状与 generic 不变。设备测试 `grouped_int_rows` 对 8 种格式 × 1/2/3/4/5/8/9 行与 f64 标量参考
-比对（GEMV 相对误差 ≤ 2e-6，9 行 GEMM 按 BF16 容差）。
+16 个输出，验证图的 linear 耗时是 decode 的 6 倍。现在 `nibble::gemv_rows{,_zero}`、`high::gemv{,_zero}`、
+`byte::gemv{,_zero}` 带行块维 `R`：每个 CTA 对 `R` 行只解一次码字，把一个 word 的四个输出行沿最后一维解成一个
+`[R, VALUES, W, 4]` 累加器，每行在 F32 下按单行顺序累加（`(code - offset) · factor` 先算，再乘该行激活）。
+`R` 取行数的下一个 2 的幂、上限 4（`GROUPED_INT_GEMV_ROWS`），最多 8 行（两个行块），多于 8 行仍走 GEMM；
+每步 span 数按 `R` 等比缩小，使每 CTA 的累加器数与单行相同。单行 nibble 保留原先每字节一个累加器的
+`gemv{,_zero}`：共享布局在 `Q4_K_M` 单请求 decode 上慢 15%（0.681 → 0.784 s）；byte 共享布局不慢（Q8_0
+0.464 → 0.458 s），直接替换。设备测试 `grouped_int_rows` 对 8 种格式 × 1/2/3/4/5/8/9 行与 f64 标量参考比对
+（GEMV 相对误差 ≤ 2e-6，9 行 GEMM 按 BF16 容差）。
 
-serving（Qwen3.5-2B `Q4_K_M`，RTX 5090，`fixed-work-serving.py` 每请求 256 token，两轮新进程交替，
-中位数；`/home/r/benchmarks/inference.rs/gguf-mtp-2026-11-21/ab2/`）：
+serving（RTX 5090，`fixed-work-serving.py` 每请求 256 token，每臂两轮新进程交替，中位数；
+`/home/r/benchmarks/inference.rs/gguf-mtp-2026-11-21/ab4/`、`ab3/`）：
 
-| 场景 | 基线 | `R ≤ 2` | `R ≤ 4`（采用） |
-|---|---:|---:|---:|
-| C1 decode | 0.685 s | — | 0.683 s |
-| C1 MTP 深度 2 | 1.308 s | 0.754 s | 0.783 s |
-| C4 decode | 3.070 s | 1.742 s | 1.619 s |
-| C8 decode | 2.263 s | 2.253 s | 2.254 s |
+| 模型 | 场景 | 基线 | 本 PR |
+|---|---|---:|---:|
+| Qwen3.5-2B `Q4_K_M` | C1 decode | 0.686 s | 0.677 s |
+| Qwen3.5-2B `Q4_K_M` | C1 MTP 深度 2 | 1.341 s | 0.790 s |
+| Qwen3.5-2B `Q4_K_M` | C4 decode | 3.154 s | 1.672 s |
+| Qwen3.5-2B `Q4_K_M` | C8 decode | 2.263 s | 2.254 s |
+| Qwen3.5-0.8B `Q8_0` | C1 decode | 0.464 s | 0.458 s |
+| Qwen3.5-0.8B `Q8_0` | C4 decode | 1.885 s | 0.921 s |
 
-C4 批量 decode 快 1.9 倍；C1 decode 与 C8 不变。批量行改为 F32 累加后与单行 decode 的数值一致性更好，
-C4 的部分请求 token 摘要因此与基线不同（基线是 BF16 GEMM）。
+C4 批量 decode 快 1.9–2.0 倍，C1 decode 与 C8 不变（C8 的 8 行走两个行块，与 GEMM 打平）。批量行改为 F32
+累加后与单行 decode 的数值一致性更好，部分批量请求的 token 摘要因此与基线不同（基线是 BF16 GEMM）。
+扫描过行块上限 2 与 4：上限 2 的 MTP 验证略快（0.754 vs 0.783 s），C4 慢（1.742 vs 1.619 s），取 4。
 
 剩余问题：GEMV 本身受指令而非带宽限制（单行 2048 列投影约 600 GB/s），每多一行就多一份完整的乘加，
-3 行验证仍约为 1 行 decode 的 3 倍（Q6_K `lm_head` 0.34 → 1.17 ms）。所以 C1 时 MTP 深度 2（0.783 s）
-仍慢于不开 MTP（0.683 s），`--num-speculative-tokens auto` 对 grouped-int 目标暂不启用 MTP，显式深度
+3 行验证仍约为 1 行 decode 的 3 倍（Q6_K `lm_head` 0.34 → 1.17 ms）。所以 C1 时 MTP 深度 2（0.790 s）
+仍慢于不开 MTP（0.677 s），`--num-speculative-tokens auto` 对 grouped-int 目标暂不启用 MTP，显式深度
 照常加载。把行维放到最后一维（每线程持有全部行）测过，耗时不变。
 
 ## 后续方案
