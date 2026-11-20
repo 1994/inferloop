@@ -268,8 +268,8 @@ impl PackageSource {
     /// Returns an I/O, invalid-input, or capacity error for an inaccessible or oversized
     /// configuration, or a root that cannot be canonicalized.
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
-        let root = root
-            .as_ref()
+        let given = root.as_ref();
+        let root = given
             .canonicalize()
             .map_err(|e| Error::invalid(e.to_string()))?;
         #[cfg(feature = "gguf")]
@@ -277,7 +277,10 @@ impl PackageSource {
             .extension()
             .is_some_and(|extension| extension == "gguf")
         {
-            let package = GgufPackage::open_auto(&root)?;
+            // The mmproj sibling is found beside the path as given, as the loader finds it: a
+            // linked `.gguf` canonicalizes into another directory, which would leave the
+            // deployment text-only while the loader binds a vision tower.
+            let package = GgufPackage::open_auto(given)?;
             let preprocessor = package
                 .vision()
                 .map(GgufVisionPackage::preprocessor_config)
