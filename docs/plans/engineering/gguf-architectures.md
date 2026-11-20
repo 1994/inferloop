@@ -1,6 +1,6 @@
 # GGUF 架构适配层
 
-状态：**已实现**（`qwen3vl`、`qwen35`）。GGUF 只是另一种存储格式：适配层把一个 `general.architecture`
+状态：**已实现**（`qwen3vl`、`qwen35`、`dflash`）。GGUF 只是另一种存储格式：适配层把一个 `general.architecture`
 翻译成普通的 HF 配置和规范张量名，之后的 provider、recipe、编译、backend、MTP 与 serving 与
 safetensors 完全相同。新增一个架构是填一个适配器，不改加载、绑定或执行路径。
 
@@ -67,3 +67,15 @@ key dim，`inner_size / time_step_rank` = value dim）。
 | Qwen3.5-0.8B `Q8_0` | 无新增代码直接加载；491（小模型自身答错）/ Paris / 2,3,5,7,11 | 显式深度 2 输出与不开 MTP 相同 |
 
 BF16 GGUF 与 safetensors 的全部 335 个张量逐一比对，最大相对误差 0。
+
+## DFlash2 草稿（`dflash`）
+
+`--draft-model` 指向 `.gguf` 文件时，`attach_dflash2` 用 `dflash` 适配器读它，之后的配置校验、权重清单校验、
+`fc` 按 tap 切块和 tap 图都与 safetensors 草稿共用。文件里的 `dflash.target_layers` 从嵌入输出起算，比 HF 的
+`target_layer_ids` 大 1；文件不记录目标深度，`num_target_layers` 由挂载的目标提供；llama.cpp 把 chat 结束符记为
+EOS，与 HF `eos_token_id` 不同，所以草稿不声明 EOS，由目标决定。草稿的 float 张量像 GGUF 目标一样常驻 host
+（BF16 1.9B 草稿约 3.8 GB，另加 `fc` 切块 0.26 GB）；量化草稿显式 `Unsupported`，因为草稿的 CUDA 投影只接 float/FP8。
+
+验证（RTX 5090，`/home/r/benchmarks/inference.rs/gguf-dflash2-2026-11-21/`）：`z-lab/Qwen3.8-27B-DFlash2-GGUF` 的
+BF16 文件 81 个张量与 safetensors 草稿逐一相同；以 Qwen3.8-27B-NVFP4 为目标、9 个请求各 256 token，GGUF 草稿与
+safetensors 草稿的 greedy token 摘要相同，耗时 1.075 s 对 1.074 s。

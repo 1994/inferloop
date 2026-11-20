@@ -6,6 +6,7 @@
 //! adds: the HF configuration it synthesizes, its own tensor names and the inverse of what its
 //! converter changed. The result is an ordinary HF configuration and canonical tensor names, so
 //! providers, recipes and backends are the same for every checkpoint format.
+use crate::providers::dflash2::DFLASH2;
 use crate::providers::qwen::gguf::validate::TensorSpec;
 use crate::providers::qwen::gguf::{QWEN3VL, QWEN35};
 use infer_core::{Error, Result};
@@ -174,7 +175,7 @@ pub trait GgufArchitecture: Sync {
 }
 
 /// Every architecture the GGUF path reads.
-const ARCHITECTURES: [&dyn GgufArchitecture; 2] = [&QWEN3VL, &QWEN35];
+const ARCHITECTURES: [&dyn GgufArchitecture; 3] = [&QWEN3VL, &QWEN35, &DFLASH2];
 
 /// The adapter for `metadata`'s `general.architecture`.
 /// # Errors

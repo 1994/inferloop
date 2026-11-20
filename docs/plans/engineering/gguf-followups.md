@@ -34,13 +34,14 @@ GGUF 端到端也已验证（#283）：BF16 GGUF + F16 mmproj 的 greedy token �
 ## 4. 架构适配与 MTP
 
 **已完成**：GGUF 按 `general.architecture` 选适配器，见 [GGUF 架构适配层](gguf-architectures.md)。Qwen3.5（`qwen35`）
-的尾部 `nextn` block 作为 MTP 头按规范名绑定，BF16 GGUF 的 MTP 加速与 safetensors 相同。
+的尾部 `nextn` block 作为 MTP 头按规范名绑定，BF16 GGUF 的 MTP 加速与 safetensors 相同；`DFlash2` 的 BF16 GGUF
+草稿（`dflash`）与 safetensors 草稿输出相同。
 
 未完成：
 
 - `qwen35` 的 tiled value head（key heads ≠ value heads，27B）；
 - grouped-int 目标的 MTP 验证仍慢于单行 decode（性能文档 P6 余项）；
-- `DFlash2` 的 GGUF 草稿（`general.architecture = dflash`）。
+- 量化（`Q8_0` 等）`DFlash2` GGUF 草稿：草稿投影需要 grouped-int 的 draft lowering。
 
 ## 5. 发布与兼容
 

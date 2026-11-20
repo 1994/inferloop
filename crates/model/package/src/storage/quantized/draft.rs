@@ -44,22 +44,24 @@ impl QuantizedPackage {
         if self.dflash2.is_some() {
             return Err(Error::invalid("a DFlash2 draft is already attached"));
         }
+        let root = root.as_ref();
+        if root
+            .extension()
+            .is_some_and(|extension| extension == "gguf")
+        {
+            #[cfg(feature = "gguf")]
+            return self.attach_dflash2_gguf(root);
+            #[cfg(not(feature = "gguf"))]
+            return Err(Error::unsupported(
+                "GGUF DFlash2 drafts require the gguf feature",
+            ));
+        }
         let source = PackageSource::open(root)?;
         let raw = source.require_config()?;
         let config = DFlash2Config::parse(raw)?;
         let value: serde_json::Value =
             serde_json::from_slice(raw).map_err(|e| Error::invalid(e.to_string()))?;
-        config.check_block_semantics()?;
-        config.check_special_tokens()?;
-        let geometry = config.geometry();
-        geometry.validate()?;
-        geometry.check_target(&self.imported.model)?;
-        if config.vocab_size != self.imported.model.vocab_size {
-            return Err(Error::invalid(format!(
-                "draft vocabulary {} does not match the target's {}",
-                config.vocab_size, self.imported.model.vocab_size
-            )));
-        }
+        self.check_draft(&config)?;
         let block = fp8_block(&value["quantization_config"])?;
         let TensorFiles { shards, tensor_map } = source.tensor_files()?;
         let mut sources = BTreeMap::new();
@@ -87,25 +89,174 @@ impl QuantizedPackage {
             }
             weights.insert(name.clone(), bind(name, source, &sources, block)?);
         }
+        let fc = weights
+            .get("fc.weight")
+            .ok_or_else(|| Error::invalid("draft package is missing fc.weight"))?;
+        let taps = column_blocks(fc, config.hidden_size, config.geometry().target_taps.len())?;
+        self.bind_draft(config, weights, taps)
+    }
+
+    /// Check that `config` is a `DFlash2` draft this target can carry.
+    fn check_draft(&self, config: &DFlash2Config) -> Result<()> {
+        config.check_block_semantics()?;
+        config.check_special_tokens()?;
+        let geometry = config.geometry();
+        geometry.validate()?;
+        geometry.check_target(&self.imported.model)?;
+        if config.vocab_size != self.imported.model.vocab_size {
+            return Err(Error::invalid(format!(
+                "draft vocabulary {} does not match the target's {}",
+                config.vocab_size, self.imported.model.vocab_size
+            )));
+        }
+        Ok(())
+    }
+
+    /// Check the draft inventory, bind one `fc` column block per tap into the target graph and
+    /// keep the draft.
+    fn bind_draft(
+        &mut self,
+        config: DFlash2Config,
+        weights: BTreeMap<String, DeviceWeight>,
+        taps: Vec<DeviceWeight>,
+    ) -> Result<()> {
         let inventory = weights
             .iter()
             .map(|(name, weight)| (name.clone(), weight.shape()))
             .collect();
         config.check_weight_inventory(&inventory)?;
-        let hidden = config.hidden_size;
-        let fc = weights
-            .get("fc.weight")
-            .ok_or_else(|| Error::invalid("draft package is missing fc.weight"))?;
-        for (index, slice) in column_blocks(fc, hidden, geometry.target_taps.len())?
-            .into_iter()
-            .enumerate()
-        {
+        let geometry = config.geometry();
+        for (index, slice) in taps.into_iter().enumerate() {
             self.weights.insert(tap_projection_slot(index), slice);
         }
-        attach_tap_projection(&mut self.graph, &geometry.target_taps, hidden)?;
+        attach_tap_projection(&mut self.graph, &geometry.target_taps, config.hidden_size)?;
         self.dflash2 = Some(DFlash2Package { config, weights });
         Ok(())
     }
+
+    /// Attach a `DFlash2` draft stored as a `dflash` GGUF file.
+    ///
+    /// The file does not record the target's depth, so the target being attached supplies
+    /// `num_target_layers`. Its float tensors stay in host memory as the GGUF target's do, and
+    /// each `fc` tap block is cut out once here, since GGUF bytes have no gathered views.
+    #[cfg(feature = "gguf")]
+    fn attach_dflash2_gguf(&mut self, path: &Path) -> Result<()> {
+        let draft = crate::GgufPackage::open(path)?;
+        if draft.architecture() != GGUF_ARCHITECTURE {
+            return Err(Error::invalid(format!(
+                "{} is a {} GGUF, not a DFlash2 draft",
+                path.display(),
+                draft.architecture()
+            )));
+        }
+        let mut value: serde_json::Value = serde_json::from_slice(draft.config())
+            .map_err(|error| Error::invalid(error.to_string()))?;
+        value["num_target_layers"] = self.imported.model.mixers.len().into();
+        let config = DFlash2Config::parse(
+            &serde_json::to_vec(&value).map_err(|error| Error::invalid(error.to_string()))?,
+        )?;
+        self.check_draft(&config)?;
+        let mut weights = BTreeMap::new();
+        for slot in draft.slots().values() {
+            let data = dense_source(&format!("{SHARD_PREFIX}{}", slot.slot), slot)?;
+            self.gguf_dense
+                .insert(data.name.clone(), draft.float_bytes(&slot.slot, u64::MAX)?);
+            weights.insert(slot.slot.clone(), DeviceWeight::Float { data });
+        }
+        let hidden = config.hidden_size;
+        let fc = weights
+            .get("fc.weight")
+            .ok_or_else(|| Error::invalid("draft package is missing fc.weight"))?
+            .data()
+            .clone();
+        let parts = config.geometry().target_taps.len();
+        let blocks = self.cut_columns(&fc, hidden, parts)?;
+        self.bind_draft(config, weights, blocks)
+    }
+
+    /// Cut `[rows, parts * hidden]` dense GGUF bytes into `parts` cached `[rows, hidden]` blocks.
+    #[cfg(feature = "gguf")]
+    fn cut_columns(
+        &mut self,
+        fc: &WeightSource,
+        hidden: usize,
+        parts: usize,
+    ) -> Result<Vec<DeviceWeight>> {
+        let [rows, columns] = fc.shape.as_slice() else {
+            return Err(Error::invalid("draft fc rank"));
+        };
+        if Some(*columns) != parts.checked_mul(hidden) {
+            return Err(Error::invalid("draft fc shape"));
+        }
+        let element =
+            usize::try_from(fc.dtype.bytes()).map_err(|e| Error::invalid(e.to_string()))?;
+        let stored = self
+            .gguf_dense
+            .get(&fc.name)
+            .ok_or_else(|| Error::invariant("draft fc is not cached"))?;
+        let (row_bytes, kept) = (columns * element, hidden * element);
+        let mut cut = Vec::with_capacity(parts);
+        for part in 0..parts {
+            let mut bytes = Vec::with_capacity(rows * kept);
+            for row in stored.chunks_exact(row_bytes) {
+                bytes.extend_from_slice(&row[part * kept..(part + 1) * kept]);
+            }
+            let data = WeightSource {
+                name: format!("{}#{part}", fc.name),
+                shape: vec![*rows, hidden],
+                bytes: bytes.len() as u64,
+                ..fc.clone()
+            };
+            cut.push((data, bytes));
+        }
+        Ok(cut
+            .into_iter()
+            .map(|(data, bytes)| {
+                self.gguf_dense.insert(data.name.clone(), bytes);
+                DeviceWeight::Float { data }
+            })
+            .collect())
+    }
+}
+
+/// The `general.architecture` of a `DFlash2` GGUF draft.
+#[cfg(feature = "gguf")]
+const GGUF_ARCHITECTURE: &str = "dflash";
+
+/// A cached dense GGUF float tensor named `name`; quantized draft weights are rejected, as the
+/// draft's CUDA projections take float or FP8 weights.
+#[cfg(feature = "gguf")]
+fn dense_source(name: &str, slot: &crate::GgufSlot) -> Result<WeightSource> {
+    let dtype = match slot.float_type() {
+        infer_format::GgufType::F32 => TensorDtype::F32,
+        infer_format::GgufType::F16 => TensorDtype::F16,
+        infer_format::GgufType::Bf16 => TensorDtype::BF16,
+        other => {
+            return Err(Error::unsupported(format!(
+                "DFlash2 GGUF draft weight {} is {}; the draft takes float weights",
+                slot.slot,
+                other.name()
+            )));
+        }
+    };
+    let elements = slot
+        .shape
+        .iter()
+        .try_fold(1u64, |count, dimension| {
+            count.checked_mul(*dimension as u64)
+        })
+        .ok_or_else(|| Error::invalid("GGUF draft shape overflow"))?;
+    Ok(WeightSource {
+        name: name.to_owned(),
+        // Dense GGUF bytes are served from the cache the `gguf` shard reads.
+        shard: "gguf".to_owned(),
+        dtype,
+        shape: slot.shape.clone(),
+        bytes: elements
+            .checked_mul(dtype.bytes())
+            .ok_or_else(|| Error::invalid("GGUF draft size overflow"))?,
+        view: None,
+    })
 }
 
 /// Block geometry a block-scaled FP8 draft declares, if any.
