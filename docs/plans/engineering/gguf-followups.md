@@ -22,11 +22,11 @@
 
 **已完成（#282）**：deepstack 特征经 `TensorOp::MediaFeature` 加到前 3 个 decoder 层的输出上，safetensors 与 GGUF 共用同一条路径。与 HF Qwen3-VL-2B（含 deepstack）对照：特征相对误差 3.9e-4，logits 最大绝对误差 0.10，greedy token 一致。
 
-未完成：GGUF 包没有 preprocessor 配置，多模态端到端还跑不起来（#283），GGUF 的 deepstack 因此只验证了导入和图结构。
+GGUF 端到端也已验证（#283）：BF16 GGUF + F16 mmproj 的 greedy token 与 HF 参考一致，HTTP 图片请求的输出与 safetensors 包逐字相同。之前多模态"跑不起来"的原因是：`.gguf` 以软链接部署时，`PackageSource` 把路径规范化到链接目标所在目录，找不到旁边的 mmproj，部署被当成纯文本；而加载器按给定路径找，能绑定视觉塔。两者现在都按给定路径查找 mmproj。
 
 ## 3. 质量与性能收口
 
-- safetensors 包的多模态输出已与 HF 做数值配对（#282）；GGUF 多模态先要补 preprocessor（#283），之后再做配对；
+- safetensors 包的多模态输出已与 HF 做数值配对（#282）；GGUF 多模态（BF16）与 HF 的 greedy token 一致（#283）；
 - 当前 tokenizer、preprocessor、mmproj 映射有真实制品验证，但没有全量图片集；
 - 需要把 native 文本、视觉、多模态的 TTFT/TPOT 与 llama.cpp/参考包分项记录；
 - Q4_K GEMV 仍低于带宽 roofline，prompt GEMV 仍是逐行路径。
