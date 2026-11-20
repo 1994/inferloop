@@ -641,6 +641,12 @@ const MEMORY_CLOCK_RATE: i32 = 36;
 const BUS_WIDTH: i32 = 37;
 /// `CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE`.
 const L2_CACHE: i32 = 38;
+/// `CU_DEVICE_ATTRIBUTE_PCI_BUS_ID`.
+const PCI_BUS: i32 = 33;
+/// `CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID`.
+const PCI_DEVICE: i32 = 34;
+/// `CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID`.
+const PCI_DOMAIN: i32 = 50;
 
 /// A device attribute the host reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -655,6 +661,10 @@ pub enum Attribute {
     MemoryClockKhz,
     MemoryBusWidthBits,
     L2CacheBytes,
+    /// PCI domain, bus and device of the board: together unique on one host.
+    PciDomain,
+    PciBus,
+    PciDevice,
 }
 
 impl Attribute {
@@ -669,6 +679,9 @@ impl Attribute {
             Self::MemoryClockKhz => MEMORY_CLOCK_RATE,
             Self::MemoryBusWidthBits => BUS_WIDTH,
             Self::L2CacheBytes => L2_CACHE,
+            Self::PciDomain => PCI_DOMAIN,
+            Self::PciBus => PCI_BUS,
+            Self::PciDevice => PCI_DEVICE,
         }
     }
 }

@@ -80,6 +80,9 @@ pub struct RuntimeInspection {
     /// Effective load-time graph geometry and speculation depth.
     #[serde(default)]
     pub execution_profile: Option<infer_ir::ExecutionProfileInspection>,
+    /// The physical device serving this engine, when the backend names one.
+    #[serde(default)]
+    pub device: Option<infer_ir::DeviceIdentity>,
     /// Effective single-sequence length limits and where each came from.
     pub lengths: crate::ResolvedLengthLimits,
     pub queues: infer_scheduler::QueueInspection,

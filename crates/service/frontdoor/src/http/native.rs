@@ -54,6 +54,9 @@ struct HealthResponse<'a> {
     weight_backed_dataflow: bool,
     backend: &'a str,
     backend_kind: infer_ir::BackendKind,
+    /// Which device this replica serves from; omitted when the backend names none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device: Option<&'a infer_ir::DeviceIdentity>,
 }
 
 pub(super) async fn health(State(handle): State<RuntimeHandle>) -> HttpResult<Response> {
@@ -65,6 +68,7 @@ pub(super) async fn health(State(handle): State<RuntimeHandle>) -> HttpResult<Re
         weight_backed_dataflow: inspection.weight_backed_dataflow,
         backend: &inspection.backend,
         backend_kind: inspection.backend_kind,
+        device: inspection.device.as_ref(),
     };
     Ok((
         if inspection.ready {

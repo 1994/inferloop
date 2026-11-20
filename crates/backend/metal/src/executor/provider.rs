@@ -49,6 +49,16 @@ impl BackendProvider for MetalBackend {
     fn formats(&self) -> infer_ir::BackendFormats {
         Self::FORMATS
     }
+    fn device_identity(&self) -> Option<infer_ir::DeviceIdentity> {
+        // One system device, addressed by no PCI slot; its family is the backend itself.
+        Some(infer_ir::DeviceIdentity {
+            ordinal: 0,
+            name: self.device_name().to_owned(),
+            architecture: "metal".into(),
+            pci_address: None,
+            memory_bytes: self.config.memory_bytes,
+        })
+    }
     fn capabilities(&self) -> DeviceCapabilities {
         DeviceCapabilities {
             backend: DeviceBackend::Metal(MetalCapabilities {

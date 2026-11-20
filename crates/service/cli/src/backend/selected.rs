@@ -256,6 +256,9 @@ impl BackendProvider for SelectedBackend {
     fn capabilities(&self) -> DeviceCapabilities {
         forward!(self, capabilities)
     }
+    fn device_identity(&self) -> Option<infer_ir::DeviceIdentity> {
+        forward!(self, device_identity)
+    }
     fn formats(&self) -> infer_ir::BackendFormats {
         forward!(self, formats)
     }

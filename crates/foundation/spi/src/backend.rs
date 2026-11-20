@@ -119,6 +119,11 @@ pub trait BackendProvider {
     fn execution_profile(&self) -> Option<infer_ir::ExecutionProfileInspection> {
         None
     }
+    /// The physical device this backend runs on, for telling replicas apart; wrappers forward
+    /// it. Opaque compatibility drivers return None.
+    fn device_identity(&self) -> Option<infer_ir::DeviceIdentity> {
+        None
+    }
     /// # Errors
     /// Returns an invalid-input or capacity error if the reservation size overflows or the state layout is unsupported.
     /// Cold compiled complete physical layout. Opaque compatibility drivers return None.

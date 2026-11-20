@@ -1,6 +1,6 @@
 # 多卡并行：DP、TP 与跨设备边界
 
-状态：方案设计完成；P0.1（设备序号选择）随本 PR 落地，P0.2 起待实现，P1 的实机验收需要两卡。事实基点为 main `e34d7b2a`（2026-11-19），引用的行号以该提交为准。
+状态：方案设计完成；P0 已全部落地：P0.1 设备序号（#286）、P0.3 设备键收口（#288）、P0.2 实例身份与 P0.4 组协议主机测试（本 PR）。P1 的实机验收需要两卡。事实基点为 main `e34d7b2a`（2026-11-19），引用的行号以该提交为准。
 
 本文回答一个问题：**不推翻现有 runtime / scheduler / state 分层，怎样支持多卡部署。** 结论是把“多卡”拆成三条成本完全不同的路线：
 
@@ -169,10 +169,10 @@ TP 下每个动态决策都是一次全局同步，因此：
 
 | 编号 | 改造 | 验收 | 状态 |
 |---|---|---|---|
-| P0.1 | 设备序号：`--device`、`Selection.device`、加载与日志、Metal 显式拒绝 | 默认 0；非法序号明确报错；启动日志可读出序号；单卡默认路径无行为变化 | **本 PR** |
-| P0.2 | 实例身份：`/health` 与 inspection 带 device 与硬件身份 | 两台不同设备/副本可通过 `/health` 区分；单卡输出兼容 | 待做 |
-| P0.3 | 设备键收口：JIT identity store 与 tuning stamp 按 ordinal 取设备身份 | 异构机上 `--device N` 的调优缓存不与 0 号卡混用 | 待做 |
-| P0.4 | 组协议主机测试：fake 2-rank backend 验证 group ticket、两阶段 reserve、min-prefix 与故障传播 | 不依赖 GPU；`cargo test` 覆盖回滚与 fence | 待做 |
+| P0.1 | 设备序号：`--device`、`Selection.device`、加载与日志、Metal 显式拒绝 | 默认 0；非法序号明确报错；启动日志可读出序号；单卡默认路径无行为变化 | **已完成**（#286） |
+| P0.2 | 实例身份：`/health` 与 inspection 带 device 与硬件身份 | 两台不同设备/副本可通过 `/health` 区分；单卡输出兼容 | **已完成**：`BackendProvider::device_identity()` 给出序号、名称、架构、PCI 地址与显存，wrapper 转发；`RuntimeInspection.device` 与 `/health` 的 `device` 字段（后端不提供时省略） |
+| P0.3 | 设备键收口：JIT identity store 与 tuning stamp 按 ordinal 取设备身份 | 异构机上 `--device N` 的调优缓存不与 0 号卡混用 | **已完成**（#288）：tuning stamp 用所选序号的硬件身份；identity store 按驱动划分作用域（L1 key 已带设备） |
+| P0.4 | 组协议主机测试：fake 2-rank backend 验证 group ticket、两阶段 reserve、min-prefix 与故障传播 | 不依赖 GPU；`cargo test` 覆盖回滚与 fence | **已完成**：`crates/engine/runtime/tests/rank_group.rs` + `tests/support/rank_group.rs`，4 个场景在真实 Engine 下运行；把"等全部 fence"或"取最小 prefix"改坏后对应用例会失败 |
 
 P0.4 的 fake backend 只放在测试里，不新增产品 feature；它验证的是协议，不是设备能力。
 

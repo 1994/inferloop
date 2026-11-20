@@ -483,3 +483,72 @@ async fn invalid_observation_query_has_a_structured_error() {
     );
     handle.shutdown().await.unwrap();
 }
+
+async fn health_json(handle: RuntimeHandle) -> serde_json::Value {
+    let response = router(handle.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    handle.shutdown().await.unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+#[tokio::test]
+async fn health_tells_replicas_apart_by_device_and_omits_an_unnamed_one() {
+    let unnamed = health_json(handle()).await;
+    assert!(unnamed.get("device").is_none(), "{unnamed}");
+    let replica = |ordinal: usize, bus: u8| {
+        let ir = support::model(ModelId::ONE);
+        let mut registry = KernelRegistry::default();
+        registry.register(&support::DeclaredKernels).unwrap();
+        let backend = ProtocolBackend::new(16, 8, &ir)
+            .unwrap()
+            .with_device(DeviceIdentity {
+                ordinal,
+                name: "test device".into(),
+                architecture: "sm_test".into(),
+                pci_address: Some(format!("0000:{bus:02x}:00.0")),
+                memory_bytes: 1 << 30,
+            });
+        // The handle runs the engine behind the threaded owner, which must forward the device.
+        let engine = Engine::new(
+            backend,
+            ir,
+            PrecisionPlan::f32(),
+            &registry,
+            RuntimeConfig::default(),
+        )
+        .unwrap();
+        let inspection = engine.inspect();
+        assert_eq!(
+            inspection.device.as_ref().map(|device| device.ordinal),
+            Some(ordinal)
+        );
+        RuntimeHandle::start(engine).unwrap()
+    };
+    let first = health_json(replica(0, 1)).await;
+    let second = health_json(replica(1, 2)).await;
+    assert_eq!(first["device"]["ordinal"], 0);
+    assert_eq!(first["device"]["pci_address"], "0000:01:00.0");
+    assert_eq!(second["device"]["ordinal"], 1);
+    assert_ne!(first["device"], second["device"]);
+    // Every field a client read before is still present.
+    for key in [
+        "ready",
+        "resource_release_pending",
+        "backend",
+        "backend_kind",
+    ] {
+        assert!(
+            first.get(key).is_some() && unnamed.get(key).is_some(),
+            "{key}"
+        );
+    }
+}

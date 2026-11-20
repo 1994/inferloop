@@ -87,6 +87,9 @@ where
     fn capabilities(&self) -> DeviceCapabilities {
         self.capabilities.clone()
     }
+    fn device_identity(&self) -> Option<infer_ir::DeviceIdentity> {
+        self.device.clone()
+    }
     fn formats(&self) -> infer_ir::BackendFormats {
         self.formats
     }

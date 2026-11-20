@@ -140,6 +140,10 @@ struct State {
 
 pub struct ProtocolBackend {
     profile: Option<infer_ir::ExecutionProfileInspection>,
+    device: Option<infer_ir::DeviceIdentity>,
+    /// Tokens of any prompt this double already holds, so prefix reuse can attach them.
+    cached_prefix: usize,
+    attached_prefixes: Arc<Mutex<Vec<usize>>>,
     host_sampling_draft_depth: usize,
     media_prefill: bool,
     multimodal: bool,
@@ -160,6 +164,26 @@ pub struct ProtocolBackend {
 }
 
 impl ProtocolBackend {
+    pub fn with_device(mut self, device: infer_ir::DeviceIdentity) -> Self {
+        self.device = Some(device);
+        self
+    }
+    /// Offer up to `tokens` of any prompt as an already cached prefix.
+    #[must_use]
+    pub const fn with_cached_prefix(mut self, tokens: usize) -> Self {
+        self.cached_prefix = tokens;
+        self
+    }
+    /// Prefix lengths attached, in order.
+    #[must_use]
+    pub fn attached_prefixes(&self) -> Arc<Mutex<Vec<usize>>> {
+        self.attached_prefixes.clone()
+    }
+    /// Sequences currently reserved.
+    #[must_use]
+    pub const fn reserved_states(&self) -> usize {
+        self.states.len()
+    }
     pub fn with_profile(mut self, profile: infer_ir::ExecutionProfileInspection) -> Self {
         self.profile = Some(profile);
         self
@@ -227,6 +251,9 @@ impl ProtocolBackend {
         }
         Ok(Self {
             profile: None,
+            device: None,
+            cached_prefix: 0,
+            attached_prefixes: Arc::new(Mutex::new(Vec::new())),
             host_sampling_draft_depth: 0,
             media_prefill: true,
             multimodal: false,
@@ -306,6 +333,9 @@ impl ProtocolBackend {
 impl BackendProvider for ProtocolBackend {
     fn execution_profile(&self) -> Option<infer_ir::ExecutionProfileInspection> {
         self.profile.clone()
+    }
+    fn device_identity(&self) -> Option<infer_ir::DeviceIdentity> {
+        self.device.clone()
     }
     type Ticket = Option<Vec<TaskOutput>>;
     fn identity(&self) -> &str {
@@ -470,6 +500,24 @@ impl BackendProvider for ProtocolBackend {
             },
         )?;
         Ok(())
+    }
+    fn reusable_prefix(&self, tokens: &[u32], maximum: usize) -> usize {
+        self.cached_prefix.min(maximum).min(tokens.len())
+    }
+    fn reuse_prefix(&mut self, state: StateId, tokens: &[u32], maximum: usize) -> Result<usize> {
+        let attached = self.reusable_prefix(tokens, maximum);
+        if attached > 0 {
+            // The attached rows are this sequence's history, so the engine resumes after them.
+            self.states
+                .get_mut(&state)
+                .ok_or_else(|| Error::invalid("unknown state"))?
+                .history = tokens[..attached].to_vec();
+        }
+        self.attached_prefixes
+            .lock()
+            .map_err(|_| Error::invariant("attached prefix log poisoned"))?
+            .push(attached);
+        Ok(attached)
     }
     fn reset_state(&mut self, state: StateId) -> Result<()> {
         // A reset starts the sequence over, so the token cursor the engine sends next must start
