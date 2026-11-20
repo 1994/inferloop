@@ -138,6 +138,21 @@ impl BackendFormats {
     }
 }
 
+/// Which physical device a backend runs on, so replicas and devices can be told apart. It names
+/// the device for operators; nothing schedules by it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceIdentity {
+    /// Ordinal in the process's visible device set.
+    pub ordinal: usize,
+    /// The device's reported name.
+    pub name: String,
+    /// Architecture label, such as `sm_120`.
+    pub architecture: String,
+    /// PCI address `domain:bus:device.0`, unique on one host; absent where the backend has none.
+    pub pci_address: Option<String>,
+    pub memory_bytes: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceCapabilities {

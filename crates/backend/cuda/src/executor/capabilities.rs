@@ -2,7 +2,7 @@ use crate::device::CudaDevice;
 use infer_core::{DeviceId, Result};
 use infer_cuda_kernels::runtime::Attribute;
 use infer_ir::{
-    DeviceBackend, DeviceCapabilities, NvidiaArchitecture, NvidiaCapabilities,
+    DeviceBackend, DeviceCapabilities, DeviceIdentity, NvidiaArchitecture, NvidiaCapabilities,
     SpeculationCapability,
 };
 
@@ -47,5 +47,22 @@ pub(super) fn query(device: &CudaDevice) -> Result<DeviceCapabilities> {
         profiling: false,
 
         speculation: SpeculationCapability::default(),
+    })
+}
+
+/// The device's identity as `/health` and inspection report it.
+pub(super) fn identity(device: &CudaDevice) -> Result<DeviceIdentity> {
+    let profile = device.profile()?;
+    Ok(DeviceIdentity {
+        ordinal: device.ordinal(),
+        name: profile.name.clone(),
+        architecture: profile.architecture.clone(),
+        pci_address: Some(format!(
+            "{:04x}:{:02x}:{:02x}.0",
+            device.attribute(Attribute::PciDomain)?,
+            device.attribute(Attribute::PciBus)?,
+            device.attribute(Attribute::PciDevice)?,
+        )),
+        memory_bytes: profile.total_memory_bytes,
     })
 }

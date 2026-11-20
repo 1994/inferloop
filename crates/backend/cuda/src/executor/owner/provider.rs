@@ -58,6 +58,9 @@ impl BackendProvider for CudaBackend {
     fn execution_profile(&self) -> Option<infer_ir::ExecutionProfileInspection> {
         Some(self.view.profile.clone())
     }
+    fn device_identity(&self) -> Option<infer_ir::DeviceIdentity> {
+        Some(self.view.device.clone())
+    }
     fn control_ready(&self) -> bool {
         !self.busy && self.fatal.is_none()
     }

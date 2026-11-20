@@ -117,6 +117,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             preemptions: self.host.requests.values().map(|r| r.preemptions).sum(),
             kv_cache: self.backend.kv_cache(),
             execution_profile: self.backend.execution_profile(),
+            device: self.backend.device_identity(),
             scheduler: self.config.scheduler.clone(),
             lengths: self.limits,
             queues: self.host.queues.inspect(),

@@ -30,6 +30,10 @@ name = "providers"
 path = "tests/providers.rs"
 
 [[test]]
+name = "rank_group"
+path = "tests/rank_group.rs"
+
+[[test]]
 name = "runner"
 path = "tests/runner.rs"
 

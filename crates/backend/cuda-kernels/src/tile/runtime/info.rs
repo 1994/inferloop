@@ -13,6 +13,9 @@ use cuda_core::sys::{
     CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE as L2_CACHE,
     CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE as MEMORY_CLOCK,
     CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT as MULTIPROCESSORS,
+    CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_PCI_BUS_ID as PCI_BUS,
+    CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID as PCI_DEVICE,
+    CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID as PCI_DOMAIN,
     CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_WARP_SIZE as WARP_SIZE, CUresult,
     cuDeviceGetAttribute, cuDriverGetVersion, cuMemGetInfo_v2, cudaError_enum_CUDA_SUCCESS,
 };
@@ -32,6 +35,10 @@ pub enum Attribute {
     MemoryClockKhz,
     MemoryBusWidthBits,
     L2CacheBytes,
+    /// PCI domain, bus and device of the board: together unique on one host.
+    PciDomain,
+    PciBus,
+    PciDevice,
 }
 
 impl Attribute {
@@ -45,6 +52,9 @@ impl Attribute {
             Self::MemoryClockKhz => MEMORY_CLOCK,
             Self::MemoryBusWidthBits => BUS_WIDTH,
             Self::L2CacheBytes => L2_CACHE,
+            Self::PciDomain => PCI_DOMAIN,
+            Self::PciBus => PCI_BUS,
+            Self::PciDevice => PCI_DEVICE,
         }
     }
 }

@@ -220,6 +220,13 @@ impl CudaExecutor {
 
     /// Effective load-time choices, so a benchmark report can prove which graph widths and
     /// speculation depth actually ran instead of restating the request.
+    /// The device this executor runs on.
+    /// # Errors
+    /// Returns the driver's failure to report an attribute.
+    pub(super) fn device_identity(&self) -> Result<infer_ir::DeviceIdentity> {
+        capabilities::identity(self.loaded.device())
+    }
+
     #[must_use]
     pub fn execution_profile(&self) -> infer_ir::ExecutionProfileInspection {
         let mut profile = self.loaded.execution_profile();
