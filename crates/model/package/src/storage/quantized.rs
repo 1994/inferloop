@@ -325,7 +325,10 @@ impl QuantizedPackage {
                     | infer_format::GgufType::F16
                     | infer_format::GgufType::Bf16
             ) {
-                dense.insert(slot.slot.clone(), package.blocks(&slot.slot, u64::MAX)?);
+                dense.insert(
+                    slot.slot.clone(),
+                    package.float_bytes(&slot.slot, u64::MAX)?,
+                );
             }
         }
         let mut package = Self {
@@ -369,53 +372,24 @@ impl QuantizedPackage {
                 continue;
             };
             let source_name = self.provider.weight_source(slot, prefix);
-            let source = package
-                .slots()
-                .get(&source_name)
-                .ok_or_else(|| Error::invalid(format!("missing GGUF slot {source_name}")))?;
-            let elements = source
-                .shape
-                .iter()
-                .try_fold(1u64, |count, dimension| {
-                    count.checked_mul(*dimension as u64)
-                })
-                .ok_or_else(|| Error::invalid("GGUF weight shape overflow"))?;
-            let dtype = match source.dtype {
-                infer_format::GgufType::F32 => TensorDtype::F32,
-                infer_format::GgufType::F16 => TensorDtype::F16,
-                infer_format::GgufType::Bf16 => TensorDtype::BF16,
-                _ => TensorDtype::U8,
-            };
-            let data = WeightSource {
-                name: source_name,
-                shard: "gguf".to_owned(),
-                dtype,
-                shape: source.shape.clone(),
-                bytes: source
-                    .dtype
-                    .byte_len(elements)
-                    .map_err(|_| Error::unsupported("GGUF weight byte length"))?,
-                view: None,
-            };
-            let weight = match (source.dtype.grouped_int(), source.dtype) {
-                (Some(format), _) => DeviceWeight::GroupedInt { data, format },
-                (
-                    None,
-                    infer_format::GgufType::F32
-                    | infer_format::GgufType::F16
-                    | infer_format::GgufType::Bf16,
-                ) => DeviceWeight::Float { data },
-                (None, other) => {
-                    return Err(Error::unsupported(format!(
-                        "GGUF weight {} uses unsupported type {}",
-                        data.name,
-                        other.name()
-                    )));
+            weights.insert(slot.clone(), gguf_weight(package, &source_name)?);
+        }
+        // A speculative head binds by its canonical names, whichever format stored it.
+        let mut mtp = BTreeMap::new();
+        if let Some(head) = self
+            .imported
+            .speculation
+            .as_ref()
+            .filter(|head| !head.prefix.is_empty())
+        {
+            for name in package.slots().keys() {
+                if name.starts_with(&head.prefix) && name.ends_with(".weight") {
+                    mtp.insert(name.clone(), gguf_weight(package, name)?);
                 }
-            };
-            weights.insert(slot.clone(), weight);
+            }
         }
         self.weights = weights;
+        self.mtp = mtp;
         Ok(())
     }
 
@@ -1034,6 +1008,57 @@ impl QuantizedPackage {
             }
         }
         Ok(())
+    }
+}
+
+/// The device weight one canonical GGUF slot binds to.
+#[cfg(feature = "gguf")]
+fn gguf_weight(package: &GgufPackage, name: &str) -> Result<DeviceWeight> {
+    let source = package
+        .slots()
+        .get(name)
+        .ok_or_else(|| Error::invalid(format!("missing GGUF slot {name}")))?;
+    let elements = source
+        .shape
+        .iter()
+        .try_fold(1u64, |count, dimension| {
+            count.checked_mul(*dimension as u64)
+        })
+        .ok_or_else(|| Error::invalid("GGUF weight shape overflow"))?;
+    // A transformed float slot is read back decoded, so its descriptor is the decoded type.
+    let stored = if source.dtype.grouped_int().is_some() {
+        source.dtype
+    } else {
+        source.float_type()
+    };
+    let dtype = match stored {
+        infer_format::GgufType::F32 => TensorDtype::F32,
+        infer_format::GgufType::F16 => TensorDtype::F16,
+        infer_format::GgufType::Bf16 => TensorDtype::BF16,
+        _ => TensorDtype::U8,
+    };
+    let data = WeightSource {
+        name: name.to_owned(),
+        shard: "gguf".to_owned(),
+        dtype,
+        shape: source.shape.clone(),
+        bytes: stored
+            .byte_len(elements)
+            .map_err(|_| Error::unsupported("GGUF weight byte length"))?,
+        view: None,
+    };
+    match (stored.grouped_int(), stored) {
+        (Some(format), _) => Ok(DeviceWeight::GroupedInt { data, format }),
+        (
+            None,
+            infer_format::GgufType::F32
+            | infer_format::GgufType::F16
+            | infer_format::GgufType::Bf16,
+        ) => Ok(DeviceWeight::Float { data }),
+        (None, other) => Err(Error::unsupported(format!(
+            "GGUF weight {name} uses unsupported type {}",
+            other.name()
+        ))),
     }
 }
 

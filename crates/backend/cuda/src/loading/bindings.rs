@@ -402,28 +402,15 @@ fn draft_weights(
                 .cloned()
                 .ok_or_else(|| Error::invalid("missing MTP target embedding"))?;
             weights.embeddings.insert(tensor.id, embedding);
+            // A tied head reads the embedding as its output projection too.
+            if linear_inputs.contains(&tensor.id) {
+                share_projection(target, id, tensor.id, &mut weights)?;
+            }
             continue;
         }
         if slot == "lm_head.weight" {
             let id = weight_id(&package.graph, slot)?;
-            let projection = target
-                .projections
-                .get(&id)
-                .cloned()
-                .ok_or_else(|| Error::invalid("missing MTP target projection"))?;
-            let tiling = target
-                .tiling
-                .get(&id)
-                .copied()
-                .ok_or_else(|| Error::invalid("missing MTP target tiling"))?;
-            weights.projections.insert(tensor.id, projection);
-            if target.fp8_inputs.contains(&id) {
-                weights.fp8_inputs.insert(tensor.id);
-            }
-            if let Some(scale) = target.input_scales.get(&id) {
-                weights.input_scales.insert(tensor.id, *scale);
-            }
-            weights.tiling.insert(tensor.id, tiling);
+            share_projection(target, id, tensor.id, &mut weights)?;
             continue;
         }
         let source = package
@@ -449,6 +436,35 @@ fn draft_weights(
         }
     }
     Ok(weights)
+}
+
+/// Bind draft tensor `draft` to the target's projection `target_id`, with its tiling and input
+/// quantization, so the draft reads the very same device weight.
+fn share_projection(
+    target: &ProgramWeights,
+    target_id: TensorId,
+    draft: TensorId,
+    weights: &mut ProgramWeights,
+) -> Result<()> {
+    let projection = target
+        .projections
+        .get(&target_id)
+        .cloned()
+        .ok_or_else(|| Error::invalid("missing MTP target projection"))?;
+    let tiling = target
+        .tiling
+        .get(&target_id)
+        .copied()
+        .ok_or_else(|| Error::invalid("missing MTP target tiling"))?;
+    weights.projections.insert(draft, projection);
+    if target.fp8_inputs.contains(&target_id) {
+        weights.fp8_inputs.insert(draft);
+    }
+    if let Some(scale) = target.input_scales.get(&target_id) {
+        weights.input_scales.insert(draft, *scale);
+    }
+    weights.tiling.insert(draft, tiling);
+    Ok(())
 }
 
 /// Load the MTP fusion projection and its two input normalization vectors.

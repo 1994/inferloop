@@ -1,10 +1,27 @@
 //! Build the `tokenizer.json` and `tokenizer_config.json` assets from GGUF metadata.
+//!
+//! The byte-level BPE layout is shared by every GPT-2-style GGUF tokenizer; what varies is the
+//! pre-tokenization split, which llama.cpp names in `tokenizer.ggml.pre`.
 use infer_core::{Error, Result};
 use infer_format::{Metadata, MetadataValue};
 use serde_json::{Map, Value, json};
 
 /// Qwen2's pre-tokenizer split pattern, as stored by the HF tokenizer.
-const SPLIT_PATTERN: &str = "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+const QWEN2_SPLIT: &str = "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+/// Qwen3.5's split: letters keep their combining marks.
+const QWEN35_SPLIT: &str = "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+
+/// The split pattern `tokenizer.ggml.pre` names. An unknown name is an error, not Qwen2: a wrong
+/// split tokenizes text differently without failing.
+fn split_pattern(metadata: &Metadata) -> Result<&'static str> {
+    match metadata.require_str("tokenizer.ggml.pre")? {
+        "qwen2" => Ok(QWEN2_SPLIT),
+        "qwen35" => Ok(QWEN35_SPLIT),
+        other => Err(Error::unsupported(format!(
+            "GGUF pre-tokenizer {other} has no split pattern"
+        ))),
+    }
+}
 /// GGUF token types that are normal vocabulary entries rather than added tokens.
 const TOKEN_TYPE_NORMAL: u64 = 1;
 /// GGUF token type for raw byte fallbacks; they stay in the vocab, not the added-token list.
@@ -16,6 +33,7 @@ const TOKEN_TYPE_BYTE: u64 = 6;
 pub fn tokenizer_json(metadata: &Metadata) -> Result<Vec<u8>> {
     let tokens = metadata.require_strings("tokenizer.ggml.tokens")?;
     let merges = metadata.require_strings("tokenizer.ggml.merges")?;
+    let split = split_pattern(metadata)?;
     let token_types = u64_array(metadata, "tokenizer.ggml.token_type")?;
     if tokens.len() != token_types.len() {
         return Err(Error::invalid("GGUF tokenizer token/type length mismatch"));
@@ -57,7 +75,7 @@ pub fn tokenizer_json(metadata: &Metadata) -> Result<Vec<u8>> {
         "pre_tokenizer": {
             "type": "Sequence",
             "pretokenizers": [
-                {"type": "Split", "pattern": {"Regex": SPLIT_PATTERN}, "behavior": "Isolated", "invert": false},
+                {"type": "Split", "pattern": {"Regex": split}, "behavior": "Isolated", "invert": false},
                 {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false, "use_regex": false}
             ]
         },
@@ -83,7 +101,12 @@ pub fn tokenizer_json(metadata: &Metadata) -> Result<Vec<u8>> {
 /// Rejects a missing token id or chat template.
 pub fn tokenizer_config(metadata: &Metadata) -> Result<Vec<u8>> {
     let tokens = metadata.require_strings("tokenizer.ggml.tokens")?;
-    let bos = token(metadata, "tokenizer.ggml.bos_token_id", &tokens)?;
+    // Families such as Qwen3.5 prepend no BOS and their files store none.
+    let bos = metadata
+        .get("tokenizer.ggml.bos_token_id")
+        .is_some()
+        .then(|| token(metadata, "tokenizer.ggml.bos_token_id", &tokens))
+        .transpose()?;
     let eos = token(metadata, "tokenizer.ggml.eos_token_id", &tokens)?;
     let pad = token(metadata, "tokenizer.ggml.padding_token_id", &tokens)?;
     let template = metadata.require_str("tokenizer.chat_template")?;
@@ -99,7 +122,10 @@ pub fn tokenizer_config(metadata: &Metadata) -> Result<Vec<u8>> {
         "pad_token": pad,
         "chat_template": template,
         "clean_up_tokenization_spaces": false,
-        "model_max_length": metadata.require_u64("qwen3vl.context_length")?,
+        "model_max_length": metadata.require_u64(&format!(
+            "{}.context_length",
+            metadata.require_str("general.architecture")?
+        ))?,
     });
     serde_json::to_vec(&value).map_err(|error| Error::invalid(error.to_string()))
 }
@@ -128,5 +154,5 @@ fn u64_array(metadata: &Metadata, key: &str) -> Result<Vec<u64>> {
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/unit/providers_gguf_tokenizer.rs"]
+#[path = "../../tests/unit/providers_gguf_tokenizer.rs"]
 mod tests;

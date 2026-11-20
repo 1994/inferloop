@@ -3,6 +3,14 @@ use infer_format::{Metadata, MetadataValue};
 
 fn metadata() -> Metadata {
     Metadata::from_entries(vec![
+        (
+            "general.architecture".into(),
+            MetadataValue::String("qwen3vl".into()),
+        ),
+        (
+            "tokenizer.ggml.pre".into(),
+            MetadataValue::String("qwen2".into()),
+        ),
         ("qwen3vl.context_length".into(), MetadataValue::U64(128)),
         (
             "tokenizer.ggml.tokens".into(),
@@ -54,4 +62,53 @@ fn writes_the_special_tokens_and_template() {
     assert_eq!(value["bos_token"], "<|end|>");
     assert_eq!(value["chat_template"], "{{ messages }}");
     assert_eq!(value["model_max_length"], 128);
+}
+
+fn with(
+    mut entries: Vec<(String, MetadataValue)>,
+    key: &str,
+    value: Option<MetadataValue>,
+) -> Metadata {
+    entries.retain(|(name, _)| name != key);
+    if let Some(value) = value {
+        entries.push((key.into(), value));
+    }
+    Metadata::from_entries(entries)
+}
+
+fn entries() -> Vec<(String, MetadataValue)> {
+    let metadata = metadata();
+    metadata
+        .keys()
+        .map(|key| (key.to_owned(), metadata.get(key).unwrap().clone()))
+        .collect()
+}
+
+#[test]
+fn the_split_follows_the_declared_pre_tokenizer() {
+    let qwen35 = with(
+        entries(),
+        "tokenizer.ggml.pre",
+        Some(MetadataValue::String("qwen35".into())),
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&tokenizer_json(&qwen35).unwrap()).unwrap();
+    let pattern = value["pre_tokenizer"]["pretokenizers"][0]["pattern"]["Regex"]
+        .as_str()
+        .unwrap();
+    assert!(pattern.contains("[\\p{L}\\p{M}]+"), "{pattern}");
+    let unknown = with(
+        entries(),
+        "tokenizer.ggml.pre",
+        Some(MetadataValue::String("other".into())),
+    );
+    assert!(tokenizer_json(&unknown).is_err());
+}
+
+#[test]
+fn a_family_without_bos_writes_none() {
+    let without = with(entries(), "tokenizer.ggml.bos_token_id", None);
+    let value: serde_json::Value =
+        serde_json::from_slice(&tokenizer_config(&without).unwrap()).unwrap();
+    assert!(value["bos_token"].is_null());
 }

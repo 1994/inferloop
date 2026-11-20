@@ -33,8 +33,6 @@ pub use providers::dflash2::{
 #[cfg(feature = "gguf")]
 pub use providers::qwen::GgufQwen;
 #[cfg(feature = "gguf")]
-pub use providers::qwen::gguf::tokenizer::{tokenizer_config, tokenizer_json};
-#[cfg(feature = "gguf")]
 pub use providers::qwen::gguf::validate::{TensorSpec, validate_text, validate_vision};
 #[cfg(feature = "gguf")]
 pub use providers::qwen::gguf::{
@@ -47,6 +45,8 @@ pub use providers::registry::{ModelRegistry, default_registry};
 pub use storage::gguf_package::{GgufPackage, GgufSlot};
 #[cfg(feature = "gguf")]
 pub use storage::gguf_requirements::{PackageRequirements, gguf_requirements};
+#[cfg(feature = "gguf")]
+pub use storage::gguf_tokenizer::{tokenizer_config, tokenizer_json};
 #[cfg(feature = "gguf")]
 pub use storage::gguf_vision::{GgufVisionPackage, VisionSlot};
 pub use storage::index::SafetensorsIndex;

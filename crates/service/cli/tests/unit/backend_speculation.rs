@@ -1,5 +1,7 @@
 use super::*;
 use infer_core::{ModelId, Result};
+use infer_ir::GroupedIntFormat;
+use infer_models::DeviceWeight;
 use infer_spi::{DraftHead, FusionPlan};
 use std::path::Path;
 
@@ -92,5 +94,21 @@ fn unsupported_heads_disable_only_automatic_speculation() -> Result<()> {
     assert_eq!(resolve(SpeculativeTokens::Depth(2), None, &package), 2);
     // Explicit settings still reach the loader's existing errors instead of being hidden.
     assert_eq!(resolve(SpeculativeTokens::Depth(8), Some(1), &package), 8);
+    Ok(())
+}
+
+#[test]
+fn automatic_mtp_keeps_grouped_int_targets_on_plain_decode() -> Result<()> {
+    let mut package = package_with_head()?;
+    let data = package.weights["lm_head.weight"].data().clone();
+    package.weights.insert(
+        "lm_head.weight".into(),
+        DeviceWeight::GroupedInt {
+            data,
+            format: GroupedIntFormat::Q4K,
+        },
+    );
+    assert_eq!(resolve(SpeculativeTokens::Auto, None, &package), 0);
+    assert_eq!(resolve(SpeculativeTokens::Depth(2), None, &package), 2);
     Ok(())
 }
