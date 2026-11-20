@@ -1,7 +1,9 @@
 //! Qwen3-VL GGUF configuration and tensor mapping.
 
-pub mod tokenizer;
+mod qwen35;
 pub mod validate;
+
+pub use qwen35::QWEN35;
 
 use crate::vision::{VisionSlot, slots};
 use infer_core::{Error, Result};
@@ -84,6 +86,37 @@ pub struct Qwen3VlTextOnlyConfig {
 }
 
 use super::VisionTensor;
+use crate::storage::gguf_arch::{GgufArchitecture, LayerPlan, MappedTensor};
+use validate::{TensorSpec, validate_text};
+
+/// The `qwen3vl` architecture: text blocks plus an optional mmproj vision tower.
+pub struct Qwen3VlGguf;
+
+/// The `qwen3vl` adapter.
+pub const QWEN3VL: Qwen3VlGguf = Qwen3VlGguf;
+
+impl GgufArchitecture for Qwen3VlGguf {
+    fn name(&self) -> &'static str {
+        "qwen3vl"
+    }
+    fn config(
+        &self,
+        text: &Metadata,
+        _tensors: &[TensorSpec],
+        vision: Option<&Metadata>,
+    ) -> Result<Vec<u8>> {
+        vision.map_or_else(|| config_text(text), |mmproj| config(text, mmproj))
+    }
+    fn tensor(&self, tensor: &TensorSpec, _layers: &LayerPlan) -> Option<MappedTensor> {
+        text_tensor(&tensor.name).map(MappedTensor::named)
+    }
+    fn validate(&self, text: &Metadata, tensors: &[TensorSpec]) -> Result<()> {
+        validate_text(text, tensors)
+    }
+    fn accepts_vision(&self) -> bool {
+        true
+    }
+}
 
 /// Synthesize the HF configuration for a Qwen3-VL text GGUF and its mmproj.
 /// # Errors

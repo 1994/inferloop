@@ -3,12 +3,10 @@
 //! The package keeps GGUF blocks in place and hands grouped-int tensors to the backend as raw
 //! blocks; each backend packs them for its own kernels. Dense tensors are decoded on demand for
 //! reference or small auxiliary tensors. No intermediate safetensors package is written.
-use crate::providers::qwen::gguf::config as gguf_config;
-use crate::providers::qwen::gguf::config_text;
-use crate::providers::qwen::gguf::text_tensor;
-use crate::providers::qwen::gguf::tokenizer::{tokenizer_config, tokenizer_json};
-use crate::providers::qwen::gguf::validate::{TensorSpec, validate_text};
+use crate::providers::qwen::gguf::validate::TensorSpec;
+use crate::storage::gguf_arch::{GgufArchitecture, LayerPlan, ValueTransform, architecture};
 use crate::storage::gguf_requirements::encoding_for;
+use crate::storage::gguf_tokenizer::{tokenizer_config, tokenizer_json};
 use crate::storage::gguf_vision::GgufVisionPackage;
 use infer_core::{Error, Result};
 use infer_format::{GgufFile, GgufType, dequantize};
@@ -27,9 +25,21 @@ pub struct GgufSlot {
     pub shape: Vec<usize>,
     /// Stored type.
     pub dtype: GgufType,
+    /// The converter's value change, undone when the slot is decoded.
+    pub transform: ValueTransform,
 }
 
 impl GgufSlot {
+    /// The type a float read returns: a transformed slot decodes to F32.
+    #[must_use]
+    pub fn float_type(&self) -> GgufType {
+        if self.transform == ValueTransform::Identity {
+            self.dtype
+        } else {
+            GgufType::F32
+        }
+    }
+
     /// Capability encoding this tensor needs.
     /// # Errors
     /// Rejects a type the capability model does not name.
@@ -41,6 +51,8 @@ impl GgufSlot {
 /// A directly opened GGUF text package.
 pub struct GgufPackage {
     file: GgufFile,
+    architecture: &'static dyn GgufArchitecture,
+    tensors: Vec<TensorSpec>,
     slots: BTreeMap<String, GgufSlot>,
     config: Vec<u8>,
     tokenizer: Vec<u8>,
@@ -55,7 +67,7 @@ impl GgufPackage {
     /// without the expected markers.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let file = GgufFile::open(path)?;
-        let specs: Vec<TensorSpec> = file
+        let tensors: Vec<TensorSpec> = file
             .tensors()
             .values()
             .map(|tensor| {
@@ -66,25 +78,44 @@ impl GgufPackage {
                 })
             })
             .collect::<Result<_>>()?;
-        validate_text(file.metadata(), &specs)?;
+        let architecture = architecture(file.metadata())?;
+        architecture.validate(file.metadata(), &tensors)?;
+        let layers = LayerPlan::of(file.metadata(), architecture.name())?;
         let mut slots = BTreeMap::new();
-        for (source, info) in file.tensors() {
-            let slot = text_tensor(source)
-                .ok_or_else(|| Error::invalid(format!("unmapped GGUF tensor {source}")))?;
-            slots.insert(
-                slot.clone(),
-                GgufSlot {
-                    slot,
-                    source: source.clone(),
-                    shape: info.shape()?,
-                    dtype: info.ty(),
-                },
-            );
+        for tensor in &tensors {
+            let mapped = architecture.tensor(tensor, &layers).ok_or_else(|| {
+                Error::invalid(format!(
+                    "unmapped {} GGUF tensor {}",
+                    architecture.name(),
+                    tensor.name
+                ))
+            })?;
+            if mapped.transform != ValueTransform::Identity && tensor.ty.grouped_int().is_some() {
+                return Err(Error::unsupported(format!(
+                    "GGUF tensor {} needs a value transform its quantized type cannot take",
+                    tensor.name
+                )));
+            }
+            let slot = GgufSlot {
+                slot: mapped.slot.clone(),
+                source: tensor.name.clone(),
+                shape: mapped.shape.unwrap_or_else(|| tensor.shape.clone()),
+                dtype: tensor.ty,
+                transform: mapped.transform,
+            };
+            if slots.insert(mapped.slot.clone(), slot).is_some() {
+                return Err(Error::invalid(format!(
+                    "two GGUF tensors map to {}",
+                    mapped.slot
+                )));
+            }
         }
         Ok(Self {
-            config: config_text(file.metadata())?,
+            config: architecture.config(file.metadata(), &tensors, None)?,
             tokenizer: tokenizer_json(file.metadata())?,
             tokenizer_config: tokenizer_config(file.metadata())?,
+            architecture,
+            tensors,
             file,
             slots,
             vision: None,
@@ -97,8 +128,18 @@ impl GgufPackage {
     /// be synthesized.
     pub fn open_with_vision(path: impl AsRef<Path>, mmproj: impl AsRef<Path>) -> Result<Self> {
         let mut package = Self::open(path)?;
+        if !package.architecture.accepts_vision() {
+            return Err(Error::unsupported(format!(
+                "GGUF architecture {} takes no mmproj",
+                package.architecture.name()
+            )));
+        }
         let vision = GgufVisionPackage::open(mmproj)?;
-        package.config = gguf_config(package.file.metadata(), vision.metadata())?;
+        package.config = package.architecture.config(
+            package.file.metadata(),
+            &package.tensors,
+            Some(vision.metadata()),
+        )?;
         package.vision = Some(vision);
         Ok(package)
     }
@@ -171,7 +212,30 @@ impl GgufPackage {
             .ok_or_else(|| Error::invalid("GGUF slot shape overflow"))?;
         let mut values = vec![0.0f32; elements];
         dequantize(header.dtype, &self.blocks(slot, budget)?, &mut values)?;
+        header.transform.undo(&mut values);
         Ok(values)
+    }
+
+    /// The stored bytes of one float slot, as [`GgufSlot::float_type`] reads them: as stored, or
+    /// decoded to F32 with the converter's value change undone.
+    /// # Errors
+    /// Rejects an unknown or quantized slot, or an exceeded budget.
+    pub fn float_bytes(&self, slot: &str, budget: u64) -> Result<Vec<u8>> {
+        let header = self
+            .slots
+            .get(slot)
+            .ok_or_else(|| Error::invalid(format!("missing GGUF slot {slot}")))?;
+        if header.dtype.grouped_int().is_some() {
+            return Err(Error::invalid(format!("GGUF slot {slot} is quantized")));
+        }
+        if header.transform == ValueTransform::Identity {
+            return self.blocks(slot, budget);
+        }
+        Ok(self
+            .dense(slot, budget)?
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect())
     }
 }
 

@@ -26,6 +26,14 @@ use cutile::tile_kernel::CompileOptions;
 use infer_core::{Error, Result};
 use infer_ir::{CodeOffset, GROUPED_INT_SPAN};
 
+/// `[rows, outputs, columns]` of one projection.
+#[derive(Clone, Copy)]
+struct RowsShape {
+    rows: usize,
+    outputs: usize,
+    columns: usize,
+}
+
 /// Columns one channel-scale tile covers.
 const SCALE_COLUMNS: usize = 256;
 /// Spans one nibble GEMV step decodes, halved until it divides the span count.
@@ -58,6 +66,11 @@ const HIGH_GENERICS: usize = 4;
 /// (`Q8_0`: 262 -> 223 us); on the 6144-column down projection split nibble tiles ran 25% slower,
 /// and byte tiles were fastest split with four-span steps.
 const LONG_COLUMNS: usize = 4096;
+/// Activation rows one grouped-int GEMV CTA multiplies per decoded code word.
+const GROUPED_INT_GEMV_ROWS: usize = 4;
+/// Most rows the GEMV takes: two row blocks, so an MTP verify or a small decode batch reads the
+/// weight at most twice instead of padding a 32-row GEMM tile.
+const GROUPED_INT_GEMV_MAX_ROWS: usize = 2 * GROUPED_INT_GEMV_ROWS;
 /// Compiler occupancy hint of the grouped-int GEMV: two CTAs per SM. With the row split it took
 /// the 2048-column projections a further 10-20% faster and the `Q8_0` head 262 -> 224 us (RTX 5090).
 const GEMV_OCCUPANCY: i32 = 2;
@@ -233,8 +246,9 @@ const fn retyped_fp4(buffer: Buffer<'_, Fp4Pair>) -> Buffer<'_, f4e2m1fnx2> {
     unsafe { buffer.retyped() }
 }
 
-/// A `[rows, outputs]` grouped-int projection. One row takes the GEMV; more rows take one launch
-/// in which each CTA decodes a sixteen-output tile once per span and multiplies up to
+/// A `[rows, outputs]` grouped-int projection. Up to [`GROUPED_INT_GEMV_MAX_ROWS`] rows take the
+/// word-load GEMV, which reads the weight once per row block; more rows take one launch in which
+/// each CTA decodes a sixteen-output tile once per span and multiplies up to
 /// `GROUPED_INT_GEMM_ROWS` activation rows, a partial row block predicated out.
 fn grouped_int_rows(
     projection: &TileProjection,
@@ -250,12 +264,13 @@ fn grouped_int_rows(
         columns,
         ..
     } = *plan;
-    if rows == 1 {
-        let plan = GroupedIntPlan {
-            tile_rows: GROUPED_INT_TILE_ROWS,
+    if (1..=GROUPED_INT_GEMV_MAX_ROWS).contains(&rows) {
+        let shape = RowsShape {
+            rows,
+            outputs,
             columns,
         };
-        return projection.grouped_int(recording, &plan, out, x, weight);
+        return grouped_int_gemv(projection, recording, shape, out, x, weight);
     }
     let format = weight.format;
     validate_grouped_int(&weight, outputs, columns, 1)?;
@@ -317,6 +332,109 @@ fn grouped_int_rows(
     .map_err(backend_error)
 }
 
+/// The word-load grouped-int GEMV over `shape.rows` activation rows: each CTA decodes its codes
+/// once for a block of up to [`GROUPED_INT_GEMV_ROWS`] rows and accumulates every row in F32
+/// like the single-row GEMV, rather than through the GEMM's BF16 operands.
+fn grouped_int_gemv(
+    projection: &TileProjection,
+    recording: &Recording<'_>,
+    shape: RowsShape,
+    out: Buffer<'_, f32>,
+    x: Buffer<'_, f32>,
+    weight: GroupedIntWeight<'_>,
+) -> Result<()> {
+    let scope = capture_scope(recording)?;
+    let format = weight.format;
+    let RowsShape {
+        rows,
+        outputs,
+        columns,
+    } = shape;
+    let packing = CodePacking::of(format);
+    let block = gemv_block_rows(rows);
+    let (spans, words) = gemv_shape(packing, columns, block);
+    validate_grouped_int(&weight, outputs, columns, spans)?;
+    let mut generics = gemv_generics(&weight, columns, spans, words);
+    generics.insert(0, block.to_string());
+    let tile_outputs = GROUPED_INT_TILE_ROWS / TILE_WORDS * words;
+    let (codes, high) = split_codes(&weight, outputs * columns)?;
+    let mut out = projection.matrix(recording, out, "projection output", (rows, outputs))?;
+    let out = (&mut out).partition([block, tile_outputs]);
+    let x = projection.matrix(recording, x, "projection input", (rows, columns))?;
+    let words = |buffer: Buffer<'_, u8>| {
+        let words = buffer.words()?;
+        projection.matrix(
+            recording,
+            words,
+            "grouped-int code words",
+            (words.len() / TILE_WORDS, TILE_WORDS),
+        )
+    };
+    let codes = words(codes)?;
+    let high = high.map(words).transpose()?;
+    let terms = |buffer: Buffer<'_, f32>| {
+        projection.matrix(
+            recording,
+            buffer,
+            "grouped-int terms",
+            (buffer.len() / GROUPED_INT_TILE_ROWS, GROUPED_INT_TILE_ROWS),
+        )
+    };
+    let factors = terms(weight.factors)?;
+    let biases = weight.biases.map(terms).transpose()?;
+    let options = CompileOptions::default().occupancy(GEMV_OCCUPANCY);
+    match (packing, biases, high) {
+        (CodePacking::NibbleHigh { .. }, Some(biases), Some(high)) => scope
+            .record(
+                grouped_int_high::gemv(out, &x, &codes, &high, &factors, &biases)
+                    .generics(generics)
+                    .compile_options(options),
+            )
+            .map(drop),
+        (CodePacking::NibbleHigh { .. }, None, Some(high)) => scope
+            .record(
+                grouped_int_high::gemv_zero(out, &x, &codes, &high, &factors)
+                    .generics(generics)
+                    .compile_options(options),
+            )
+            .map(drop),
+        (CodePacking::NibbleHigh { .. }, _, None) => {
+            return Err(Error::invariant(
+                "split grouped-int codes without a high plane",
+            ));
+        }
+        (CodePacking::Nibble, Some(biases), _) => scope
+            .record(
+                grouped_int_nibble::gemv(out, &x, &codes, &factors, &biases)
+                    .generics(generics)
+                    .compile_options(options),
+            )
+            .map(drop),
+        (CodePacking::Nibble, None, _) => scope
+            .record(
+                grouped_int_nibble::gemv_zero(out, &x, &codes, &factors)
+                    .generics(generics)
+                    .compile_options(options),
+            )
+            .map(drop),
+        (CodePacking::Byte, Some(biases), _) => scope
+            .record(
+                grouped_int_byte::gemv(out, &x, &codes, &factors, &biases)
+                    .generics(generics)
+                    .compile_options(options),
+            )
+            .map(drop),
+        (CodePacking::Byte, None, _) => scope
+            .record(
+                grouped_int_byte::gemv_zero(out, &x, &codes, &factors)
+                    .generics(generics)
+                    .compile_options(options),
+            )
+            .map(drop),
+    }
+    .map_err(backend_error)
+}
+
 /// Check `weight` holds an `[outputs, columns]` matrix whose spans a kernel decoding
 /// `spans_per_step` spans per iteration can walk.
 fn validate_grouped_int(
@@ -356,11 +474,12 @@ fn split_codes<'a>(
     }
 }
 
-/// How a grouped-int GEMV over `columns` partitions its work: spans decoded per step and code
-/// words, of the four of a tile, per CTA.
-fn gemv_shape(packing: CodePacking, columns: usize) -> (usize, usize) {
+/// How a grouped-int GEMV over `columns` for blocks of `block` rows partitions its work: spans
+/// decoded per step and code words, of the four of a tile, per CTA. A block of rows divides the
+/// single-row step so every CTA keeps about as many accumulators as the single-row GEMV.
+fn gemv_shape(packing: CodePacking, columns: usize, block: usize) -> (usize, usize) {
     let long = columns > LONG_COLUMNS;
-    let (mut step, words) = match packing {
+    let (step, words) = match packing {
         CodePacking::Nibble => (
             NIBBLE_GEMV_SPANS,
             if long { TILE_WORDS } else { SPLIT_WORDS },
@@ -368,11 +487,18 @@ fn gemv_shape(packing: CodePacking, columns: usize) -> (usize, usize) {
         CodePacking::NibbleHigh { .. } => (HIGH_GEMV_SPANS, SPLIT_WORDS),
         CodePacking::Byte => (BYTE_GEMV_SPANS[usize::from(long)], SPLIT_WORDS),
     };
+    let mut step = (step / block).max(1);
     let spans = columns / GROUPED_INT_SPAN;
     while !spans.is_multiple_of(step) {
         step /= 2;
     }
     (step, words)
+}
+
+/// Activation rows one GEMV CTA carries for `rows` rows: the next power of two, at most
+/// [`GROUPED_INT_GEMV_ROWS`]; a partial block is predicated out.
+fn gemv_block_rows(rows: usize) -> usize {
+    rows.next_power_of_two().min(GROUPED_INT_GEMV_ROWS)
 }
 
 /// Stringified generics of one grouped-int GEMV over `columns` that decodes `spans` spans per
@@ -1309,96 +1435,18 @@ impl Projection for TileProjection {
         x: Buffer<'_, f32>,
         weight: GroupedIntWeight<'_>,
     ) -> Result<()> {
-        let scope = capture_scope(recording)?;
-        let format = weight.format;
-        let columns = plan.columns;
-        let packing = CodePacking::of(format);
-        if plan.tile_rows != GROUPED_INT_TILE_ROWS || x.len() != columns {
+        if plan.tile_rows != GROUPED_INT_TILE_ROWS || x.len() != plan.columns {
             return Err(Error::unsupported(format!(
                 "{} GEMV shape or layout",
-                format.label()
+                weight.format.label()
             )));
         }
-        let (spans, words) = gemv_shape(packing, columns);
-        validate_grouped_int(&weight, out.len(), columns, spans)?;
-        let generics = gemv_generics(&weight, columns, spans, words);
-        let rows = GROUPED_INT_TILE_ROWS / TILE_WORDS * words;
-        let (codes, high) = split_codes(&weight, out.len() * columns)?;
-        let mut out = self.flat(recording, out)?;
-        let out = (&mut out).partition([rows]);
-        let x = self.flat(recording, x)?;
-        let words = |buffer: Buffer<'_, u8>| {
-            let words = buffer.words()?;
-            self.matrix(
-                recording,
-                words,
-                "grouped-int code words",
-                (words.len() / TILE_WORDS, TILE_WORDS),
-            )
+        let shape = RowsShape {
+            rows: 1,
+            outputs: out.len(),
+            columns: plan.columns,
         };
-        let codes = words(codes)?;
-        let high = high.map(words).transpose()?;
-        let terms = |buffer: Buffer<'_, f32>| {
-            self.matrix(
-                recording,
-                buffer,
-                "grouped-int terms",
-                (buffer.len() / GROUPED_INT_TILE_ROWS, GROUPED_INT_TILE_ROWS),
-            )
-        };
-        let factors = terms(weight.factors)?;
-        let biases = weight.biases.map(terms).transpose()?;
-        let options = CompileOptions::default().occupancy(GEMV_OCCUPANCY);
-        match (packing, biases, high) {
-            (CodePacking::NibbleHigh { .. }, Some(biases), Some(high)) => scope
-                .record(
-                    grouped_int_high::gemv(out, &x, &codes, &high, &factors, &biases)
-                        .generics(generics)
-                        .compile_options(options),
-                )
-                .map(drop),
-            (CodePacking::NibbleHigh { .. }, None, Some(high)) => scope
-                .record(
-                    grouped_int_high::gemv_zero(out, &x, &codes, &high, &factors)
-                        .generics(generics)
-                        .compile_options(options),
-                )
-                .map(drop),
-            (CodePacking::NibbleHigh { .. }, _, None) => {
-                return Err(Error::invariant(
-                    "split grouped-int codes without a high plane",
-                ));
-            }
-            (CodePacking::Nibble, Some(biases), _) => scope
-                .record(
-                    grouped_int_nibble::gemv(out, &x, &codes, &factors, &biases)
-                        .generics(generics)
-                        .compile_options(options),
-                )
-                .map(drop),
-            (CodePacking::Nibble, None, _) => scope
-                .record(
-                    grouped_int_nibble::gemv_zero(out, &x, &codes, &factors)
-                        .generics(generics)
-                        .compile_options(options),
-                )
-                .map(drop),
-            (CodePacking::Byte, Some(biases), _) => scope
-                .record(
-                    grouped_int_byte::gemv(out, &x, &codes, &factors, &biases)
-                        .generics(generics)
-                        .compile_options(options),
-                )
-                .map(drop),
-            (CodePacking::Byte, None, _) => scope
-                .record(
-                    grouped_int_byte::gemv_zero(out, &x, &codes, &factors)
-                        .generics(generics)
-                        .compile_options(options),
-                )
-                .map(drop),
-        }
-        .map_err(backend_error)
+        grouped_int_gemv(self, recording, shape, out, x, weight)
     }
 
     fn pack_row(

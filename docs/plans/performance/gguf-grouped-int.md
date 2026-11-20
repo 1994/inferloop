@@ -1,6 +1,6 @@
 # GGUF grouped-int 性能：问题记录与修复方案
 
-状态：P1、P2 已修复；P3 前两步（word-load GEMV、tile 按行拆给多个 CTA）已修复；P4 第一步（5/6-bit nibble + 高位平面）已实现（本 PR）；P3 余项、P4 余项、P5–P6 为方案。格式与 kernel 家族的结构见
+状态：P1、P2 已修复；P3 前两步（word-load GEMV、tile 按行拆给多个 CTA）已修复；P4 第一步（5/6-bit nibble + 高位平面）、P6 第一步（行块 GEMV）已实现；P3 余项、P4 余项、P5、P6 余项为方案。格式与 kernel 家族的结构见
 [grouped-int kernel family](../engineering/grouped-int-kernels.md)。
 
 测量环境：RTX 5090，Qwen3-VL-2B 由 BF16 HF 权重经 `convert_hf_to_gguf.py` + `llama-quantize`
@@ -194,6 +194,34 @@ serving（`p4.jsonl`，对照 main `e4daccf7`，同一二进制构建方式；ms
 高位平面，解码受限（100 行 Q6_K gate 116 → 127 µs）；试过与 GEMV 同样的 word 解码，GEMM 反而慢 50%，已放弃。
 prompt 路径由 P5（int8 MMA、激活块复用）整体重写，届时解码只做一次。
 
+## P6 第一步：行块 GEMV
+
+1–8 行（MTP 验证的 3 行、C2–C8 的批量 decode）原先走 32 行的 BF16 rows GEMM：3 行补成 32 行，每个 CTA 只算
+16 个输出，验证图的 linear 耗时是 decode 的 6 倍。现在 `nibble/high/byte::gemv{,_zero}` 多了行块维 `R`：
+每个 CTA 对 `R` 行只解一次码字，每行仍按单行 GEMV 的 F32 顺序累加（`(code - offset) · factor` 先算，
+再乘该行激活）；`R` 取行数的下一个 2 的幂、上限 4（`GROUPED_INT_GEMV_ROWS`），最多 8 行（两个行块），
+多于 8 行仍走 GEMM。每步 span 数按 `R` 等比缩小，使每 CTA 的累加器数与单行相同；单行 decode 的
+kernel 形状与 generic 不变。设备测试 `grouped_int_rows` 对 8 种格式 × 1/2/3/4/5/8/9 行与 f64 标量参考
+比对（GEMV 相对误差 ≤ 2e-6，9 行 GEMM 按 BF16 容差）。
+
+serving（Qwen3.5-2B `Q4_K_M`，RTX 5090，`fixed-work-serving.py` 每请求 256 token，两轮新进程交替，
+中位数；`/home/r/benchmarks/inference.rs/gguf-mtp-2026-11-21/ab2/`）：
+
+| 场景 | 基线 | `R ≤ 2` | `R ≤ 4`（采用） |
+|---|---:|---:|---:|
+| C1 decode | 0.685 s | — | 0.683 s |
+| C1 MTP 深度 2 | 1.308 s | 0.754 s | 0.783 s |
+| C4 decode | 3.070 s | 1.742 s | 1.619 s |
+| C8 decode | 2.263 s | 2.253 s | 2.254 s |
+
+C4 批量 decode 快 1.9 倍；C1 decode 与 C8 不变。批量行改为 F32 累加后与单行 decode 的数值一致性更好，
+C4 的部分请求 token 摘要因此与基线不同（基线是 BF16 GEMM）。
+
+剩余问题：GEMV 本身受指令而非带宽限制（单行 2048 列投影约 600 GB/s），每多一行就多一份完整的乘加，
+3 行验证仍约为 1 行 decode 的 3 倍（Q6_K `lm_head` 0.34 → 1.17 ms）。所以 C1 时 MTP 深度 2（0.783 s）
+仍慢于不开 MTP（0.683 s），`--num-speculative-tokens auto` 对 grouped-int 目标暂不启用 MTP，显式深度
+照常加载。把行维放到最后一维（每线程持有全部行）测过，耗时不变。
+
 ## 后续方案
 
 **P3 余项（优先）。** 目标：单请求 TPOT 4-bit ≤ 2.0 ms、5/6/8-bit ≤ 2.5 ms。剩余差距 0.4–0.9 ms：5/6-bit 的设备字节数（P4 第一步后 Q5_K 7、Q6_K 8 bits/值 vs 文件 5.5/6.56）、非 GEMV kernel（norm、rope、attention 的 split/merge，约 0.5 ms，与 BF16 路径共有）以及 kernel 间空隙（约 0.2 ms）。
@@ -216,9 +244,12 @@ prompt 路径由 P5（int8 MMA、激活块复用）整体重写，届时解码�
 2. 再评估 int8 激活（per-32 块 scale）+ int8 MMA：属于数值契约变化，需单独的精度对照；
 3. 验收：2049 token prompt ≤ 150 ms（Q4_K_M），并给出每投影的设备时间分解。
 
-**P6 小批 rows。** 2–12 行的越界谓词化开销：方案一是 slot arena 的激活按 32 行对齐分配（只读的多余行
-为 0，输出多余行不读），kernel 不再走越界路径；方案二是 rows ≤ 4 时逐行 GEMV。先测方案一的显存代价
-（每层激活 `32 · hidden · 4 B`，可忽略）。
+**P6 余项：让验证行摊薄。** 行块 GEMV 只省了重复解码，没省每行的乘加。llama.cpp 的 MMVQ 把激活量化为
+q8_1，用 `dp4a`/int8 MMA 一次处理 4 个权重、最多 8 行；对应地：
+1. 1–8 行的 int8 激活（每 32 值一个 scale）+ 整数点积 kernel，属于数值契约变化，需与 f64 参考和
+   llama.cpp 输出分别对照；
+2. 验收：3 行验证 ≤ 1.5 倍单行 decode，C1 MTP 深度 2 快于不开 MTP，届时去掉 `auto` 的 grouped-int 例外；
+3. 9–32 行仍走 GEMM，由 P5 一起重写。
 
 **P2 的剩余项。** pooled serving 之前对 grouped-int 每个宽度重试一次才失败；现在已能构造，但
 失败路径仍逐宽度重试，与错误码无关。若以后出现非容量错误（`Unsupported`），应直接停止重试。

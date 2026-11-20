@@ -31,7 +31,18 @@ GGUF 端到端也已验证（#283）：BF16 GGUF + F16 mmproj 的 greedy token �
 - 需要把 native 文本、视觉、多模态的 TTFT/TPOT 与 llama.cpp/参考包分项记录；
 - Q4_K GEMV 仍低于带宽 roofline，prompt GEMV 仍是逐行路径。
 
-## 4. 发布与兼容
+## 4. 架构适配与 MTP
+
+**已完成**：GGUF 按 `general.architecture` 选适配器，见 [GGUF 架构适配层](gguf-architectures.md)。Qwen3.5（`qwen35`）
+的尾部 `nextn` block 作为 MTP 头按规范名绑定，BF16 GGUF 的 MTP 加速与 safetensors 相同。
+
+未完成：
+
+- `qwen35` 的 tiled value head（key heads ≠ value heads，27B）；
+- grouped-int 目标的 MTP 验证仍慢于单行 decode（性能文档 P6 余项）；
+- `DFlash2` 的 GGUF 草稿（`general.architecture = dflash`）。
+
+## 5. 发布与兼容
 
 - GGUF 入口由 CLI/model 的 `gguf` feature 控制；
 - 已通过 `make check-rust`、CUDA hosted、macOS、MSRV、security、package 和 quality-gate；

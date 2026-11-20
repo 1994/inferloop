@@ -7,7 +7,8 @@
 //! groups; byte `b` of every word feeds its own accumulator, so rows `4w + b` never need
 //! gathering until the final sums. A nibble becomes a float exactly by OR-ing it into the mantissa of `2^23` and
 //! subtracting `2^23`, which keeps integer conversions out of the loop. `gemv` subtracts a
-//! per-group bias; `gemv_zero` subtracts the format's constant zero point instead.
+//! per-group bias; `gemv_zero` subtracts the format's constant zero point instead. Both carry `R`
+//! activation rows per CTA and decode each word once for all of them.
 //!
 //! `gemm` / `gemm_zero` cover `ROWS` activation rows per CTA: each span is decoded once into a
 //! `[256, 16]` BF16 weight tile and multiplied by the `[32, 256]` BF16 activation tile with F32
@@ -15,8 +16,8 @@
 #[cutile::module]
 pub mod nibble {
     use cutile::core::{
-        BroadcastScalar, Reshape, Shape_0, Shape_1, Shape_2, Shape_3, Shape_4,
-        StoreTileAtCurrentBlock, Tensor_1, Tensor_2, Tile_1, Tile_2, Tile_3, Tile_4, andi, bf16,
+        BroadcastScalar, Reshape, Shape_0, Shape_1, Shape_2, Shape_3, Shape_4, Shape_5,
+        StoreTileAtCurrentBlock, Tensor_1, Tensor_2, Tile_2, Tile_3, Tile_4, Tile_5, andi, bf16,
         bitcast, cat, constant, convert_scalar, convert_tile, extract, get_tile_block_id, mmaf,
         ori, reduce_sum, shri,
     };
@@ -26,36 +27,37 @@ pub mod nibble {
     /// `2^23`, subtracted to recover the integer from [`MAGIC_BITS`].
     const MAGIC: f32 = 8_388_608.0;
 
-    /// Store `OUT = 4W` row sums less `offsets`: row `4w + b` is word `w` of accumulator `b`.
-    fn store_rows<const G: i32, const W: i32, const OUT: i32>(
-        out: &mut Tensor<f32, { [OUT] }>,
-        accumulators: [Tile<f32, { [G, 32, W] }>; 4],
-        offsets: Tile<f32, { [W, 4] }>,
+    /// Store `OUT = 4W` sums of each of the `R` rows less `offsets`: output `4w + b` is word `w`
+    /// of accumulator `b`.
+    fn store_rows<const R: i32, const G: i32, const W: i32, const OUT: i32>(
+        out: &mut Tensor<f32, { [R, OUT] }>,
+        accumulators: [Tile<f32, { [R, G, 32, W] }>; 4],
+        offsets: Tile<f32, { [R, W, 4] }>,
     ) {
         let [first, second, third, fourth] = accumulators;
-        let a: Tile<f32, { [32, W] }> = reduce_sum(first, 0i32);
-        let b: Tile<f32, { [32, W] }> = reduce_sum(second, 0i32);
-        let c: Tile<f32, { [32, W] }> = reduce_sum(third, 0i32);
-        let d: Tile<f32, { [32, W] }> = reduce_sum(fourth, 0i32);
-        let a: Tile<f32, { [W] }> = reduce_sum(a, 0i32);
-        let b: Tile<f32, { [W] }> = reduce_sum(b, 0i32);
-        let c: Tile<f32, { [W] }> = reduce_sum(c, 0i32);
-        let d: Tile<f32, { [W] }> = reduce_sum(d, 0i32);
-        let low: Tile<f32, { [W, 2] }> =
-            cat(a.reshape(shape![W, 1]), b.reshape(shape![W, 1]), 1i32);
-        let high: Tile<f32, { [W, 2] }> =
-            cat(c.reshape(shape![W, 1]), d.reshape(shape![W, 1]), 1i32);
-        let rows: Tile<f32, { [W, 4] }> = cat(low, high, 1i32);
-        let sums: Tile<f32, { [OUT] }> = rows.reshape(shape![OUT]);
-        let offset_sums: Tile<f32, { [OUT] }> = offsets.reshape(shape![OUT]);
-        out.store(sums - offset_sums);
+        let a: Tile<f32, { [R, 32, W] }> = reduce_sum(first, 1i32);
+        let b: Tile<f32, { [R, 32, W] }> = reduce_sum(second, 1i32);
+        let c: Tile<f32, { [R, 32, W] }> = reduce_sum(third, 1i32);
+        let d: Tile<f32, { [R, 32, W] }> = reduce_sum(fourth, 1i32);
+        let a: Tile<f32, { [R, W] }> = reduce_sum(a, 1i32);
+        let b: Tile<f32, { [R, W] }> = reduce_sum(b, 1i32);
+        let c: Tile<f32, { [R, W] }> = reduce_sum(c, 1i32);
+        let d: Tile<f32, { [R, W] }> = reduce_sum(d, 1i32);
+        let low: Tile<f32, { [R, W, 2] }> =
+            cat(a.reshape(shape![R, W, 1]), b.reshape(shape![R, W, 1]), 2i32);
+        let high: Tile<f32, { [R, W, 2] }> =
+            cat(c.reshape(shape![R, W, 1]), d.reshape(shape![R, W, 1]), 2i32);
+        let sums: Tile<f32, { [R, W, 4] }> = cat(low, high, 2i32);
+        out.store((sums - offsets).reshape(shape![R, OUT]));
     }
 
-    /// `OUT = 4 * W` rows of a sixteen-row tile, `factor * code - bias`: CTA `p` covers part
-    /// `p % PARTS` of tile `p / PARTS`. Each of the `BLOCKS` steps reads `W` words of `LANES = 32G`
-    /// lanes, `VALUES = 64G` activations and `HALVES = 2G` half-group term rows.
+    /// `OUT = 4 * W` outputs of a sixteen-row tile for `R` activation rows, `factor * code - bias`:
+    /// CTA `(r, p)` covers row block `r` and part `p % PARTS` of tile `p / PARTS`. Each of the
+    /// `BLOCKS` steps reads `W` words of `LANES = 32G` lanes, `VALUES = 64G` activations per row and
+    /// `HALVES = 2G` half-group term rows; the codes are decoded once for every row.
     #[cutile::entry()]
     fn gemv<
+        const R: i32,
         const K: i32,
         const BLOCKS: i32,
         const G: i32,
@@ -66,19 +68,19 @@ pub mod nibble {
         const LANES: i32,
         const HALVES: i32,
     >(
-        out: &mut Tensor<f32, { [OUT] }>,
-        x: &Tensor<f32, { [K] }>,
+        out: &mut Tensor<f32, { [R, OUT] }>,
+        x: &Tensor<f32, { [-1, K] }>,
         codes: &Tensor<u32, { [-1, 4] }>,
         factors: &Tensor<f32, { [-1, 16] }>,
         biases: &Tensor<f32, { [-1, 16] }>,
     ) {
         let pid = get_tile_block_id();
-        let xp = x.partition(shape![VALUES]);
+        let xp = x.partition(shape![R, VALUES]);
         let cp = codes.partition(shape![LANES, W]);
         let fp = factors.partition(shape![HALVES, OUT]);
         let bp = biases.partition(shape![HALVES, OUT]);
-        let tile = pid.0 / PARTS;
-        let part = pid.0 % PARTS;
+        let tile = pid.1 / PARTS;
+        let part = pid.1 % PARTS;
         let offset = MAGIC.broadcast(shape![G, 32, W]);
         let nibble = (0x0fu32).broadcast(shape![G, 32, W]);
         let magic = MAGIC_BITS.broadcast(shape![G, 32, W]);
@@ -94,45 +96,60 @@ pub mod nibble {
         ];
         let first = 0i32.broadcast(shape![]);
         let second = 1i32.broadcast(shape![]);
-        let mut offsets: Tile<f32, { [G, 2, W, 4] }> = constant(0.0, shape![G, 2, W, 4]);
-        let mut acc0: Tile<f32, { [G, 32, W] }> = constant(0.0, shape![G, 32, W]);
-        let mut acc1: Tile<f32, { [G, 32, W] }> = constant(0.0, shape![G, 32, W]);
-        let mut acc2: Tile<f32, { [G, 32, W] }> = constant(0.0, shape![G, 32, W]);
-        let mut acc3: Tile<f32, { [G, 32, W] }> = constant(0.0, shape![G, 32, W]);
+        let mut offsets: Tile<f32, { [R, G, 2, W, 4] }> = constant(0.0, shape![R, G, 2, W, 4]);
+        let mut acc0: Tile<f32, { [R, G, 32, W] }> = constant(0.0, shape![R, G, 32, W]);
+        let mut acc1: Tile<f32, { [R, G, 32, W] }> = constant(0.0, shape![R, G, 32, W]);
+        let mut acc2: Tile<f32, { [R, G, 32, W] }> = constant(0.0, shape![R, G, 32, W]);
+        let mut acc3: Tile<f32, { [R, G, 32, W] }> = constant(0.0, shape![R, G, 32, W]);
         for block in 0i32..BLOCKS {
             let index = tile * BLOCKS + block;
             let words: Tile<u32, { [G, 32, W] }> = cp.load([index, part]).reshape(shape![G, 32, W]);
-            let inputs: Tile<f32, { [G, 2, 32] }> = xp.load([block]).reshape(shape![G, 2, 32]);
-            let x_low: Tile<f32, { [G, 1, 32] }> = extract(inputs, [first, first, first]);
-            let x_low: Tile<f32, { [G, 32, W] }> =
-                x_low.reshape(shape![G, 32, 1]).broadcast(shape![G, 32, W]);
-            let x_high: Tile<f32, { [G, 1, 32] }> = extract(inputs, [first, second, first]);
-            let x_high: Tile<f32, { [G, 32, W] }> =
-                x_high.reshape(shape![G, 32, 1]).broadcast(shape![G, 32, W]);
+            let inputs: Tile<f32, { [R, G, 2, 32] }> =
+                xp.load([pid.0, block]).reshape(shape![R, G, 2, 32]);
+            let x_low: Tile<f32, { [R, G, 1, 32] }> = extract(inputs, [first, first, first, first]);
+            let x_low: Tile<f32, { [R, G, 32, W] }> = x_low
+                .reshape(shape![R, G, 32, 1])
+                .broadcast(shape![R, G, 32, W]);
+            let x_high: Tile<f32, { [R, G, 1, 32] }> =
+                extract(inputs, [first, first, second, first]);
+            let x_high: Tile<f32, { [R, G, 32, W] }> = x_high
+                .reshape(shape![R, G, 32, 1])
+                .broadcast(shape![R, G, 32, W]);
             let factor: Tile<f32, { [G, 2, W, 4] }> =
                 fp.load([index, part]).reshape(shape![G, 2, W, 4]);
-            // Every value of a group shares its bias: subtract `bias * sum(x)` per group.
+            // Every value of a group shares its bias: subtract `bias * sum(x)` per group and row.
             let bias: Tile<f32, { [G, 2, W, 4] }> =
                 bp.load([index, part]).reshape(shape![G, 2, W, 4]);
-            let totals: Tile<f32, { [G, 2] }> = reduce_sum(inputs, 2i32);
-            offsets = offsets
-                + bias
-                    * totals
-                        .reshape(shape![G, 2, 1, 1])
-                        .broadcast(shape![G, 2, W, 4]);
-            // Byte 0 of each word: rows `4w + 0`.
+            let totals: Tile<f32, { [R, G, 2] }> = reduce_sum(inputs, 3i32);
+            let bias: Tile<f32, { [R, G, 2, W, 4] }> = bias
+                .reshape(shape![1, G, 2, W, 4])
+                .broadcast(shape![R, G, 2, W, 4]);
+            let totals: Tile<f32, { [R, G, 2, W, 4] }> = totals
+                .reshape(shape![R, G, 2, 1, 1])
+                .broadcast(shape![R, G, 2, W, 4]);
+            offsets = offsets + bias * totals;
+            // Byte 0 of each word: outputs `4w + 0`.
             let low: Tile<f32, { [G, 32, W] }> = bitcast(ori(andi(words, nibble), magic));
             let high: Tile<f32, { [G, 32, W] }> =
                 bitcast(ori(andi(shri(words, shifts[0]), nibble), magic));
             let at_byte: Tile<f32, { [G, 2, W, 1] }> =
-                extract(factor, [first, first, first, first]);
+                extract(factor, [first, first, first, 0i32.broadcast(shape![])]);
             let at_byte: Tile<f32, { [G, 2, W] }> = at_byte.reshape(shape![G, 2, W]);
             let low_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, first, first]);
             let high_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, second, first]);
-            acc0 = acc0
-                + (low - offset) * low_factor.broadcast(shape![G, 32, W]) * x_low
-                + (high - offset) * high_factor.broadcast(shape![G, 32, W]) * x_high;
-            // Byte 1 of each word: rows `4w + 1`.
+            // `(code - offset) * factor` once, multiplied by every row in the single-row order.
+            let low: Tile<f32, { [G, 32, W] }> =
+                (low - offset) * low_factor.broadcast(shape![G, 32, W]);
+            let high: Tile<f32, { [G, 32, W] }> =
+                (high - offset) * high_factor.broadcast(shape![G, 32, W]);
+            let low: Tile<f32, { [R, G, 32, W] }> = low
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            let high: Tile<f32, { [R, G, 32, W] }> = high
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            acc0 = acc0 + low * x_low + high * x_high;
+            // Byte 1 of each word: outputs `4w + 1`.
             let low: Tile<f32, { [G, 32, W] }> =
                 bitcast(ori(andi(shri(words, shifts[1]), nibble), magic));
             let high: Tile<f32, { [G, 32, W] }> =
@@ -142,10 +159,19 @@ pub mod nibble {
             let at_byte: Tile<f32, { [G, 2, W] }> = at_byte.reshape(shape![G, 2, W]);
             let low_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, first, first]);
             let high_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, second, first]);
-            acc1 = acc1
-                + (low - offset) * low_factor.broadcast(shape![G, 32, W]) * x_low
-                + (high - offset) * high_factor.broadcast(shape![G, 32, W]) * x_high;
-            // Byte 2 of each word: rows `4w + 2`.
+            // `(code - offset) * factor` once, multiplied by every row in the single-row order.
+            let low: Tile<f32, { [G, 32, W] }> =
+                (low - offset) * low_factor.broadcast(shape![G, 32, W]);
+            let high: Tile<f32, { [G, 32, W] }> =
+                (high - offset) * high_factor.broadcast(shape![G, 32, W]);
+            let low: Tile<f32, { [R, G, 32, W] }> = low
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            let high: Tile<f32, { [R, G, 32, W] }> = high
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            acc1 = acc1 + low * x_low + high * x_high;
+            // Byte 2 of each word: outputs `4w + 2`.
             let low: Tile<f32, { [G, 32, W] }> =
                 bitcast(ori(andi(shri(words, shifts[3]), nibble), magic));
             let high: Tile<f32, { [G, 32, W] }> =
@@ -155,10 +181,19 @@ pub mod nibble {
             let at_byte: Tile<f32, { [G, 2, W] }> = at_byte.reshape(shape![G, 2, W]);
             let low_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, first, first]);
             let high_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, second, first]);
-            acc2 = acc2
-                + (low - offset) * low_factor.broadcast(shape![G, 32, W]) * x_low
-                + (high - offset) * high_factor.broadcast(shape![G, 32, W]) * x_high;
-            // Byte 3 of each word: rows `4w + 3`.
+            // `(code - offset) * factor` once, multiplied by every row in the single-row order.
+            let low: Tile<f32, { [G, 32, W] }> =
+                (low - offset) * low_factor.broadcast(shape![G, 32, W]);
+            let high: Tile<f32, { [G, 32, W] }> =
+                (high - offset) * high_factor.broadcast(shape![G, 32, W]);
+            let low: Tile<f32, { [R, G, 32, W] }> = low
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            let high: Tile<f32, { [R, G, 32, W] }> = high
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            acc2 = acc2 + low * x_low + high * x_high;
+            // Byte 3 of each word: outputs `4w + 3`.
             let low: Tile<f32, { [G, 32, W] }> =
                 bitcast(ori(andi(shri(words, shifts[5]), nibble), magic));
             let high: Tile<f32, { [G, 32, W] }> =
@@ -168,19 +203,29 @@ pub mod nibble {
             let at_byte: Tile<f32, { [G, 2, W] }> = at_byte.reshape(shape![G, 2, W]);
             let low_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, first, first]);
             let high_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, second, first]);
-            acc3 = acc3
-                + (low - offset) * low_factor.broadcast(shape![G, 32, W]) * x_low
-                + (high - offset) * high_factor.broadcast(shape![G, 32, W]) * x_high;
+            // `(code - offset) * factor` once, multiplied by every row in the single-row order.
+            let low: Tile<f32, { [G, 32, W] }> =
+                (low - offset) * low_factor.broadcast(shape![G, 32, W]);
+            let high: Tile<f32, { [G, 32, W] }> =
+                (high - offset) * high_factor.broadcast(shape![G, 32, W]);
+            let low: Tile<f32, { [R, G, 32, W] }> = low
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            let high: Tile<f32, { [R, G, 32, W] }> = high
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            acc3 = acc3 + low * x_low + high * x_high;
         }
-        let by_half: Tile<f32, { [2, W, 4] }> = reduce_sum(offsets, 0i32);
-        let by_row: Tile<f32, { [W, 4] }> = reduce_sum(by_half, 0i32);
-        store_rows::<G, W, OUT>(out, [acc0, acc1, acc2, acc3], by_row);
+        let by_half: Tile<f32, { [R, 2, W, 4] }> = reduce_sum(offsets, 1i32);
+        let by_row: Tile<f32, { [R, W, 4] }> = reduce_sum(by_half, 1i32);
+        store_rows::<R, G, W, OUT>(out, [acc0, acc1, acc2, acc3], by_row);
     }
 
-    /// `OUT = 4 * W` rows of a sixteen-row tile, `factor * (code - ZERO)`, partitioned as in
-    /// [`gemv`].
+    /// `OUT = 4 * W` outputs of a sixteen-row tile for `R` activation rows, `factor * (code - ZERO)`,
+    /// partitioned as in [`gemv`].
     #[cutile::entry()]
     fn gemv_zero<
+        const R: i32,
         const K: i32,
         const BLOCKS: i32,
         const ZERO: i32,
@@ -192,17 +237,17 @@ pub mod nibble {
         const LANES: i32,
         const HALVES: i32,
     >(
-        out: &mut Tensor<f32, { [OUT] }>,
-        x: &Tensor<f32, { [K] }>,
+        out: &mut Tensor<f32, { [R, OUT] }>,
+        x: &Tensor<f32, { [-1, K] }>,
         codes: &Tensor<u32, { [-1, 4] }>,
         factors: &Tensor<f32, { [-1, 16] }>,
     ) {
         let pid = get_tile_block_id();
-        let xp = x.partition(shape![VALUES]);
+        let xp = x.partition(shape![R, VALUES]);
         let cp = codes.partition(shape![LANES, W]);
         let fp = factors.partition(shape![HALVES, OUT]);
-        let tile = pid.0 / PARTS;
-        let part = pid.0 % PARTS;
+        let tile = pid.1 / PARTS;
+        let part = pid.1 % PARTS;
         let zero: f32 = convert_scalar(ZERO);
         let shift: f32 = MAGIC + zero;
         let offset = shift.broadcast(shape![G, 32, W]);
@@ -220,35 +265,48 @@ pub mod nibble {
         ];
         let first = 0i32.broadcast(shape![]);
         let second = 1i32.broadcast(shape![]);
-        let mut acc0: Tile<f32, { [G, 32, W] }> = constant(0.0, shape![G, 32, W]);
-        let mut acc1: Tile<f32, { [G, 32, W] }> = constant(0.0, shape![G, 32, W]);
-        let mut acc2: Tile<f32, { [G, 32, W] }> = constant(0.0, shape![G, 32, W]);
-        let mut acc3: Tile<f32, { [G, 32, W] }> = constant(0.0, shape![G, 32, W]);
+        let mut acc0: Tile<f32, { [R, G, 32, W] }> = constant(0.0, shape![R, G, 32, W]);
+        let mut acc1: Tile<f32, { [R, G, 32, W] }> = constant(0.0, shape![R, G, 32, W]);
+        let mut acc2: Tile<f32, { [R, G, 32, W] }> = constant(0.0, shape![R, G, 32, W]);
+        let mut acc3: Tile<f32, { [R, G, 32, W] }> = constant(0.0, shape![R, G, 32, W]);
         for block in 0i32..BLOCKS {
             let index = tile * BLOCKS + block;
             let words: Tile<u32, { [G, 32, W] }> = cp.load([index, part]).reshape(shape![G, 32, W]);
-            let inputs: Tile<f32, { [G, 2, 32] }> = xp.load([block]).reshape(shape![G, 2, 32]);
-            let x_low: Tile<f32, { [G, 1, 32] }> = extract(inputs, [first, first, first]);
-            let x_low: Tile<f32, { [G, 32, W] }> =
-                x_low.reshape(shape![G, 32, 1]).broadcast(shape![G, 32, W]);
-            let x_high: Tile<f32, { [G, 1, 32] }> = extract(inputs, [first, second, first]);
-            let x_high: Tile<f32, { [G, 32, W] }> =
-                x_high.reshape(shape![G, 32, 1]).broadcast(shape![G, 32, W]);
+            let inputs: Tile<f32, { [R, G, 2, 32] }> =
+                xp.load([pid.0, block]).reshape(shape![R, G, 2, 32]);
+            let x_low: Tile<f32, { [R, G, 1, 32] }> = extract(inputs, [first, first, first, first]);
+            let x_low: Tile<f32, { [R, G, 32, W] }> = x_low
+                .reshape(shape![R, G, 32, 1])
+                .broadcast(shape![R, G, 32, W]);
+            let x_high: Tile<f32, { [R, G, 1, 32] }> =
+                extract(inputs, [first, first, second, first]);
+            let x_high: Tile<f32, { [R, G, 32, W] }> = x_high
+                .reshape(shape![R, G, 32, 1])
+                .broadcast(shape![R, G, 32, W]);
             let factor: Tile<f32, { [G, 2, W, 4] }> =
                 fp.load([index, part]).reshape(shape![G, 2, W, 4]);
-            // Byte 0 of each word: rows `4w + 0`.
+            // Byte 0 of each word: outputs `4w + 0`.
             let low: Tile<f32, { [G, 32, W] }> = bitcast(ori(andi(words, nibble), magic));
             let high: Tile<f32, { [G, 32, W] }> =
                 bitcast(ori(andi(shri(words, shifts[0]), nibble), magic));
             let at_byte: Tile<f32, { [G, 2, W, 1] }> =
-                extract(factor, [first, first, first, first]);
+                extract(factor, [first, first, first, 0i32.broadcast(shape![])]);
             let at_byte: Tile<f32, { [G, 2, W] }> = at_byte.reshape(shape![G, 2, W]);
             let low_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, first, first]);
             let high_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, second, first]);
-            acc0 = acc0
-                + (low - offset) * low_factor.broadcast(shape![G, 32, W]) * x_low
-                + (high - offset) * high_factor.broadcast(shape![G, 32, W]) * x_high;
-            // Byte 1 of each word: rows `4w + 1`.
+            // `(code - offset) * factor` once, multiplied by every row in the single-row order.
+            let low: Tile<f32, { [G, 32, W] }> =
+                (low - offset) * low_factor.broadcast(shape![G, 32, W]);
+            let high: Tile<f32, { [G, 32, W] }> =
+                (high - offset) * high_factor.broadcast(shape![G, 32, W]);
+            let low: Tile<f32, { [R, G, 32, W] }> = low
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            let high: Tile<f32, { [R, G, 32, W] }> = high
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            acc0 = acc0 + low * x_low + high * x_high;
+            // Byte 1 of each word: outputs `4w + 1`.
             let low: Tile<f32, { [G, 32, W] }> =
                 bitcast(ori(andi(shri(words, shifts[1]), nibble), magic));
             let high: Tile<f32, { [G, 32, W] }> =
@@ -258,10 +316,19 @@ pub mod nibble {
             let at_byte: Tile<f32, { [G, 2, W] }> = at_byte.reshape(shape![G, 2, W]);
             let low_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, first, first]);
             let high_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, second, first]);
-            acc1 = acc1
-                + (low - offset) * low_factor.broadcast(shape![G, 32, W]) * x_low
-                + (high - offset) * high_factor.broadcast(shape![G, 32, W]) * x_high;
-            // Byte 2 of each word: rows `4w + 2`.
+            // `(code - offset) * factor` once, multiplied by every row in the single-row order.
+            let low: Tile<f32, { [G, 32, W] }> =
+                (low - offset) * low_factor.broadcast(shape![G, 32, W]);
+            let high: Tile<f32, { [G, 32, W] }> =
+                (high - offset) * high_factor.broadcast(shape![G, 32, W]);
+            let low: Tile<f32, { [R, G, 32, W] }> = low
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            let high: Tile<f32, { [R, G, 32, W] }> = high
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            acc1 = acc1 + low * x_low + high * x_high;
+            // Byte 2 of each word: outputs `4w + 2`.
             let low: Tile<f32, { [G, 32, W] }> =
                 bitcast(ori(andi(shri(words, shifts[3]), nibble), magic));
             let high: Tile<f32, { [G, 32, W] }> =
@@ -271,10 +338,19 @@ pub mod nibble {
             let at_byte: Tile<f32, { [G, 2, W] }> = at_byte.reshape(shape![G, 2, W]);
             let low_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, first, first]);
             let high_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, second, first]);
-            acc2 = acc2
-                + (low - offset) * low_factor.broadcast(shape![G, 32, W]) * x_low
-                + (high - offset) * high_factor.broadcast(shape![G, 32, W]) * x_high;
-            // Byte 3 of each word: rows `4w + 3`.
+            // `(code - offset) * factor` once, multiplied by every row in the single-row order.
+            let low: Tile<f32, { [G, 32, W] }> =
+                (low - offset) * low_factor.broadcast(shape![G, 32, W]);
+            let high: Tile<f32, { [G, 32, W] }> =
+                (high - offset) * high_factor.broadcast(shape![G, 32, W]);
+            let low: Tile<f32, { [R, G, 32, W] }> = low
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            let high: Tile<f32, { [R, G, 32, W] }> = high
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            acc2 = acc2 + low * x_low + high * x_high;
+            // Byte 3 of each word: outputs `4w + 3`.
             let low: Tile<f32, { [G, 32, W] }> =
                 bitcast(ori(andi(shri(words, shifts[5]), nibble), magic));
             let high: Tile<f32, { [G, 32, W] }> =
@@ -284,12 +360,21 @@ pub mod nibble {
             let at_byte: Tile<f32, { [G, 2, W] }> = at_byte.reshape(shape![G, 2, W]);
             let low_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, first, first]);
             let high_factor: Tile<f32, { [G, 1, W] }> = extract(at_byte, [first, second, first]);
-            acc3 = acc3
-                + (low - offset) * low_factor.broadcast(shape![G, 32, W]) * x_low
-                + (high - offset) * high_factor.broadcast(shape![G, 32, W]) * x_high;
+            // `(code - offset) * factor` once, multiplied by every row in the single-row order.
+            let low: Tile<f32, { [G, 32, W] }> =
+                (low - offset) * low_factor.broadcast(shape![G, 32, W]);
+            let high: Tile<f32, { [G, 32, W] }> =
+                (high - offset) * high_factor.broadcast(shape![G, 32, W]);
+            let low: Tile<f32, { [R, G, 32, W] }> = low
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            let high: Tile<f32, { [R, G, 32, W] }> = high
+                .reshape(shape![1, G, 32, W])
+                .broadcast(shape![R, G, 32, W]);
+            acc3 = acc3 + low * x_low + high * x_high;
         }
-        let none: Tile<f32, { [W, 4] }> = constant(0.0, shape![W, 4]);
-        store_rows::<G, W, OUT>(out, [acc0, acc1, acc2, acc3], none);
+        let none: Tile<f32, { [R, W, 4] }> = constant(0.0, shape![R, W, 4]);
+        store_rows::<R, G, W, OUT>(out, [acc0, acc1, acc2, acc3], none);
     }
 
     /// `ROWS` activation rows of one sixteen-output tile: `factor * code - bias`. `SPANS = K / 256`.

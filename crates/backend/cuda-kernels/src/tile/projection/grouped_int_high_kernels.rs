@@ -7,7 +7,8 @@
 //! rows of a word along the last tile axis, so a CTA covering `W` of a tile's four words keeps one
 //! `[VALUES, W, 4]` accumulator. A code becomes a float exactly by OR-ing it into the mantissa of
 //! `2^23` and subtracting `2^23`. Each step covers `SPANS` spans. `gemv_zero` subtracts the
-//! format's constant zero point; `gemv` subtracts a per-group bias.
+//! format's constant zero point; `gemv` subtracts a per-group bias. Both carry `R` activation rows
+//! per CTA and decode each word once for all of them.
 //!
 //! `gemm` / `gemm_zero` cover `ROWS` activation rows per CTA: each span is decoded once into a
 //! `[256, 16]` BF16 weight tile and multiplied by the `[32, 256]` BF16 activation tile with F32
@@ -26,13 +27,14 @@ pub mod high {
     /// `2^23`, subtracted to recover the integer from [`MAGIC_BITS`].
     const MAGIC: f32 = 8_388_608.0;
 
-    /// `factor * (code - ZERO)` over `OUT = 4 * W` rows of a sixteen-row tile: CTA `p` covers
-    /// part `p % PARTS` of tile `p / PARTS`. Each of the `BLOCKS` steps reads `SPANS` spans:
+    /// `factor * (code - ZERO)` over `OUT = 4 * W` rows of a sixteen-row tile for `R` activation
+    /// rows: CTA `(r, p)` covers row block `r` and part `p % PARTS` of tile `p / PARTS`. Each of the `BLOCKS` steps reads `SPANS` spans:
     /// `LANES = 128 * SPANS` nibble rows of `NIBBLES = 4 * SPANS` 64-value groups, `PLANE =
     /// WIDE * SPANS` high rows of `SLOTS = 256 / WIDE` slots, and the terms of `GROUPS` groups of
     /// `GROUP` values. `MASK` keeps the `HIGH` bits of one code.
     #[cutile::entry()]
     fn gemv_zero<
+        const R: i32,
         const K: i32,
         const BLOCKS: i32,
         const GROUPS: i32,
@@ -51,19 +53,19 @@ pub mod high {
         const PARTS: i32,
         const OUT: i32,
     >(
-        out: &mut Tensor<f32, { [OUT] }>,
-        x: &Tensor<f32, { [K] }>,
+        out: &mut Tensor<f32, { [R, OUT] }>,
+        x: &Tensor<f32, { [-1, K] }>,
         codes: &Tensor<u32, { [-1, 4] }>,
         high: &Tensor<u32, { [-1, 4] }>,
         factors: &Tensor<f32, { [-1, 16] }>,
     ) {
         let pid = get_tile_block_id();
-        let xp = x.partition(shape![VALUES]);
+        let xp = x.partition(shape![R, VALUES]);
         let cp = codes.partition(shape![LANES, W]);
         let hp = high.partition(shape![PLANE, W]);
         let fp = factors.partition(shape![GROUPS, OUT]);
-        let tile = pid.0 / PARTS;
-        let part = pid.0 % PARTS;
+        let tile = pid.1 / PARTS;
+        let part = pid.1 % PARTS;
         let zero: f32 = convert_scalar(ZERO);
         let shift: f32 = MAGIC + zero;
         let offset = shift.broadcast(shape![VALUES, W, 4]);
@@ -93,7 +95,7 @@ pub mod high {
                     .reshape(shape![1, 1, 1, 1, 4])
                     .broadcast(shape![SPANS, SLOTS, WIDE, W, 4]),
         );
-        let mut acc: Tile<f32, { [VALUES, W, 4] }> = constant(0.0, shape![VALUES, W, 4]);
+        let mut acc: Tile<f32, { [R, VALUES, W, 4] }> = constant(0.0, shape![R, VALUES, W, 4]);
         for block in 0i32..BLOCKS {
             let index = tile * BLOCKS + block;
             let words: Tile<u32, { [NIBBLES, 2, 32, W, 4] }> = cp
@@ -115,20 +117,26 @@ pub mod high {
                 .reshape(shape![GROUPS, 1, W, 4])
                 .broadcast(shape![GROUPS, GROUP, W, 4])
                 .reshape(shape![VALUES, W, 4]);
-            let activation: Tile<f32, { [VALUES, W, 4] }> = xp
-                .load([block])
-                .reshape(shape![VALUES, 1, 1])
-                .broadcast(shape![VALUES, W, 4]);
-            acc = acc + (code - offset) * factor * activation;
+            let activation: Tile<f32, { [R, VALUES, W, 4] }> = xp
+                .load([pid.0, block])
+                .reshape(shape![R, VALUES, 1, 1])
+                .broadcast(shape![R, VALUES, W, 4]);
+            // The weight is decoded once and multiplied by each row in the single-row order.
+            let weight: Tile<f32, { [VALUES, W, 4] }> = (code - offset) * factor;
+            let weight: Tile<f32, { [R, VALUES, W, 4] }> = weight
+                .reshape(shape![1, VALUES, W, 4])
+                .broadcast(shape![R, VALUES, W, 4]);
+            acc = acc + weight * activation;
         }
-        let sums: Tile<f32, { [W, 4] }> = reduce_sum(acc, 0i32);
-        out.store(sums.reshape(shape![OUT]));
+        let sums: Tile<f32, { [R, W, 4] }> = reduce_sum(acc, 1i32);
+        out.store(sums.reshape(shape![R, OUT]));
     }
 
     /// `factor * code - bias` over `OUT = 4 * W` rows of a sixteen-row tile, partitioned as in
     /// [`gemv_zero`].
     #[cutile::entry()]
     fn gemv<
+        const R: i32,
         const K: i32,
         const BLOCKS: i32,
         const GROUPS: i32,
@@ -146,21 +154,21 @@ pub mod high {
         const PARTS: i32,
         const OUT: i32,
     >(
-        out: &mut Tensor<f32, { [OUT] }>,
-        x: &Tensor<f32, { [K] }>,
+        out: &mut Tensor<f32, { [R, OUT] }>,
+        x: &Tensor<f32, { [-1, K] }>,
         codes: &Tensor<u32, { [-1, 4] }>,
         high: &Tensor<u32, { [-1, 4] }>,
         factors: &Tensor<f32, { [-1, 16] }>,
         biases: &Tensor<f32, { [-1, 16] }>,
     ) {
         let pid = get_tile_block_id();
-        let xp = x.partition(shape![VALUES]);
+        let xp = x.partition(shape![R, VALUES]);
         let cp = codes.partition(shape![LANES, W]);
         let hp = high.partition(shape![PLANE, W]);
         let fp = factors.partition(shape![GROUPS, OUT]);
         let bp = biases.partition(shape![GROUPS, OUT]);
-        let tile = pid.0 / PARTS;
-        let part = pid.0 % PARTS;
+        let tile = pid.1 / PARTS;
+        let part = pid.1 % PARTS;
         let offset = MAGIC.broadcast(shape![VALUES, W, 4]);
         let magic = MAGIC_BITS.broadcast(shape![VALUES, W, 4]);
         let nibble = (0x0fu32).broadcast(shape![NIBBLES, 2, 32, W, 4]);
@@ -188,7 +196,7 @@ pub mod high {
                     .reshape(shape![1, 1, 1, 1, 4])
                     .broadcast(shape![SPANS, SLOTS, WIDE, W, 4]),
         );
-        let mut acc: Tile<f32, { [VALUES, W, 4] }> = constant(0.0, shape![VALUES, W, 4]);
+        let mut acc: Tile<f32, { [R, VALUES, W, 4] }> = constant(0.0, shape![R, VALUES, W, 4]);
         for block in 0i32..BLOCKS {
             let index = tile * BLOCKS + block;
             let words: Tile<u32, { [NIBBLES, 2, 32, W, 4] }> = cp
@@ -215,14 +223,18 @@ pub mod high {
                 .reshape(shape![GROUPS, 1, W, 4])
                 .broadcast(shape![GROUPS, GROUP, W, 4])
                 .reshape(shape![VALUES, W, 4]);
-            let activation: Tile<f32, { [VALUES, W, 4] }> = xp
-                .load([block])
-                .reshape(shape![VALUES, 1, 1])
-                .broadcast(shape![VALUES, W, 4]);
-            acc = acc + ((code - offset) * factor - bias) * activation;
+            let activation: Tile<f32, { [R, VALUES, W, 4] }> = xp
+                .load([pid.0, block])
+                .reshape(shape![R, VALUES, 1, 1])
+                .broadcast(shape![R, VALUES, W, 4]);
+            let weight: Tile<f32, { [VALUES, W, 4] }> = (code - offset) * factor - bias;
+            let weight: Tile<f32, { [R, VALUES, W, 4] }> = weight
+                .reshape(shape![1, VALUES, W, 4])
+                .broadcast(shape![R, VALUES, W, 4]);
+            acc = acc + weight * activation;
         }
-        let sums: Tile<f32, { [W, 4] }> = reduce_sum(acc, 0i32);
-        out.store(sums.reshape(shape![OUT]));
+        let sums: Tile<f32, { [R, W, 4] }> = reduce_sum(acc, 1i32);
+        out.store(sums.reshape(shape![R, OUT]));
     }
 
     /// `ROWS` activation rows of one sixteen-output tile: `factor * code - bias`. `SPANS = K / 256`.

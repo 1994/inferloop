@@ -1,8 +1,12 @@
 //! Package metadata, weight bindings and bounded loading.
 #[cfg(feature = "gguf")]
+pub mod gguf_arch;
+#[cfg(feature = "gguf")]
 pub mod gguf_package;
 #[cfg(feature = "gguf")]
 pub mod gguf_requirements;
+#[cfg(feature = "gguf")]
+pub mod gguf_tokenizer;
 #[cfg(feature = "gguf")]
 pub mod gguf_vision;
 pub mod index;
