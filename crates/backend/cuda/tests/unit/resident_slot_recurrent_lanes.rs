@@ -19,6 +19,8 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 const KH: usize = 16;
 const VH: usize = 48;
+/// Adjacent value heads that share one key head (grouped order).
+const KR: usize = VH / KH;
 const D: usize = 128;
 const QKV: usize = (2 * KH + VH) * D;
 const CHANNELS: usize = 1024;
@@ -112,15 +114,7 @@ fn wide_delta_lanes_match_three_lane_reference() -> TestResult {
         &parameters,
         &wide.3,
     )
-    .generics(f32_state(generics(&[
-        KH,
-        VH,
-        VH / KH,
-        D,
-        block,
-        FIELDS,
-        WIDE,
-    ])))
+    .generics(f32_state(generics(&[KH, VH, KR, D, block, FIELDS, WIDE])))
     .sync_on(device.stream())?;
     fused::delta_verify_batch(
         (&mut narrow_out).partition([1, NARROW, block]),
@@ -131,7 +125,7 @@ fn wide_delta_lanes_match_three_lane_reference() -> TestResult {
         &parameters,
         &narrow.3,
     )
-    .generics(f32_state(generics(&[KH, VH, VH / KH, D, block, FIELDS])))
+    .generics(f32_state(generics(&[KH, VH, KR, D, block, FIELDS])))
     .sync_on(device.stream())?;
     let row = VH * D;
     assert_close(
@@ -152,15 +146,7 @@ fn wide_delta_lanes_match_three_lane_reference() -> TestResult {
             &wide.3,
             &counts,
         )
-        .generics(f32_state(generics(&[
-            KH,
-            VH,
-            VH / KH,
-            D,
-            block,
-            FIELDS,
-            WIDE,
-        ])))
+        .generics(f32_state(generics(&[KH, VH, KR, D, block, FIELDS, WIDE])))
         .sync_on(device.stream())?;
         fused::delta_commit_batch(
             (&mut narrow_state).partition([1, D, block]),
@@ -171,7 +157,7 @@ fn wide_delta_lanes_match_three_lane_reference() -> TestResult {
             &narrow.3,
             &counts,
         )
-        .generics(f32_state(generics(&[KH, VH, VH / KH, D, block, FIELDS])))
+        .generics(f32_state(generics(&[KH, VH, KR, D, block, FIELDS])))
         .sync_on(device.stream())?;
         assert_close(
             "delta commit",

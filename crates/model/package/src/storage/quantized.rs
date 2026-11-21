@@ -1,6 +1,5 @@
 //! Validated native storage bindings for mixed FP8/NVFP4 packages.
 use crate::constants::CONFIG_MAX_BYTES;
-#[cfg(feature = "gguf")]
 use crate::storage::gguf::GgufPackage;
 use crate::storage::source::TensorFiles;
 use crate::{
@@ -19,13 +18,10 @@ pub use draft::DFlash2Package;
 /// Values sharing one E4M3 block scale in an NVFP4 weight.
 const NVFP4_GROUP_SIZE: usize = 16;
 /// Round-to-nearest-even bias for F32 to BF16 narrowing.
-#[cfg(feature = "gguf")]
 const BF16_ROUND: u32 = 0x7FFF;
 /// Bits discarded when narrowing to BF16.
-#[cfg(feature = "gguf")]
 const BF16_SHIFT: u32 = 16;
 /// Low BF16 mantissa bit used for tie breaking.
-#[cfg(feature = "gguf")]
 const BF16_TIE: u32 = 1;
 /// Bits per weight in channel-wise FP8 quantization.
 const FP8_WEIGHT_BITS: usize = 8;
@@ -229,11 +225,8 @@ pub struct QuantizedPackage {
     shards: BTreeMap<String, TensorFile>,
     tensor_map: BTreeMap<String, String>,
     activation_rules: Vec<activations::Rule>,
-    #[cfg(feature = "gguf")]
     gguf: Option<GgufPackage>,
-    #[cfg(feature = "gguf")]
     gguf_dense: BTreeMap<String, Vec<u8>>,
-    #[cfg(feature = "gguf")]
     vision_sources: BTreeMap<String, WeightSource>,
 }
 
@@ -254,7 +247,6 @@ impl QuantizedPackage {
         root: impl AsRef<Path>,
         id: ModelId,
     ) -> Result<Self> {
-        #[cfg(feature = "gguf")]
         if root
             .as_ref()
             .extension()
@@ -294,11 +286,8 @@ impl QuantizedPackage {
             shards,
             tensor_map,
             activation_rules: activations::Rule::parse(&value["quantization_config"])?,
-            #[cfg(feature = "gguf")]
             gguf: None,
-            #[cfg(feature = "gguf")]
             gguf_dense: BTreeMap::new(),
-            #[cfg(feature = "gguf")]
             vision_sources: BTreeMap::new(),
         };
         package.bind_backbone()?;
@@ -310,7 +299,6 @@ impl QuantizedPackage {
     /// # Errors
     /// Rejects invalid metadata, a provider that cannot import the config, or an unsupported
     /// weight encoding.
-    #[cfg(feature = "gguf")]
     pub fn open_gguf(registry: &ModelRegistry, path: &Path, id: ModelId) -> Result<Self> {
         let package = GgufPackage::open_auto_in(registry, path)?;
         let config = package.config();
@@ -352,7 +340,6 @@ impl QuantizedPackage {
         Ok(package)
     }
 
-    #[cfg(feature = "gguf")]
     fn bind_gguf(&mut self) -> Result<()> {
         let package = self
             .gguf
@@ -393,7 +380,6 @@ impl QuantizedPackage {
         Ok(())
     }
 
-    #[cfg(feature = "gguf")]
     fn bind_gguf_vision(&mut self) -> Result<()> {
         let Some(package) = self.gguf.as_ref() else {
             return Ok(());
@@ -453,7 +439,6 @@ impl QuantizedPackage {
     }
 
     /// Vision tensors bound from an attached mmproj, when multimodal.
-    #[cfg(feature = "gguf")]
     #[must_use]
     pub fn vision_source_count(&self) -> usize {
         self.vision_sources.len()
@@ -462,7 +447,6 @@ impl QuantizedPackage {
     /// Decode a GGUF slot to F32 for a consumer that still needs dense values.
     /// # Errors
     /// Returns `None` for non-GGUF packages, or the decode error for a malformed slot.
-    #[cfg(feature = "gguf")]
     pub fn decoded(&self, slot: &str) -> Result<Option<Vec<f32>>> {
         self.gguf
             .as_ref()
@@ -474,7 +458,6 @@ impl QuantizedPackage {
     /// # Errors
     /// Returns errors for a foreign source descriptor, I/O failure, or exceeded budget.
     pub fn read(&mut self, source: &WeightSource, budget: u64) -> Result<Vec<u8>> {
-        #[cfg(feature = "gguf")]
         if source.shard == "gguf" {
             if let Some(bytes) = self.gguf_dense.get(&source.name) {
                 return Ok(bytes.clone());
@@ -544,7 +527,6 @@ impl QuantizedPackage {
     /// # Errors
     /// Rejects foreign source descriptors, invalid bounds or an exceeded budget.
     pub fn read_view(&self, source: &WeightSource, budget: u64) -> Result<&[u8]> {
-        #[cfg(feature = "gguf")]
         if source.shard == "gguf" {
             let bytes = self
                 .gguf_dense
@@ -644,7 +626,6 @@ impl QuantizedPackage {
     /// # Errors
     /// Rejects names not present in the validated package index.
     pub fn source(&self, name: &str) -> Result<WeightSource> {
-        #[cfg(feature = "gguf")]
         if let Some(source) = self.vision_sources.get(name) {
             return Ok(source.clone());
         }
@@ -1012,7 +993,6 @@ impl QuantizedPackage {
 }
 
 /// The device weight one canonical GGUF slot binds to.
-#[cfg(feature = "gguf")]
 fn gguf_weight(package: &GgufPackage, name: &str) -> Result<DeviceWeight> {
     let source = package
         .slots()

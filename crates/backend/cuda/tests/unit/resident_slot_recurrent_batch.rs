@@ -15,6 +15,8 @@ use std::slice::from_ref;
 
 const KH: usize = 16;
 const VH: usize = 48;
+/// Adjacent value heads that share one key head (grouped order).
+const KR: usize = VH / KH;
 const D: usize = 128;
 const QKV: usize = (2 * KH + VH) * D;
 
@@ -103,7 +105,7 @@ impl Fixture {
                     &metadata[2],
                 )
                 .generics(f32_state(
-                    [KH, VH, VH / KH, D, self.block]
+                    [KH, VH, KR, D, self.block]
                         .iter()
                         .map(ToString::to_string)
                         .collect(),
@@ -142,7 +144,7 @@ impl Fixture {
                     &self.metadata,
                 )
                 .generics(f32_state(
-                    [KH, VH, VH / KH, D, self.block, 4]
+                    [KH, VH, KR, D, self.block, 4]
                         .iter()
                         .map(ToString::to_string)
                         .collect(),
@@ -207,7 +209,7 @@ impl Fixture {
                     counts[slot],
                 )
                 .generics(f32_state(
-                    [KH, VH, VH / KH, D, self.block]
+                    [KH, VH, KR, D, self.block]
                         .iter()
                         .map(ToString::to_string)
                         .collect(),
@@ -252,7 +254,7 @@ impl Fixture {
                         &counts,
                     )
                     .generics(f32_state(
-                        [KH, VH, VH / KH, D, self.block, 4]
+                        [KH, VH, KR, D, self.block, 4]
                             .iter()
                             .map(ToString::to_string)
                             .collect(),

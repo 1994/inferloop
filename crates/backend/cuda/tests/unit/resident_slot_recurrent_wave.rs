@@ -1,6 +1,6 @@
 //! Wave-selected fused launches against the independent scalar recurrence.
 use super::super::{BenchOptions, Duration, assert_close, upload, wave_perf_pair};
-use super::{D, Fixture, KH, QKV, TestResult, VH};
+use super::{D, Fixture, KH, KR, QKV, TestResult, VH};
 use crate::device::device_error;
 use crate::resident::buffers::cutile;
 use crate::test_support::f32_state;
@@ -82,7 +82,7 @@ fn capture_verify(
                 &fixture.metadata,
             )
             .generics(f32_state(
-                [KH, VH, VH / KH, D, block, 4]
+                [KH, VH, KR, D, block, 4]
                     .iter()
                     .map(ToString::to_string)
                     .collect(),
@@ -129,7 +129,7 @@ fn check_commits(
                         &counts,
                     )
                     .generics(f32_state(
-                        [KH, VH, VH / KH, D, selected, 4]
+                        [KH, VH, KR, D, selected, 4]
                             .iter()
                             .map(ToString::to_string)
                             .collect(),

@@ -5,10 +5,8 @@ use crate::constants::MIB;
 use crate::constants::MIB_U64;
 use infer_core::{Error, ModelId, Result};
 use infer_models::{ModelPackage, SafetensorsIndex, default_registry, memory_estimate};
-#[cfg(feature = "gguf")]
 use std::collections::BTreeMap;
 use std::fs::read;
-#[cfg(feature = "gguf")]
 use std::path::Path;
 
 /// Conservative expansion factor from native weight storage to F32, applied to the staging
@@ -58,7 +56,6 @@ pub fn inspect_model(options: InspectModelOptions) -> Result<()> {
     Ok(())
 }
 pub fn inspect_package(options: InspectPackageOptions) -> Result<()> {
-    #[cfg(feature = "gguf")]
     if options
         .package
         .extension()
@@ -105,7 +102,6 @@ pub fn inspect_package(options: InspectPackageOptions) -> Result<()> {
     Ok(())
 }
 /// `inspect-package` output for a GGUF checkpoint.
-#[cfg(feature = "gguf")]
 #[derive(serde::Serialize)]
 struct GgufInspection {
     checkpoint: &'static str,
@@ -120,7 +116,6 @@ struct GgufInspection {
 }
 
 /// The attached vision projector, if any; counts are absent when none is attached.
-#[cfg(feature = "gguf")]
 #[derive(serde::Serialize, Default)]
 struct GgufVision {
     attached: bool,
@@ -132,7 +127,6 @@ struct GgufVision {
     deepstack: Option<usize>,
 }
 
-#[cfg(feature = "gguf")]
 fn inspect_gguf(path: &Path) -> Result<()> {
     let package = infer_models::GgufPackage::open_auto(path)?;
     let mut grouped = BTreeMap::new();

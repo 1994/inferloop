@@ -1,7 +1,6 @@
 //! Bind a `DFlash2` draft package against the target package it speculates for.
 use super::{DeviceWeight, QuantizedPackage, WeightSource, WeightView};
 use crate::providers::dflash2::DFlash2Config;
-#[cfg(feature = "gguf")]
 use crate::providers::dflash2::gguf::ARCH as DFLASH2_GGUF;
 use crate::storage::source::TensorFiles;
 use crate::{PackageSource, TensorDtype};
@@ -51,12 +50,7 @@ impl QuantizedPackage {
             .extension()
             .is_some_and(|extension| extension == "gguf")
         {
-            #[cfg(feature = "gguf")]
             return self.attach_dflash2_gguf(root);
-            #[cfg(not(feature = "gguf"))]
-            return Err(Error::unsupported(
-                "GGUF DFlash2 drafts require the gguf feature",
-            ));
         }
         let source = PackageSource::open(root)?;
         let raw = source.require_config()?;
@@ -141,7 +135,6 @@ impl QuantizedPackage {
     /// The file does not record the target's depth, so the target being attached supplies
     /// `num_target_layers`. Its float tensors stay in host memory as the GGUF target's do, and
     /// each `fc` tap block is cut out once here, since GGUF bytes have no gathered views.
-    #[cfg(feature = "gguf")]
     fn attach_dflash2_gguf(&mut self, path: &Path) -> Result<()> {
         let draft = crate::GgufPackage::open(path)?;
         if draft.architecture() != DFLASH2_GGUF {
@@ -177,7 +170,6 @@ impl QuantizedPackage {
     }
 
     /// Cut `[rows, parts * hidden]` dense GGUF bytes into `parts` cached `[rows, hidden]` blocks.
-    #[cfg(feature = "gguf")]
     fn cut_columns(
         &mut self,
         fc: &WeightSource,
@@ -223,7 +215,6 @@ impl QuantizedPackage {
 
 /// A cached dense GGUF float tensor named `name`; quantized draft weights are rejected, as the
 /// draft's CUDA projections take float or FP8 weights.
-#[cfg(feature = "gguf")]
 fn dense_source(name: &str, slot: &crate::GgufSlot) -> Result<WeightSource> {
     let dtype = match slot.float_type() {
         infer_format::GgufType::F32 => TensorDtype::F32,

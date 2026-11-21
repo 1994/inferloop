@@ -1,4 +1,3 @@
-#[cfg(feature = "gguf")]
 mod gguf;
 use infer_core::*;
 use infer_ir::*;

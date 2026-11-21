@@ -1,5 +1,4 @@
 //! Architecture to provider resolution, so opening a package never names a model family.
-#[cfg(feature = "gguf")]
 use crate::providers::gguf::GgufAdapters;
 use crate::providers::llama::LlamaProvider;
 use crate::providers::qwen::QwenProvider;
@@ -51,7 +50,6 @@ fn push_unique(output: &mut Vec<String>, name: &str) {
 #[derive(Default)]
 pub struct ModelRegistry {
     providers: Vec<Arc<dyn ModelProvider>>,
-    #[cfg(feature = "gguf")]
     gguf: GgufAdapters,
 }
 
@@ -68,7 +66,6 @@ impl ModelRegistry {
         // The built-in list is fixed at compile time, so it cannot conflict with itself.
         registry.providers.push(Arc::new(QwenProvider));
         registry.providers.push(Arc::new(LlamaProvider));
-        #[cfg(feature = "gguf")]
         {
             registry.gguf = GgufAdapters::builtin();
         }
@@ -76,14 +73,12 @@ impl ModelRegistry {
     }
 
     /// The GGUF adapters this registry reads files with.
-    #[cfg(feature = "gguf")]
     #[must_use]
     pub const fn gguf(&self) -> &GgufAdapters {
         &self.gguf
     }
 
     /// Add GGUF adapters, as [`Self::register`] adds a provider.
-    #[cfg(feature = "gguf")]
     pub const fn gguf_mut(&mut self) -> &mut GgufAdapters {
         &mut self.gguf
     }

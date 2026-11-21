@@ -1,5 +1,4 @@
 //! Package metadata, weight bindings and bounded loading.
-#[cfg(feature = "gguf")]
 pub mod gguf;
 pub mod index;
 pub mod loader;

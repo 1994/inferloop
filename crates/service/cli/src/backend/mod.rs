@@ -11,7 +11,7 @@ mod selected;
 mod speculation;
 #[cfg(cuda_backend)]
 use infer_backend_cuda::device::CudaDevice;
-#[cfg(all(cuda_backend, feature = "gguf"))]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::executor::CudaBackend;
 #[cfg(any(test, native_backend))]
 use infer_core::{Error, Result};
@@ -237,7 +237,7 @@ fn resolve(
  * # Errors
  * Returns an unsupported error when no GPU backend is available.
  */
-#[cfg(feature = "gguf")]
+#[cfg(native_backend)]
 pub fn formats(choice: BackendChoice) -> Result<infer_ir::BackendFormats> {
     match resolve(choice, cuda_available(), metal_available())? {
         #[cfg(cuda_backend)]

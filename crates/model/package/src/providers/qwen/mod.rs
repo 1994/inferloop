@@ -1,4 +1,3 @@
-#[cfg(feature = "gguf")]
 pub mod gguf;
 
 mod generation;
