@@ -1,8 +1,8 @@
 //! cuTile implementation of the projection family.
 use super::{
     BLOCK_BYTES, compensated_gemm, entries, fp8_gemm, fp8_quant_reduction, grouped_int_byte,
-    grouped_int_high, grouped_int_nibble, linear, linear_batch, nvfp4_gemm, pool_gemv,
-    prefill_gemm, prompt_logits, small_gemm, swizzle, vendor_fp8,
+    grouped_int_dot, grouped_int_high, grouped_int_nibble, linear, linear_batch, nvfp4_gemm,
+    pool_gemv, prefill_gemm, prompt_logits, small_gemm, swizzle, vendor_fp8,
 };
 use crate::contract::buffer::{Bf16, Buffer, F16, Fp4Pair, Fp8};
 use crate::contract::grouped_int::{
@@ -28,10 +28,10 @@ use infer_ir::{CodeOffset, GROUPED_INT_SPAN};
 
 /// `[rows, outputs, columns]` of one projection.
 #[derive(Clone, Copy)]
-struct RowsShape {
-    rows: usize,
-    outputs: usize,
-    columns: usize,
+pub(super) struct RowsShape {
+    pub(super) rows: usize,
+    pub(super) outputs: usize,
+    pub(super) columns: usize,
 }
 
 /// Columns one channel-scale tile covers.
@@ -332,9 +332,10 @@ fn grouped_int_rows(
     .map_err(backend_error)
 }
 
-/// The word-load grouped-int GEMV over `shape.rows` activation rows: each CTA decodes its codes
-/// once for a block of up to [`GROUPED_INT_GEMV_ROWS`] rows and accumulates every row in F32
-/// like the single-row GEMV, rather than through the GEMM's BF16 operands.
+/// The grouped-int GEMV over `shape.rows` activation rows. Two or more rows take the int8
+/// dot-product kernel where the device loads it (`grouped_int_dot`); otherwise each CTA decodes
+/// its codes once for a block of up to [`GROUPED_INT_GEMV_ROWS`] rows and accumulates every row in
+/// F32 like the single-row GEMV, rather than through the GEMM's BF16 operands.
 fn grouped_int_gemv(
     projection: &TileProjection,
     recording: &Recording<'_>,
@@ -350,15 +351,73 @@ fn grouped_int_gemv(
         columns,
     } = shape;
     let packing = CodePacking::of(format);
+    if grouped_int_dot::available(projection.ordinal, format, rows)? {
+        return grouped_int_dot::project(projection.ordinal, recording, shape, out, x, weight);
+    }
     let block = gemv_block_rows(rows);
     if block == 1 && packing == CodePacking::Nibble {
         return nibble_gemv(projection, recording, columns, out, x, weight);
     }
+    let tail = rows % block;
+    let head = rows - tail;
+    if head > 0 {
+        let shape = RowsShape {
+            rows: head,
+            ..shape
+        };
+        let (out, x) = (out.slice(0..head * outputs)?, x.slice(0..head * columns)?);
+        gemv_launch(projection, recording, shape, block, 0, out, x, weight)?;
+    }
+    if tail > 0 {
+        let shape = RowsShape {
+            rows: tail,
+            ..shape
+        };
+        let out = out.slice(head * outputs..rows * outputs)?;
+        let x = x.slice(head * columns..rows * columns)?;
+        gemv_launch(
+            projection,
+            recording,
+            shape,
+            gemv_tail_block(tail)?,
+            tail,
+            out,
+            x,
+            weight,
+        )?;
+    }
+    Ok(())
+}
+
+/// One row-block GEMV launch over `shape.rows` rows in blocks of `block`. A nonzero `tail` is a
+/// single block that overhangs its `tail` rows, loaded through in-bounds rows (`row_block`).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the launch takes the plan's shape and block apart from its three operands"
+)]
+fn gemv_launch(
+    projection: &TileProjection,
+    recording: &Recording<'_>,
+    shape: RowsShape,
+    block: usize,
+    tail: usize,
+    out: Buffer<'_, f32>,
+    x: Buffer<'_, f32>,
+    weight: GroupedIntWeight<'_>,
+) -> Result<()> {
+    let format = weight.format;
+    let RowsShape {
+        rows,
+        outputs,
+        columns,
+    } = shape;
+    let packing = CodePacking::of(format);
     let scope = capture_scope(recording)?;
     let (spans, words) = gemv_shape(packing, columns, block);
     validate_grouped_int(&weight, outputs, columns, spans)?;
     let mut generics = gemv_generics(&weight, columns, spans, words);
     generics.insert(0, block.to_string());
+    generics.push(tail.to_string());
     let tile_outputs = GROUPED_INT_TILE_ROWS / TILE_WORDS * words;
     let (codes, high) = split_codes(&weight, outputs * columns)?;
     let mut out = projection.matrix(recording, out, "projection output", (rows, outputs))?;
@@ -493,7 +552,7 @@ fn nibble_gemv(
 
 /// Check `weight` holds an `[outputs, columns]` matrix whose spans a kernel decoding
 /// `spans_per_step` spans per iteration can walk.
-fn validate_grouped_int(
+pub(super) fn validate_grouped_int(
     weight: &GroupedIntWeight<'_>,
     outputs: usize,
     columns: usize,
@@ -516,7 +575,7 @@ fn validate_grouped_int(
 
 /// The codes of `weight`, `values` of them, as the kernels bind them: the nibble plane or the only
 /// plane, then the high plane when the packing splits codes in two.
-fn split_codes<'a>(
+pub(super) fn split_codes<'a>(
     weight: &GroupedIntWeight<'a>,
     values: usize,
 ) -> Result<(Buffer<'a, u8>, Option<Buffer<'a, u8>>)> {
@@ -551,6 +610,17 @@ fn gemv_shape(packing: CodePacking, columns: usize, block: usize) -> (usize, usi
     (step, words)
 }
 
+/// The row block of a GEMV tail of `tail` rows: the kernels load only a four-row block row by
+/// row, which [`gemv_block_rows`] leaves as the only one with a remainder.
+fn gemv_tail_block(tail: usize) -> Result<usize> {
+    if tail >= GROUPED_INT_GEMV_ROWS {
+        return Err(Error::invariant(format!(
+            "grouped-int GEMV tail of {tail} rows fills a block"
+        )));
+    }
+    Ok(GROUPED_INT_GEMV_ROWS)
+}
+
 /// Activation rows one GEMV CTA carries for `rows` rows: the next power of two, at most
 /// [`GROUPED_INT_GEMV_ROWS`]; a partial block is predicated out.
 fn gemv_block_rows(rows: usize) -> usize {
@@ -561,7 +631,7 @@ fn gemv_block_rows(rows: usize) -> usize {
 /// step with `words` code words per CTA, in the entries' order: reduction length and step count,
 /// the term groups (byte and split packings) and the zero point, the step's groups or spans and
 /// activations, the split packing's high plane, then the row split and the nibble lane and
-/// term-row counts.
+/// term-row counts. Row-block launches prepend the block height and append the tail rows (`gemv_launch`).
 fn gemv_generics(
     weight: &GroupedIntWeight<'_>,
     columns: usize,

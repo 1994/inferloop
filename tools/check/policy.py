@@ -169,6 +169,9 @@ def check_exceptions():
                         # Borrowed tensor boundary: host-owned pointers are wrapped for exactly
                         # one synchronized launch and dropped before returning.
                         TILE_KERNELS / "projection/contract.rs",
+                        # Int8 dot PTX boundary: checks every operand extent and alignment, retains
+                        # the operands and module, and launches on the recording's stream.
+                        TILE_KERNELS / "projection/grouped_int_dot.rs",
                         # AOT driver boundary: every FFI call is checked, handles are owned and
                         # buffers are freed exactly once.
                         ROOT / "crates/backend/cuda-kernels/src/aot/driver.rs",

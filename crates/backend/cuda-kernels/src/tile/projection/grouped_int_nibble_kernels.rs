@@ -12,6 +12,8 @@
 //! `gemv_rows` / `gemv_rows_zero` carry `R` activation rows per CTA: they decode all four rows of a
 //! word along the last tile axis once and multiply it by every row. A single row keeps the
 //! per-byte accumulators, which measured 15% faster in `Q4_K_M` decode than the shared layout.
+//! A last row block that overhangs the input takes its `TAIL` valid rows through in-bounds
+//! loads (`row_block`).
 //!
 //! `gemm` / `gemm_zero` cover `ROWS` activation rows per CTA: each span is decoded once into a
 //! `[256, 16]` BF16 weight tile and multiplied by the `[32, 256]` BF16 activation tile with F32
@@ -29,6 +31,38 @@ pub mod nibble {
     const MAGIC_BITS: u32 = 0x4b00_0000;
     /// `2^23`, subtracted to recover the integer from [`MAGIC_BITS`].
     const MAGIC: f32 = 8_388_608.0;
+
+    /// The `[R, VALUES]` activations of step `block` for row block `block_row`. Through the
+    /// block partition, a block that overhangs the input takes a predicated load: three rows of a
+    /// four-row block took 1.8x the time of four (RTX 5090, `Q4_K` 6144x2048). Such a block is
+    /// launched alone over its own rows with `TAIL` of them valid and `R = 4`: it loads them as an
+    /// in-bounds pair and a single row repeated to four rows; the repeats are never stored.
+    fn row_block<const R: i32, const VALUES: i32, const K: i32, const TAIL: i32>(
+        x: &Tensor<f32, { [-1, K] }>,
+        block_row: i32,
+        block: i32,
+    ) -> Tile<f32, { [R, VALUES] }> {
+        if TAIL == 0 {
+            x.partition(shape![R, VALUES]).load([block_row, block])
+        } else if TAIL == 1 {
+            let row: Tile<f32, { [1, VALUES] }> =
+                x.partition(shape![1, VALUES]).load([0i32, block]);
+            row.broadcast(shape![R, VALUES])
+        } else if TAIL == 2 {
+            let pair: Tile<f32, { [2, VALUES] }> =
+                x.partition(shape![2, VALUES]).load([0i32, block]);
+            let four: Tile<f32, { [4, VALUES] }> = cat(pair, pair, 0i32);
+            four.reshape(shape![R, VALUES])
+        } else {
+            let pair: Tile<f32, { [2, VALUES] }> =
+                x.partition(shape![2, VALUES]).load([0i32, block]);
+            let row: Tile<f32, { [1, VALUES] }> =
+                x.partition(shape![1, VALUES]).load([2i32, block]);
+            let four: Tile<f32, { [4, VALUES] }> =
+                cat(pair, row.broadcast(shape![2, VALUES]), 0i32);
+            four.reshape(shape![R, VALUES])
+        }
+    }
 
     /// Store `OUT = 4W` row sums less `offsets`: row `4w + b` is word `w` of accumulator `b`.
     fn store_rows<const G: i32, const W: i32, const OUT: i32>(
@@ -312,6 +346,7 @@ pub mod nibble {
         const OUT: i32,
         const LANES: i32,
         const HALVES: i32,
+        const TAIL: i32,
     >(
         out: &mut Tensor<f32, { [R, OUT] }>,
         x: &Tensor<f32, { [-1, K] }>,
@@ -320,7 +355,6 @@ pub mod nibble {
         biases: &Tensor<f32, { [-1, 16] }>,
     ) {
         let pid = get_tile_block_id();
-        let xp = x.partition(shape![R, VALUES]);
         let cp = codes.partition(shape![LANES, W]);
         let fp = factors.partition(shape![HALVES, OUT]);
         let bp = biases.partition(shape![HALVES, OUT]);
@@ -360,7 +394,8 @@ pub mod nibble {
             let weight: Tile<f32, { [R, VALUES, W, 4] }> = weight
                 .reshape(shape![1, VALUES, W, 4])
                 .broadcast(shape![R, VALUES, W, 4]);
-            let inputs: Tile<f32, { [R, VALUES] }> = xp.load([pid.0, block]);
+            let inputs: Tile<f32, { [R, VALUES] }> =
+                row_block::<R, VALUES, K, TAIL>(x, pid.0, block);
             let activation: Tile<f32, { [R, VALUES, W, 4] }> = inputs
                 .reshape(shape![R, VALUES, 1, 1])
                 .broadcast(shape![R, VALUES, W, 4]);
@@ -397,6 +432,7 @@ pub mod nibble {
         const OUT: i32,
         const LANES: i32,
         const HALVES: i32,
+        const TAIL: i32,
     >(
         out: &mut Tensor<f32, { [R, OUT] }>,
         x: &Tensor<f32, { [-1, K] }>,
@@ -404,7 +440,6 @@ pub mod nibble {
         factors: &Tensor<f32, { [-1, 16] }>,
     ) {
         let pid = get_tile_block_id();
-        let xp = x.partition(shape![R, VALUES]);
         let cp = codes.partition(shape![LANES, W]);
         let fp = factors.partition(shape![HALVES, OUT]);
         let tile = pid.1 / PARTS;
@@ -444,7 +479,8 @@ pub mod nibble {
             let weight: Tile<f32, { [R, VALUES, W, 4] }> = weight
                 .reshape(shape![1, VALUES, W, 4])
                 .broadcast(shape![R, VALUES, W, 4]);
-            let inputs: Tile<f32, { [R, VALUES] }> = xp.load([pid.0, block]);
+            let inputs: Tile<f32, { [R, VALUES] }> =
+                row_block::<R, VALUES, K, TAIL>(x, pid.0, block);
             let activation: Tile<f32, { [R, VALUES, W, 4] }> = inputs
                 .reshape(shape![R, VALUES, 1, 1])
                 .broadcast(shape![R, VALUES, W, 4]);
