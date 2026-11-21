@@ -6,9 +6,9 @@
 //! reader.
 use crate::constants::{CONFIG_MAX_BYTES, MIB_U64};
 #[cfg(feature = "gguf")]
-use crate::storage::gguf_package::GgufPackage;
+use crate::storage::gguf::GgufPackage;
 #[cfg(feature = "gguf")]
-use crate::storage::gguf_vision::GgufVisionPackage;
+use crate::storage::gguf::GgufVisionPackage;
 use crate::storage::package::read_bounded;
 use crate::{HostTensor, ModelRegistry, default_registry, package_path};
 use crate::{SafetensorsFile, SafetensorsIndex, TensorHeader};

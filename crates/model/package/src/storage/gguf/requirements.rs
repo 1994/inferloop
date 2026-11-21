@@ -52,7 +52,3 @@ pub fn encoding_for(ty: infer_format::GgufType) -> Result<ExecutableEncoding> {
         ),
     })
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/gguf_requirements.rs"]
-mod tests;

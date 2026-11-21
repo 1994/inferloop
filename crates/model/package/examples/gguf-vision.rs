@@ -7,10 +7,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mmproj = args().nth(1).ok_or("usage: gguf-vision <mmproj.gguf>")?;
     let package = GgufVisionPackage::open(mmproj)?;
     println!(
-        "slots={} patch={} deepstack={}",
+        "slots={} patch={}",
         package.slots().len(),
-        package.patch().iter().flatten().count(),
-        package.deepstack().len()
+        package.patch().iter().flatten().count()
     );
     for slice in package.patch().iter().flatten() {
         println!(

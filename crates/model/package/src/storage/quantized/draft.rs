@@ -1,6 +1,8 @@
 //! Bind a `DFlash2` draft package against the target package it speculates for.
 use super::{DeviceWeight, QuantizedPackage, WeightSource, WeightView};
 use crate::providers::dflash2::DFlash2Config;
+#[cfg(feature = "gguf")]
+use crate::providers::dflash2::gguf::ARCH as DFLASH2_GGUF;
 use crate::storage::source::TensorFiles;
 use crate::{PackageSource, TensorDtype};
 use infer_core::{Error, Result};
@@ -142,7 +144,7 @@ impl QuantizedPackage {
     #[cfg(feature = "gguf")]
     fn attach_dflash2_gguf(&mut self, path: &Path) -> Result<()> {
         let draft = crate::GgufPackage::open(path)?;
-        if draft.architecture() != GGUF_ARCHITECTURE {
+        if draft.architecture() != DFLASH2_GGUF {
             return Err(Error::invalid(format!(
                 "{} is a {} GGUF, not a DFlash2 draft",
                 path.display(),
@@ -218,10 +220,6 @@ impl QuantizedPackage {
             .collect())
     }
 }
-
-/// The `general.architecture` of a `DFlash2` GGUF draft.
-#[cfg(feature = "gguf")]
-const GGUF_ARCHITECTURE: &str = "dflash";
 
 /// A cached dense GGUF float tensor named `name`; quantized draft weights are rejected, as the
 /// draft's CUDA projections take float or FP8 weights.

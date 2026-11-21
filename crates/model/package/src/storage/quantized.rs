@@ -1,7 +1,7 @@
 //! Validated native storage bindings for mixed FP8/NVFP4 packages.
 use crate::constants::CONFIG_MAX_BYTES;
 #[cfg(feature = "gguf")]
-use crate::storage::gguf_package::GgufPackage;
+use crate::storage::gguf::GgufPackage;
 use crate::storage::source::TensorFiles;
 use crate::{
     ImportedModel, ModelRegistry, PackageSource, TensorDtype, TensorFile, default_registry,
@@ -312,7 +312,7 @@ impl QuantizedPackage {
     /// weight encoding.
     #[cfg(feature = "gguf")]
     pub fn open_gguf(registry: &ModelRegistry, path: &Path, id: ModelId) -> Result<Self> {
-        let package = GgufPackage::open_auto(path)?;
+        let package = GgufPackage::open_auto_in(registry, path)?;
         let config = package.config();
         let provider = registry.resolve(config)?;
         let imported = provider.import(id, config)?;

@@ -3,11 +3,12 @@
 //! The package keeps GGUF blocks in place and hands grouped-int tensors to the backend as raw
 //! blocks; each backend packs them for its own kernels. Dense tensors are decoded on demand for
 //! reference or small auxiliary tensors. No intermediate safetensors package is written.
-use crate::providers::qwen::gguf::validate::TensorSpec;
-use crate::storage::gguf_arch::{GgufArchitecture, LayerPlan, ValueTransform, architecture};
-use crate::storage::gguf_requirements::encoding_for;
-use crate::storage::gguf_tokenizer::{tokenizer_config, tokenizer_json};
-use crate::storage::gguf_vision::GgufVisionPackage;
+use super::arch::{GgufArchitecture, LayerPlan};
+use super::requirements::encoding_for;
+use super::tensor::{TensorSpec, ValueTransform};
+use super::tokenizer::{tokenizer_config, tokenizer_json};
+use super::vision::GgufVisionPackage;
+use crate::{ModelRegistry, default_registry};
 use infer_core::{Error, Result};
 use infer_format::{GgufFile, GgufType, dequantize};
 use infer_ir::ExecutableEncoding;
@@ -61,24 +62,24 @@ pub struct GgufPackage {
 }
 
 impl GgufPackage {
-    /// Open and validate the text tensor set.
+    /// Open and validate the text tensor set with the built-in adapters.
     /// # Errors
-    /// Rejects an invalid container, a missing/extra tensor, malformed geometry, or a tokenizer
-    /// without the expected markers.
+    /// See [`Self::open_in`].
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_in(default_registry(), path)
+    }
+
+    /// Open and validate the text tensor set with the adapter `registry` holds for the file's
+    /// `general.architecture`.
+    /// # Errors
+    /// Rejects an invalid container, an architecture without an adapter, a tensor the adapter
+    /// does not map, malformed geometry, or a tokenizer without the expected markers.
+    pub fn open_in(registry: &ModelRegistry, path: impl AsRef<Path>) -> Result<Self> {
         let file = GgufFile::open(path)?;
-        let tensors: Vec<TensorSpec> = file
-            .tensors()
-            .values()
-            .map(|tensor| {
-                Ok(TensorSpec {
-                    name: tensor.name().to_owned(),
-                    shape: tensor.shape()?,
-                    ty: tensor.ty(),
-                })
-            })
-            .collect::<Result<_>>()?;
-        let architecture = architecture(file.metadata())?;
+        let tensors = specs(&file)?;
+        let architecture = registry
+            .gguf()
+            .architecture(file.metadata().require_str("general.architecture")?)?;
         architecture.validate(file.metadata(), &tensors)?;
         let layers = LayerPlan::of(file.metadata(), architecture.name())?;
         let mut slots = BTreeMap::new();
@@ -126,15 +127,19 @@ impl GgufPackage {
     /// # Errors
     /// Rejects either malformed package, or a text and vision metadata pair whose config cannot
     /// be synthesized.
-    pub fn open_with_vision(path: impl AsRef<Path>, mmproj: impl AsRef<Path>) -> Result<Self> {
-        let mut package = Self::open(path)?;
+    pub fn open_with_vision(
+        registry: &ModelRegistry,
+        path: impl AsRef<Path>,
+        mmproj: impl AsRef<Path>,
+    ) -> Result<Self> {
+        let mut package = Self::open_in(registry, path)?;
         if !package.architecture.accepts_vision() {
             return Err(Error::unsupported(format!(
                 "GGUF architecture {} takes no mmproj",
                 package.architecture.name()
             )));
         }
-        let vision = GgufVisionPackage::open(mmproj)?;
+        let vision = GgufVisionPackage::open_in(registry, mmproj)?;
         package.config = package.architecture.config(
             package.file.metadata(),
             &package.tensors,
@@ -144,14 +149,22 @@ impl GgufPackage {
         Ok(package)
     }
 
+    /// Open a text package with the built-in adapters and attach a sibling `mmproj-*.gguf`
+    /// when present.
+    /// # Errors
+    /// See [`Self::open_auto_in`].
+    pub fn open_auto(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_auto_in(default_registry(), path)
+    }
+
     /// Open a text package and attach a sibling `mmproj-*.gguf` when present.
     /// # Errors
     /// Rejects a malformed text package or an ambiguous/malformed sibling.
-    pub fn open_auto(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn open_auto_in(registry: &ModelRegistry, path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         sibling(path).map_or_else(
-            || Self::open(path),
-            |mmproj| Self::open_with_vision(path, mmproj),
+            || Self::open_in(registry, path),
+            |mmproj| Self::open_with_vision(registry, path, mmproj),
         )
     }
 
@@ -245,6 +258,20 @@ impl GgufPackage {
     }
 }
 
+/// The tensor inventory of `file`.
+pub(super) fn specs(file: &GgufFile) -> Result<Vec<TensorSpec>> {
+    file.tensors()
+        .values()
+        .map(|tensor| {
+            Ok(TensorSpec {
+                name: tensor.name().to_owned(),
+                shape: tensor.shape()?,
+                ty: tensor.ty(),
+            })
+        })
+        .collect()
+}
+
 fn sibling(path: &Path) -> Option<PathBuf> {
     let parent = path.parent()?;
     let mut found = None;
@@ -261,7 +288,3 @@ fn sibling(path: &Path) -> Option<PathBuf> {
     }
     found
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/gguf_sibling.rs"]
-mod tests;

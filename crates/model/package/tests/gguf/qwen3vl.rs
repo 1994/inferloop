@@ -1,14 +1,8 @@
-use super::{VisionTensor, config, encoder, text_tensor, vision_slots, vision_tensor};
-use crate::{TensorSpec, validate_text};
+//! The `qwen3vl` text adapter and the `qwen3vl_merger` mmproj projector.
+use super::support::{architecture, mapped as map, metadata, projector, spec, with};
 use infer_format::{GgufType, Metadata, MetadataValue};
-
-fn metadata(entries: Vec<(&str, MetadataValue)>) -> Metadata {
-    Metadata::from_entries(
-        entries
-            .into_iter()
-            .map(|(key, value)| (key.to_owned(), value)),
-    )
-}
+use infer_models::gguf::{TensorSpec, VisionTensor};
+use infer_models::vision::slots;
 
 fn text_metadata() -> Metadata {
     metadata(vec![
@@ -52,6 +46,10 @@ fn text_metadata() -> Metadata {
 fn mmproj_metadata() -> Metadata {
     metadata(vec![
         ("general.architecture", MetadataValue::String("clip".into())),
+        (
+            "clip.projector_type",
+            MetadataValue::String("qwen3vl_merger".into()),
+        ),
         ("clip.vision.image_size", MetadataValue::U64(768)),
         ("clip.vision.patch_size", MetadataValue::U64(16)),
         ("clip.vision.block_count", MetadataValue::U64(24)),
@@ -75,13 +73,30 @@ fn mmproj_metadata() -> Metadata {
     ])
 }
 
+fn text_tensor(name: &str) -> Option<String> {
+    map(
+        architecture("qwen3vl"),
+        &text_metadata(),
+        &spec(name, &[1], GgufType::F32),
+    )
+    .map(|mapped| mapped.slot)
+}
+
+fn vision_tensor(name: &str) -> Option<VisionTensor> {
+    let projector = projector("qwen3vl_merger");
+    projector.tensor(name, &projector.encoder(&mmproj_metadata()).unwrap())
+}
+
 #[test]
 fn synthesizes_the_hf_configuration() {
-    let bytes = config(&text_metadata(), &mmproj_metadata()).unwrap();
+    let bytes = architecture("qwen3vl")
+        .config(&text_metadata(), &[], Some(&mmproj_metadata()))
+        .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(value["model_type"], "qwen3_vl");
     assert_eq!(value["image_token_id"], 1);
     assert_eq!(value["video_token_id"], 2);
+    assert_eq!(value["language_model_only"], false);
     assert_eq!(value["text_config"]["vocab_size"], 4);
     assert_eq!(value["text_config"]["hidden_size"], 2048);
     assert_eq!(value["text_config"]["rope_scaling"]["mrope_section"][2], 20);
@@ -91,6 +106,12 @@ fn synthesizes_the_hf_configuration() {
     );
     assert_eq!(value["vision_config"]["num_position_embeddings"], 2304);
     assert_eq!(value["vision_config"]["hidden_act"], "gelu_pytorch_tanh");
+    let text = architecture("qwen3vl")
+        .config(&text_metadata(), &[], None)
+        .unwrap();
+    let text: serde_json::Value = serde_json::from_slice(&text).unwrap();
+    assert_eq!(text["language_model_only"], true);
+    assert!(text.get("vision_config").is_none());
 }
 
 #[test]
@@ -108,68 +129,85 @@ fn maps_text_tensors_to_the_backbone() {
         Some("model.layers.3.mlp.down_proj.weight")
     );
     assert!(text_tensor("blk.0.attn_q_norm.bias").is_none());
+    assert!(text_tensor("blk.28.attn_q.weight").is_none());
 }
 
 #[test]
-fn maps_patch_slices_and_vision_blocks() {
+fn maps_patch_slices_vision_blocks_and_deepstack_mergers() {
     assert_eq!(
-        vision_tensor("v.patch_embd.weight", &[]),
+        vision_tensor("v.patch_embd.weight"),
         Some(VisionTensor::PatchSlice(0))
     );
     assert_eq!(
-        vision_tensor("v.patch_embd.weight.1", &[]),
+        vision_tensor("v.patch_embd.weight.1"),
         Some(VisionTensor::PatchSlice(1))
     );
-    assert_eq!(
-        vision_tensor("v.blk.7.attn_qkv.weight", &[]),
-        Some(VisionTensor::Slot(
-            "model.visual.blocks.7.attn.qkv.weight".into()
-        ))
-    );
-    assert_eq!(
-        vision_tensor("v.blk.23.ffn_down.bias", &[]),
-        Some(VisionTensor::Slot(
-            "model.visual.blocks.23.mlp.linear_fc2.bias".into()
-        ))
-    );
-    assert_eq!(
-        vision_tensor("v.position_embd.weight", &[]),
-        Some(VisionTensor::Slot("model.visual.pos_embed.weight".into()))
-    );
+    for (stored, slot) in [
+        (
+            "v.blk.7.attn_qkv.weight",
+            "model.visual.blocks.7.attn.qkv.weight",
+        ),
+        (
+            "v.blk.23.ffn_down.bias",
+            "model.visual.blocks.23.mlp.linear_fc2.bias",
+        ),
+        ("v.position_embd.weight", "model.visual.pos_embed.weight"),
+        ("v.patch_embd.bias", "model.visual.patch_embed.proj.bias"),
+        ("v.post_ln.weight", "model.visual.merger.norm.weight"),
+        ("mm.2.bias", "model.visual.merger.linear_fc2.bias"),
+        (
+            "v.deepstack.11.fc1.weight",
+            "model.visual.deepstack_merger_list.1.linear_fc1.weight",
+        ),
+        (
+            "v.deepstack.17.norm.bias",
+            "model.visual.deepstack_merger_list.2.norm.bias",
+        ),
+    ] {
+        assert_eq!(
+            vision_tensor(stored),
+            Some(VisionTensor::Slot(slot.into())),
+            "{stored}"
+        );
+    }
+    assert!(vision_tensor("v.deepstack.4.fc1.weight").is_none());
+    assert!(vision_tensor("mm.1.weight").is_none());
 }
 
 #[test]
-fn maps_deepstack_mergers_by_their_text_layer() {
-    let layers = [5, 11, 17];
-    assert_eq!(
-        vision_tensor("v.deepstack.11.fc1.weight", &layers),
-        Some(VisionTensor::Slot(
-            "model.visual.deepstack_merger_list.1.linear_fc1.weight".into()
-        ))
-    );
-    assert_eq!(
-        vision_tensor("v.deepstack.17.norm.bias", &layers),
-        Some(VisionTensor::Slot(
-            "model.visual.deepstack_merger_list.2.norm.bias".into()
-        ))
-    );
-    assert!(vision_tensor("v.deepstack.4.fc1.weight", &layers).is_none());
-}
-
-#[test]
-fn declares_the_existing_vision_geometry() {
-    let encoder = encoder(&mmproj_metadata()).unwrap();
+fn declares_the_vision_encoder_and_preprocessor() {
+    let projector = projector("qwen3vl_merger");
+    let encoder = projector.encoder(&mmproj_metadata()).unwrap();
     assert_eq!(encoder.depth, 24);
     assert_eq!(encoder.hidden_size, 1024);
     assert_eq!(encoder.heads, 16);
     assert_eq!(encoder.temporal_patch_size, 2);
     assert_eq!(encoder.position_embeddings, 2304);
     assert_eq!(encoder.norm_epsilon, 1e-6);
+    assert_eq!(encoder.deepstack_layers, [5, 11, 17]);
     assert_eq!(
         encoder.hidden_activation,
         infer_spi::HiddenActivation::GeluTanh
     );
-    assert_eq!(vision_slots(&mmproj_metadata()).unwrap().len(), 12 * 24 + 9);
+    assert_eq!(slots(&encoder).unwrap().len(), 12 * 24 + 9);
+    let mut with_norm = mmproj_metadata();
+    for key in ["clip.vision.image_mean", "clip.vision.image_std"] {
+        with_norm = with(
+            &with_norm,
+            key,
+            Some(MetadataValue::Array(vec![MetadataValue::F32(0.5); 3])),
+        );
+    }
+    let config: serde_json::Value =
+        serde_json::from_slice(&projector.preprocessor(&with_norm, &encoder).unwrap()).unwrap();
+    assert_eq!(config["patch_size"], 16);
+    assert_eq!(config["merge_size"], 2);
+    assert_eq!(config["image_mean"], serde_json::json!([0.5, 0.5, 0.5]));
+    assert!(
+        projector
+            .preprocessor(&mmproj_metadata(), &encoder)
+            .is_err()
+    );
 }
 
 fn text_specs() -> Vec<TensorSpec> {
@@ -229,37 +267,23 @@ fn tiny_text_metadata() -> Metadata {
 
 #[test]
 fn validates_text_shapes_and_rejects_mismatches() {
-    assert!(validate_text(&tiny_text_metadata(), &text_specs()).is_ok());
+    assert!(
+        architecture("qwen3vl")
+            .validate(&tiny_text_metadata(), &text_specs())
+            .is_ok()
+    );
     let mut broken = text_specs();
     broken[1].shape = vec![7];
-    assert!(validate_text(&tiny_text_metadata(), &broken).is_err());
+    assert!(
+        architecture("qwen3vl")
+            .validate(&tiny_text_metadata(), &broken)
+            .is_err()
+    );
     let mut missing = text_specs();
     missing.pop();
-    assert!(validate_text(&tiny_text_metadata(), &missing).is_err());
-}
-
-#[test]
-fn formats_are_strategies_under_one_qwen_family() {
-    use crate::{GgufQwen, HfQwen, QwenFormat, VisionTensor};
-    assert_eq!(
-        HfQwen.text_tensor("model.embed_tokens.weight").as_deref(),
-        Some("model.embed_tokens.weight")
-    );
-    assert_eq!(
-        HfQwen.vision_tensor("model.visual.blocks.0.attn.qkv.weight"),
-        Some(VisionTensor::Slot(
-            "model.visual.blocks.0.attn.qkv.weight".into()
-        ))
-    );
-    let format = GgufQwen::new(vec![5, 11, 17]);
-    assert_eq!(
-        format.text_tensor("blk.0.attn_q.weight").as_deref(),
-        Some("model.layers.0.self_attn.q_proj.weight")
-    );
-    assert_eq!(
-        format.vision_tensor("v.deepstack.11.fc1.weight"),
-        Some(VisionTensor::Slot(
-            "model.visual.deepstack_merger_list.1.linear_fc1.weight".into()
-        ))
+    assert!(
+        architecture("qwen3vl")
+            .validate(&tiny_text_metadata(), &missing)
+            .is_err()
     );
 }

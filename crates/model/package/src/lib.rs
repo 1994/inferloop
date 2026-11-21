@@ -31,24 +31,15 @@ pub use providers::dflash2::{
     DraftQuote, check_declared_architecture,
 };
 #[cfg(feature = "gguf")]
-pub use providers::qwen::GgufQwen;
-#[cfg(feature = "gguf")]
-pub use providers::qwen::gguf::validate::{TensorSpec, validate_text, validate_vision};
-#[cfg(feature = "gguf")]
-pub use providers::qwen::gguf::{
-    config, config_text, encoder, text_tensor, vision_slots, vision_tensor,
-};
-pub use providers::qwen::{HfQwen, QwenFormat, VisionTensor};
+pub use providers::gguf::GgufAdapters;
 pub use providers::qwen::{QwenProvider, VisionConfig};
 pub use providers::registry::{ModelRegistry, default_registry};
 #[cfg(feature = "gguf")]
-pub use storage::gguf_package::{GgufPackage, GgufSlot};
+pub use storage::gguf;
 #[cfg(feature = "gguf")]
-pub use storage::gguf_requirements::{PackageRequirements, gguf_requirements};
-#[cfg(feature = "gguf")]
-pub use storage::gguf_tokenizer::{tokenizer_config, tokenizer_json};
-#[cfg(feature = "gguf")]
-pub use storage::gguf_vision::{GgufVisionPackage, VisionSlot};
+pub use storage::gguf::{
+    GgufPackage, GgufSlot, GgufVisionPackage, PackageRequirements, VisionSlot, gguf_requirements,
+};
 pub use storage::index::SafetensorsIndex;
 pub use storage::loader::{
     LoadOptions, LoadedWeights, TensorLoadPlan, WeightLoadPlan, WeightStorage, WeightTarget,

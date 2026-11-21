@@ -5,6 +5,8 @@ use crate::constants::MIB;
 use crate::constants::MIB_U64;
 use infer_core::{Error, ModelId, Result};
 use infer_models::{ModelPackage, SafetensorsIndex, default_registry, memory_estimate};
+#[cfg(feature = "gguf")]
+use std::collections::BTreeMap;
 use std::fs::read;
 #[cfg(feature = "gguf")]
 use std::path::Path;
@@ -109,7 +111,7 @@ struct GgufInspection {
     checkpoint: &'static str,
     text_slots: usize,
     /// Slots per grouped-int format label.
-    grouped: std::collections::BTreeMap<&'static str, usize>,
+    grouped: BTreeMap<&'static str, usize>,
     dense: usize,
     encodings: Vec<infer_ir::ExecutableEncoding>,
     vision: GgufVision,
@@ -133,7 +135,7 @@ struct GgufVision {
 #[cfg(feature = "gguf")]
 fn inspect_gguf(path: &Path) -> Result<()> {
     let package = infer_models::GgufPackage::open_auto(path)?;
-    let mut grouped = std::collections::BTreeMap::new();
+    let mut grouped = BTreeMap::new();
     let mut dense = 0usize;
     for slot in package.slots().values() {
         match slot.encoding()? {
@@ -150,7 +152,7 @@ fn inspect_gguf(path: &Path) -> Result<()> {
             attached: true,
             slots: Some(vision.slots().len()),
             patch_slices: Some(vision.patch().iter().flatten().count()),
-            deepstack: Some(vision.deepstack().len()),
+            deepstack: Some(vision.encoder().deepstack_layers.len()),
         });
     print(&GgufInspection {
         checkpoint: "gguf",

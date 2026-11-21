@@ -3,10 +3,9 @@
 //! llama.cpp's converter changes four things this adapter undoes: every norm except the gated
 //! delta one is stored as `1 + w`, `A_log` as `-exp(A_log)`, the depthwise convolution without its
 //! singleton axis, and the MTP layer as a trailing `nextn` block.
-use super::validate::TensorSpec;
-use crate::storage::gguf_arch::{
-    Block, GgufArchitecture, LayerPlan, MappedTensor, ValueTransform, common_block_field, count,
-    token_id, trim_trailing_zeros, u64_array,
+use crate::storage::gguf::{
+    Block, GgufArchitecture, LayerPlan, MappedTensor, TensorSpec, ValueTransform,
+    common_block_field, count, token_id, trim_trailing_zeros, u64_array,
 };
 use infer_core::{Error, Result};
 use infer_format::Metadata;
@@ -272,7 +271,3 @@ fn nextn_field(field: &str) -> Option<(&'static str, ValueTransform)> {
         _ => return None,
     })
 }
-
-#[cfg(test)]
-#[path = "../../../../tests/unit/gguf_qwen35.rs"]
-mod tests;
