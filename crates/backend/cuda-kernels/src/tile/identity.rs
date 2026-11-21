@@ -31,6 +31,7 @@ const METADATA_LEN: usize = 4;
 pub fn recurrent_wy(
     device: &Device,
     shape: [usize; RECURRENT_RANK],
+    key_run: usize,
     splits: &[usize],
 ) -> Result<Vec<String>> {
     let stream = device.stream();
@@ -80,6 +81,7 @@ pub fn recurrent_wy(
                 f32::DTYPE.as_str().into(),
                 kh.to_string(),
                 vh.to_string(),
+                key_run.to_string(),
                 dim.to_string(),
                 lanes.to_string(),
                 block.to_string(),
@@ -485,6 +487,7 @@ pub fn gated_norm_candidates(
 pub fn exact_recurrence(
     device: &Device,
     shape: [usize; RECURRENT_RANK],
+    key_run: usize,
     value_columns: usize,
     metadata_fields: usize,
 ) -> Result<Vec<String>> {
@@ -536,6 +539,7 @@ pub fn exact_recurrence(
             f32::DTYPE.as_str().into(),
             kh.to_string(),
             vh.to_string(),
+            key_run.to_string(),
             dim.to_string(),
             width.to_string(),
             value_columns.to_string(),

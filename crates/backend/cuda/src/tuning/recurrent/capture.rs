@@ -6,6 +6,7 @@ use super::{
 use infer_cuda_kernels::contract::{DeltaBuffers, DeltaKernel, RecurrentShape};
 use infer_cuda_kernels::identity;
 use infer_cuda_kernels::runtime::{Allocation, Graph};
+use infer_ir::ValueHeadOrder;
 use std::env::var_os;
 
 const FINGERPRINT_SPLITS: [usize; 3] = [1, 2, 4];
@@ -35,9 +36,12 @@ impl Captured {
         let scratch = runtime.zeros::<f32>(vh * lanes * dim)?;
         let output = runtime.zeros::<f32>(lanes * vh * dim)?;
         let contract = device.kernels();
+        // The block is tuned on grouped heads; the value-head order changes which key head a
+        // block reads, not the work it does, so a tiled model takes the same block.
         let shape = RecurrentShape {
             key_heads: kh,
             value_heads: vh,
+            key_run: ValueHeadOrder::Grouped.key_run(kh, vh),
             dim,
             lanes,
         };
@@ -80,7 +84,9 @@ impl Captured {
     }
 }
 fn kernel_identities(device: &CudaDevice, shape: [usize; SHAPE_RANK]) -> Result<Vec<String>> {
-    identity::recurrent_wy(device.tile(), shape, &FINGERPRINT_SPLITS)
+    let [kh, vh, ..] = shape;
+    let key_run = ValueHeadOrder::Grouped.key_run(kh, vh);
+    identity::recurrent_wy(device.tile(), shape, key_run, &FINGERPRINT_SPLITS)
 }
 
 pub(super) fn fingerprint(device: &CudaDevice, shape: [usize; SHAPE_RANK]) -> Result<String> {

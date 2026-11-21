@@ -45,6 +45,6 @@ GGUF 端到端也已验证（#283）：BF16 GGUF + F16 mmproj 的 greedy token �
 
 ## 5. 发布与兼容
 
-- GGUF 入口由 CLI/model 的 `gguf` feature 控制；
+- GGUF 与 safetensors 一样总是可用，没有单独的 feature；
 - 已通过 `make check-rust`、CUDA hosted、macOS、MSRV、security、package 和 quality-gate；
 - 后续修改需要继续跑对应 CUDA device 测试和真实模型冒烟。

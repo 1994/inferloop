@@ -111,6 +111,7 @@ pub fn execute(
             value_heads,
             key_dim,
             value_dim,
+            value_order,
         } => delta(
             inputs,
             state.ok_or_else(|| Error::invalid("delta state binding"))?,
@@ -118,6 +119,7 @@ pub fn execute(
             value_heads,
             key_dim,
             value_dim,
+            value_order.key_run(key_heads, value_heads),
         ),
         TensorOp::GatedNorm { head_dim, epsilon } => {
             let normalized = norm(inputs[0], inputs[2], head_dim, epsilon, 0.0)?;
@@ -354,6 +356,7 @@ fn delta(
     value_heads: usize,
     key_dim: usize,
     value_dim: usize,
+    key_run: usize,
 ) -> Result<Vec<Vec<f32>>> {
     let one = |x| Ok(vec![x]);
     let PhysicalTensor::Delta { recurrent, .. } = state else {
@@ -368,7 +371,7 @@ fn delta(
     }
     let mut out = vec![0.0; value_size];
     for head in 0..value_heads {
-        let key_head = head / (value_heads / key_heads);
+        let key_head = head / key_run % key_heads;
         let q = &inputs[0][key_head * key_dim..(key_head + 1) * key_dim];
         let k = &inputs[0][key_size + key_head * key_dim..key_size + (key_head + 1) * key_dim];
         let v = &inputs[0][2 * key_size + head * value_dim..2 * key_size + (head + 1) * value_dim];

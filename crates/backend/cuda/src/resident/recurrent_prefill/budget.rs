@@ -24,6 +24,7 @@ pub(super) fn ordered(node: &TensorNode, weights: &ProgramWeights, lanes: usize)
         value_heads,
         key_dim,
         value_dim,
+        ..
     } = node.op
     else {
         return false;

@@ -46,7 +46,14 @@ pub mod recurrent {
         reason = "CUDA state kernel binds explicit tensors and the padding metadata"
     )]
     #[cutile::entry()]
-    fn delta<E: ElementType, const KH: i32, const VH: i32, const D: i32, const SW: i32>(
+    fn delta<
+        E: ElementType,
+        const KH: i32,
+        const VH: i32,
+        const KR: i32,
+        const D: i32,
+        const SW: i32,
+    >(
         out: &mut Tensor<f32, { [1, 1, SW] }>,
         state: &mut Tensor<E, { [1, D, SW] }>,
         qkv: &Tensor<f32, { [-1] }>,
@@ -60,7 +67,7 @@ pub mod recurrent {
             tile_to_scalar(metadata.partition(shape![1]).load([2i32]).reshape(shape![]));
         if position >= 0 {
             let pid = get_tile_block_id();
-            let key = pid.0 / (VH / KH);
+            let key = pid.0 / KR % KH;
             let qp = qkv.partition(shape![D]);
             let mut q = qp.load([key]);
             let mut k = qp.load([KH + key]);
@@ -120,7 +127,14 @@ pub mod recurrent {
         reason = "CUDA state kernel binds explicit tensors and the padding metadata"
     )]
     #[cutile::entry()]
-    fn delta_lanes<E: ElementType, const KH: i32, const VH: i32, const D: i32, const SW: i32>(
+    fn delta_lanes<
+        E: ElementType,
+        const KH: i32,
+        const VH: i32,
+        const KR: i32,
+        const D: i32,
+        const SW: i32,
+    >(
         out: &mut Tensor<f32, { [1, 1, SW] }>,
         state: &mut Tensor<E, { [1, D, SW] }>,
         qkv: &Tensor<f32, { [-1] }>,
@@ -140,7 +154,7 @@ pub mod recurrent {
                 .reshape(shape![]),
         );
         if position >= 0 {
-            let key = head / (VH / KH);
+            let key = head / KR % KH;
             let stride = 2 * KH + VH;
             let qp = qkv.partition(shape![D]);
             let mut q = qp.load([lane * stride + key]);

@@ -15,7 +15,10 @@ use infer_backend_cuda::{
     resident::{DeviceProgram, ProgramWeights, PromptScratchRegistry},
 };
 use infer_core::{Error, OpId, Result, TensorId};
-use infer_ir::{DType, DataflowGraph, StateKind, TensorNode, TensorOp, TensorSpec, TensorStorage};
+use infer_ir::{
+    DType, DataflowGraph, StateKind, TensorNode, TensorOp, TensorSpec, TensorStorage,
+    ValueHeadOrder,
+};
 use infer_state::physical::{PagedRows, PhysicalTensor};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -354,6 +357,7 @@ pub fn run() -> Result<()> {
             value_heads: 4,
             key_dim: 16,
             value_dim: 16,
+            value_order: ValueHeadOrder::Grouped,
         },
         vec![
             values(128, 0.0),

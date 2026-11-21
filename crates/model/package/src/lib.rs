@@ -7,7 +7,6 @@ mod storage;
 pub use input::{image, mrope, prompt, video, vision};
 mod workload;
 /// The one GGML block decoder; backends pack its spans for their own kernels.
-#[cfg(feature = "gguf")]
 pub use infer_format::{GroupedSpan, decode_span, span_bytes};
 /// Canonical provider import result, re-exported for package consumers.
 pub use infer_spi::ImportedModel;
@@ -30,25 +29,13 @@ pub use providers::dflash2::{
     ARCHITECTURE as DFLASH2_ARCHITECTURE, DFlash2Config, DFlash2DraftConfig, DraftGeometry,
     DraftQuote, check_declared_architecture,
 };
-#[cfg(feature = "gguf")]
-pub use providers::qwen::GgufQwen;
-#[cfg(feature = "gguf")]
-pub use providers::qwen::gguf::validate::{TensorSpec, validate_text, validate_vision};
-#[cfg(feature = "gguf")]
-pub use providers::qwen::gguf::{
-    config, config_text, encoder, text_tensor, vision_slots, vision_tensor,
-};
-pub use providers::qwen::{HfQwen, QwenFormat, VisionTensor};
+pub use providers::gguf::GgufAdapters;
 pub use providers::qwen::{QwenProvider, VisionConfig};
 pub use providers::registry::{ModelRegistry, default_registry};
-#[cfg(feature = "gguf")]
-pub use storage::gguf_package::{GgufPackage, GgufSlot};
-#[cfg(feature = "gguf")]
-pub use storage::gguf_requirements::{PackageRequirements, gguf_requirements};
-#[cfg(feature = "gguf")]
-pub use storage::gguf_tokenizer::{tokenizer_config, tokenizer_json};
-#[cfg(feature = "gguf")]
-pub use storage::gguf_vision::{GgufVisionPackage, VisionSlot};
+pub use storage::gguf;
+pub use storage::gguf::{
+    GgufPackage, GgufSlot, GgufVisionPackage, PackageRequirements, VisionSlot, gguf_requirements,
+};
 pub use storage::index::SafetensorsIndex;
 pub use storage::loader::{
     LoadOptions, LoadedWeights, TensorLoadPlan, WeightLoadPlan, WeightStorage, WeightTarget,

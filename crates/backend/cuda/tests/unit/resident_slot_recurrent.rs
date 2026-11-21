@@ -147,7 +147,7 @@ fn snapshot_free_recurrent_kernels_compile_without_a_device() -> Result<(), Box<
     let mut commit = lanes(&rows);
     commit.push(("state", &[16384, 128, 1][..]));
     for (state, shape) in STATE_ELEMENTS.into_iter().flat_map(|state| {
-        [["16", "48", "128", "32"], ["2", "4", "32", "32"]].map(|shape| (state, shape))
+        [["16", "48", "3", "128", "32"], ["2", "4", "2", "32", "32"]].map(|shape| (state, shape))
     }) {
         let generics: Vec<String> = once(state).chain(shape).map(String::from).collect();
         for (entry, strides) in [("delta_verify3", &verify), ("delta_commit3", &commit)] {
@@ -291,6 +291,7 @@ fn delta_reference(
     let generics = vec![
         key_heads.to_string(),
         value_heads.to_string(),
+        (value_heads / key_heads).to_string(),
         dim.to_string(),
         dim.to_string(),
     ];
@@ -598,6 +599,7 @@ fn delta_reference_case(device: &CudaDevice, geometry: [usize; 3], block: usize)
     let generics = vec![
         key_heads.to_string(),
         value_heads.to_string(),
+        (value_heads / key_heads).to_string(),
         dim.to_string(),
         block.to_string(),
     ];
@@ -684,7 +686,7 @@ fn batched_recurrent_kernels_compile_without_a_device() -> Result<(), Box<dyn Er
             strides.push((name, &[1]));
         }
         for state in STATE_ELEMENTS {
-            let shape = [kh, vh, dim, block, 4].map(|extent| extent.to_string());
+            let shape = [kh, vh, vh / kh, dim, block, 4].map(|extent| extent.to_string());
             KernelCompiler::new(fused::__module_ast_self, "fused", "delta_verify_batch")
                 .target("sm_120")
                 .generics(once(state.to_owned()).chain(shape).collect())
@@ -716,7 +718,7 @@ fn batched_commit_kernels_compile_without_a_device() -> Result<(), Box<dyn Error
             strides.push((name, &[1]));
         }
         for state in STATE_ELEMENTS {
-            let shape = [kh, vh, dim, block, 4].map(|extent| extent.to_string());
+            let shape = [kh, vh, vh / kh, dim, block, 4].map(|extent| extent.to_string());
             KernelCompiler::new(fused::__module_ast_self, "fused", "delta_commit_batch")
                 .target("sm_120")
                 .generics(once(state.to_owned()).chain(shape).collect())

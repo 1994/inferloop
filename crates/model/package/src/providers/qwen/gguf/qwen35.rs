@@ -2,14 +2,16 @@
 //!
 //! llama.cpp's converter changes four things this adapter undoes: every norm except the gated
 //! delta one is stored as `1 + w`, `A_log` as `-exp(A_log)`, the depthwise convolution without its
-//! singleton axis, and the MTP layer as a trailing `nextn` block.
-use super::validate::TensorSpec;
-use crate::storage::gguf_arch::{
-    Block, GgufArchitecture, LayerPlan, MappedTensor, ValueTransform, common_block_field, count,
-    token_id, trim_trailing_zeros, u64_array,
+//! singleton axis, and the MTP layer as a trailing `nextn` block. A fifth it declares instead:
+//! with more value heads than key heads, every value-side tensor is stored in tiled head order,
+//! down to the columns of the quantized output projection, so no load-time permutation can undo it.
+use crate::storage::gguf::{
+    Block, GgufArchitecture, LayerPlan, MappedTensor, TensorSpec, ValueTransform,
+    common_block_field, count, token_id, trim_trailing_zeros, u64_array,
 };
 use infer_core::{Error, Result};
 use infer_format::Metadata;
+use infer_ir::ValueHeadOrder;
 use serde::Serialize;
 
 const ARCH: &str = "qwen35";
@@ -54,6 +56,7 @@ struct TextConfig {
     linear_num_key_heads: usize,
     linear_num_value_heads: usize,
     linear_value_head_dim: usize,
+    linear_value_head_order: ValueHeadOrder,
     mtp_num_hidden_layers: usize,
     tie_word_embeddings: bool,
     rope_parameters: RopeParameters,
@@ -80,6 +83,15 @@ struct Linear {
 }
 
 impl Linear {
+    /// llama.cpp tiles the value heads whenever they outnumber the key heads.
+    const fn order(&self) -> ValueHeadOrder {
+        if self.key_heads == self.value_heads {
+            ValueHeadOrder::Grouped
+        } else {
+            ValueHeadOrder::Tiled
+        }
+    }
+
     fn of(metadata: &Metadata) -> Result<Self> {
         let value_heads = count(metadata, "qwen35.ssm.time_step_rank")?;
         let inner = count(metadata, "qwen35.ssm.inner_size")?;
@@ -159,6 +171,7 @@ impl GgufArchitecture for Qwen35Gguf {
                 linear_num_key_heads: linear.key_heads,
                 linear_num_value_heads: linear.value_heads,
                 linear_value_head_dim: linear.value_dim,
+                linear_value_head_order: linear.order(),
                 mtp_num_hidden_layers: layers.draft,
                 tie_word_embeddings: tied,
                 rope_parameters: RopeParameters {
@@ -239,14 +252,10 @@ impl GgufArchitecture for Qwen35Gguf {
 
     fn validate(&self, text: &Metadata, tensors: &[TensorSpec]) -> Result<()> {
         let linear = Linear::of(text)?;
-        if linear.key_heads != linear.value_heads {
-            // llama.cpp reorders value heads into tiled order when they outnumber key heads,
-            // including the columns of the quantized output projection, which no load-time
-            // permutation can undo; the delta kernels would have to read that order.
-            return Err(Error::unsupported(format!(
-                "qwen35 GGUF with {} key and {} value heads stores tiled value heads",
-                linear.key_heads, linear.value_heads
-            )));
+        if linear.key_heads == 0 || !linear.value_heads.is_multiple_of(linear.key_heads) {
+            return Err(Error::invalid(
+                "qwen35 value heads must be a multiple of key heads",
+            ));
         }
         let layers = LayerPlan::of(text, ARCH)?;
         if layers.draft > 1 {
@@ -272,7 +281,3 @@ fn nextn_field(field: &str) -> Option<(&'static str, ValueTransform)> {
         _ => return None,
     })
 }
-
-#[cfg(test)]
-#[path = "../../../../tests/unit/gguf_qwen35.rs"]
-mod tests;

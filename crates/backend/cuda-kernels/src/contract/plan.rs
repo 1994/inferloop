@@ -375,6 +375,10 @@ pub struct SplitGemmPlan {
 pub struct RecurrentShape {
     pub key_heads: usize,
     pub value_heads: usize,
+    /// Adjacent value heads that share one key head: value head `v` reads key head
+    /// `v / key_run % key_heads`, so grouped heads pass `value_heads / key_heads` and tiled
+    /// heads pass 1.
+    pub key_run: usize,
     pub dim: usize,
     pub lanes: usize,
 }
@@ -393,6 +397,10 @@ pub enum DeltaKernel {
 pub struct DeltaStepPlan {
     pub key_heads: usize,
     pub value_heads: usize,
+    /// Adjacent value heads that share one key head: value head `v` reads key head
+    /// `v / key_run % key_heads`, so grouped heads pass `value_heads / key_heads` and tiled
+    /// heads pass 1.
+    pub key_run: usize,
     pub dim: usize,
     pub block: usize,
     /// `Some` for one launch across this many lanes.
@@ -423,6 +431,10 @@ pub enum ConvKernel {
 pub struct PoolDeltaPlan {
     pub key_heads: usize,
     pub value_heads: usize,
+    /// Adjacent value heads that share one key head: value head `v` reads key head
+    /// `v / key_run % key_heads`, so grouped heads pass `value_heads / key_heads` and tiled
+    /// heads pass 1.
+    pub key_run: usize,
     pub dim: usize,
     pub block: usize,
     pub slots: usize,

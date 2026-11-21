@@ -1,3 +1,4 @@
+mod gguf;
 use infer_core::*;
 use infer_ir::*;
 use infer_model_recipes::decoder::lower;

@@ -1,5 +1,8 @@
-use super::*;
-use infer_format::{GgufType, MetadataValue};
+//! The `qwen35` adapter: Qwen3.5's hybrid backbone and its `nextn` MTP head.
+use super::support::{architecture, mapped as map, spec as tensor, with};
+use infer_format::{GgufType, Metadata, MetadataValue};
+use infer_ir::{TensorOp, ValueHeadOrder};
+use infer_models::gguf::{MappedTensor, TensorSpec, ValueTransform};
 
 fn metadata() -> Metadata {
     let u = MetadataValue::U64;
@@ -43,16 +46,11 @@ fn metadata() -> Metadata {
 }
 
 fn spec(name: &str, shape: &[usize]) -> TensorSpec {
-    TensorSpec {
-        name: name.into(),
-        shape: shape.to_vec(),
-        ty: GgufType::F32,
-    }
+    tensor(name, shape, GgufType::F32)
 }
 
 fn mapped(name: &str, shape: &[usize]) -> Option<MappedTensor> {
-    let layers = LayerPlan::of(&metadata(), "qwen35").unwrap();
-    QWEN35.tensor(&spec(name, shape), &layers)
+    map(architecture("qwen35"), &metadata(), &spec(name, shape))
 }
 
 #[test]
@@ -107,7 +105,9 @@ fn backbone_and_head_tensors_take_their_hf_names_and_inverse_transforms() {
 #[test]
 fn the_synthesized_config_imports_as_the_hybrid_with_its_mtp_head() {
     let tensors = [spec("token_embd.weight", &[3, 64])];
-    let config = QWEN35.config(&metadata(), &tensors, None).unwrap();
+    let config = architecture("qwen35")
+        .config(&metadata(), &tensors, None)
+        .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&config).unwrap();
     let text = &value["text_config"];
     assert_eq!(text["num_hidden_layers"], 4);
@@ -120,7 +120,7 @@ fn the_synthesized_config_imports_as_the_hybrid_with_its_mtp_head() {
     );
     assert_eq!(text["rope_parameters"]["partial_rotary_factor"], 0.25);
     assert_eq!(value["tie_word_embeddings"], true);
-    let imported = crate::default_registry()
+    let imported = infer_models::default_registry()
         .resolve(&config)
         .unwrap()
         .import(infer_core::ModelId::ONE, &config)
@@ -131,25 +131,64 @@ fn the_synthesized_config_imports_as_the_hybrid_with_its_mtp_head() {
         spec("token_embd.weight", &[3, 64]),
         spec("output.weight", &[3, 64]),
     ];
-    let value: serde_json::Value =
-        serde_json::from_slice(&QWEN35.config(&metadata(), &untied, None).unwrap()).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(
+        &architecture("qwen35")
+            .config(&metadata(), &untied, None)
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(value["tie_word_embeddings"], false);
 }
 
 #[test]
-fn tiled_value_heads_are_rejected_explicitly() {
-    let mut entries: Vec<_> = {
-        let file = metadata();
-        file.keys()
-            .map(|key| (key.to_owned(), file.get(key).unwrap().clone()))
-            .collect()
-    };
-    entries.retain(|(key, _)| key != "qwen35.ssm.time_step_rank" && key != "qwen35.ssm.inner_size");
-    entries.push(("qwen35.ssm.time_step_rank".into(), MetadataValue::U64(6)));
-    entries.push(("qwen35.ssm.inner_size".into(), MetadataValue::U64(96)));
-    let tiled = Metadata::from_entries(entries);
-    let error = QWEN35
-        .validate(&tiled, &[spec("token_embd.weight", &[3, 64])])
-        .unwrap_err();
-    assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
+fn tiled_value_heads_are_declared_and_reach_the_delta_op() {
+    let grouped = architecture("qwen35")
+        .config(&metadata(), &[], None)
+        .unwrap();
+    let grouped: serde_json::Value = serde_json::from_slice(&grouped).unwrap();
+    assert_eq!(grouped["text_config"]["linear_value_head_order"], "grouped");
+    let tiled = with(
+        &with(
+            &metadata(),
+            "qwen35.ssm.time_step_rank",
+            Some(MetadataValue::U64(6)),
+        ),
+        "qwen35.ssm.inner_size",
+        Some(MetadataValue::U64(96)),
+    );
+    let tensors = [spec("token_embd.weight", &[3, 64])];
+    architecture("qwen35").validate(&tiled, &tensors).unwrap();
+    let config = architecture("qwen35")
+        .config(&tiled, &tensors, None)
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&config).unwrap();
+    assert_eq!(value["text_config"]["linear_value_head_order"], "tiled");
+    let provider = infer_models::default_registry().resolve(&config).unwrap();
+    let imported = provider.import(infer_core::ModelId::ONE, &config).unwrap();
+    let graph = provider.graph(&imported.model).unwrap();
+    let orders: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter_map(|node| match node.op {
+            TensorOp::Delta {
+                key_heads,
+                value_heads,
+                value_order,
+                ..
+            } => Some((key_heads, value_heads, value_order)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(orders.len(), 3);
+    assert!(
+        orders
+            .iter()
+            .all(|order| *order == (2, 6, ValueHeadOrder::Tiled))
+    );
+    let uneven = with(
+        &tiled,
+        "qwen35.ssm.group_count",
+        Some(MetadataValue::U64(4)),
+    );
+    assert!(architecture("qwen35").validate(&uneven, &tensors).is_err());
 }

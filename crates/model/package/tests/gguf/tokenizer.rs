@@ -1,5 +1,7 @@
-use super::{tokenizer_config, tokenizer_json};
+//! `tokenizer.json` and `tokenizer_config.json` from GGUF metadata.
+use super::support::with;
 use infer_format::{Metadata, MetadataValue};
+use infer_models::gguf::{tokenizer_config, tokenizer_json};
 
 fn metadata() -> Metadata {
     Metadata::from_entries(vec![
@@ -64,30 +66,10 @@ fn writes_the_special_tokens_and_template() {
     assert_eq!(value["model_max_length"], 128);
 }
 
-fn with(
-    mut entries: Vec<(String, MetadataValue)>,
-    key: &str,
-    value: Option<MetadataValue>,
-) -> Metadata {
-    entries.retain(|(name, _)| name != key);
-    if let Some(value) = value {
-        entries.push((key.into(), value));
-    }
-    Metadata::from_entries(entries)
-}
-
-fn entries() -> Vec<(String, MetadataValue)> {
-    let metadata = metadata();
-    metadata
-        .keys()
-        .map(|key| (key.to_owned(), metadata.get(key).unwrap().clone()))
-        .collect()
-}
-
 #[test]
 fn the_split_follows_the_declared_pre_tokenizer() {
     let qwen35 = with(
-        entries(),
+        &metadata(),
         "tokenizer.ggml.pre",
         Some(MetadataValue::String("qwen35".into())),
     );
@@ -98,7 +80,7 @@ fn the_split_follows_the_declared_pre_tokenizer() {
         .unwrap();
     assert!(pattern.contains("[\\p{L}\\p{M}]+"), "{pattern}");
     let unknown = with(
-        entries(),
+        &metadata(),
         "tokenizer.ggml.pre",
         Some(MetadataValue::String("other".into())),
     );
@@ -107,7 +89,7 @@ fn the_split_follows_the_declared_pre_tokenizer() {
 
 #[test]
 fn a_family_without_bos_writes_none() {
-    let without = with(entries(), "tokenizer.ggml.bos_token_id", None);
+    let without = with(&metadata(), "tokenizer.ggml.bos_token_id", None);
     let value: serde_json::Value =
         serde_json::from_slice(&tokenizer_config(&without).unwrap()).unwrap();
     assert!(value["bos_token"].is_null());

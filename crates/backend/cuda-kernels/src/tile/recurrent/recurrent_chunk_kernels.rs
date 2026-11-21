@@ -140,7 +140,7 @@ pub mod kernels {
         reason = "chunk factors keep the derivation's symbols"
     )]
     #[cutile::entry()]
-    fn chunk_prepare<const KH: i32, const VH: i32, const D: i32>(
+    fn chunk_prepare<const KH: i32, const VH: i32, const KR: i32, const D: i32>(
         u: &mut Tensor<bf16, { [1, 64, D] }>,
         w: &mut Tensor<bf16, { [1, 64, D] }>,
         p: &mut Tensor<bf16, { [1, 64, 64] }>,
@@ -158,7 +158,7 @@ pub mod kernels {
         let active = active_rows(metadata, chunk);
         let valid = active.reshape(shape![64, 1]).broadcast(shape![64, D]);
         let zero_rows: Tile<f32, { [64, D] }> = constant(0.0f32, shape![64, D]);
-        let key = head / (VH / KH);
+        let key = head / KR % KH;
         let qb: Tile<bf16, { [64, D] }> = queries
             .partition(shape![1, 64, D])
             .load([key, chunk, 0i32])
@@ -229,7 +229,7 @@ pub mod kernels {
     /// Carry one 32-column block of the state across the active chunks.
     #[expect(clippy::too_many_arguments, reason = "explicit CUDA tensor bindings")]
     #[cutile::entry()]
-    fn chunk_scan<E: ElementType, const KH: i32, const VH: i32, const LANES: i32>(
+    fn chunk_scan<E: ElementType, const KH: i32, const VH: i32, const KR: i32, const LANES: i32>(
         state: &mut Tensor<E, { [1, 128, 32] }>,
         out: &mut Tensor<f32, { [1, LANES, 32] }>,
         u: &Tensor<bf16, { [-1, -1, 128] }>,
@@ -242,7 +242,7 @@ pub mod kernels {
     ) {
         let pid = get_tile_block_id();
         let head = pid.0;
-        let key = head / (VH / KH);
+        let key = head / KR % KH;
         let count: i32 =
             tile_to_scalar(metadata.partition(shape![1]).load([1i32]).reshape(shape![]));
         let mut old: Tile<f32, { [128, 32] }> =
@@ -293,7 +293,13 @@ pub mod kernels {
     /// Carry one 64-column block of the state across the active chunks.
     #[expect(clippy::too_many_arguments, reason = "explicit CUDA tensor bindings")]
     #[cutile::entry()]
-    fn chunk_scan_wide<E: ElementType, const KH: i32, const VH: i32, const LANES: i32>(
+    fn chunk_scan_wide<
+        E: ElementType,
+        const KH: i32,
+        const VH: i32,
+        const KR: i32,
+        const LANES: i32,
+    >(
         state: &mut Tensor<E, { [1, 128, 64] }>,
         out: &mut Tensor<f32, { [1, LANES, 64] }>,
         u: &Tensor<bf16, { [-1, -1, 128] }>,
@@ -306,7 +312,7 @@ pub mod kernels {
     ) {
         let pid = get_tile_block_id();
         let head = pid.0;
-        let key = head / (VH / KH);
+        let key = head / KR % KH;
         let count: i32 =
             tile_to_scalar(metadata.partition(shape![1]).load([1i32]).reshape(shape![]));
         let mut old: Tile<f32, { [128, 64] }> =

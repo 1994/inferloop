@@ -1,73 +1,11 @@
-#[cfg(feature = "gguf")]
 pub mod gguf;
-
-/// One mapped Qwen checkpoint tensor.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VisionTensor {
-    /// A tensor name in the existing HF vision inventory.
-    Slot(String),
-    /// One temporal slice of the `Conv3D` patch embedding.
-    PatchSlice(usize),
-}
-
-/// How one Qwen checkpoint format names its tensors.
-///
-/// The model family is one; the checkpoint format is a strategy. Hugging Face safetensors, GGUF
-/// and future MLX packages implement this trait under the same Qwen provider module.
-pub trait QwenFormat: Send + Sync {
-    /// Canonical HF name for one stored text tensor.
-    fn text_tensor(&self, name: &str) -> Option<String>;
-    /// Canonical HF vision tensor, or a patch slice that the loader fuses.
-    fn vision_tensor(&self, name: &str) -> Option<VisionTensor>;
-}
-
-/// Hugging Face Safetensors names are already canonical.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct HfQwen;
-
-impl QwenFormat for HfQwen {
-    fn text_tensor(&self, name: &str) -> Option<String> {
-        Some(name.to_owned())
-    }
-
-    fn vision_tensor(&self, name: &str) -> Option<VisionTensor> {
-        Some(VisionTensor::Slot(name.to_owned()))
-    }
-}
-
-/// GGUF names and its two temporal patch slices.
-#[cfg(feature = "gguf")]
-#[derive(Debug, Clone, Default)]
-pub struct GgufQwen {
-    deepstack_layers: Vec<u64>,
-}
-
-#[cfg(feature = "gguf")]
-impl GgufQwen {
-    /// Build the GGUF strategy for one deepstack declaration.
-    #[must_use]
-    pub const fn new(deepstack_layers: Vec<u64>) -> Self {
-        Self { deepstack_layers }
-    }
-}
-
-#[cfg(feature = "gguf")]
-impl QwenFormat for GgufQwen {
-    fn text_tensor(&self, name: &str) -> Option<String> {
-        gguf::text_tensor(name)
-    }
-
-    fn vision_tensor(&self, name: &str) -> Option<VisionTensor> {
-        gguf::vision_tensor(name, &self.deepstack_layers)
-    }
-}
 
 mod generation;
 use crate::vision::validate;
 use infer_core::{Error, ModelId, ProviderId, Result};
 use infer_ir::{
     BackboneKind, DType, FeedForward, Head, Mixer, Modality, ModelIr, PositionSpec, PrecisionPlan,
-    StateKind, StateRequirement,
+    StateKind, StateRequirement, ValueHeadOrder,
 };
 use infer_model_recipes::decoder::lower;
 use infer_spi::{
@@ -189,6 +127,9 @@ struct TextConfig {
     linear_value_head_dim: usize,
     #[serde(default)]
     linear_conv_kernel_dim: usize,
+    /// Not an HF key: a GGUF adapter declares the value-head order its converter stored.
+    #[serde(default)]
+    linear_value_head_order: ValueHeadOrder,
     #[serde(default)]
     rope_parameters: Option<RopeConfig>,
     #[serde(default)]
@@ -526,6 +467,7 @@ impl TextConfig {
                         key_dim: self.linear_key_head_dim,
                         value_dim: self.linear_value_head_dim,
                         conv_kernel: self.linear_conv_kernel_dim,
+                        value_order: self.linear_value_head_order,
                     });
                     self.import_linear_state(layer, &mut state)?;
                 }

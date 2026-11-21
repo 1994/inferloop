@@ -227,7 +227,14 @@ pub mod fused {
         reason = "CUDA state kernel binds three verification lanes' rows explicitly"
     )]
     #[cutile::entry()]
-    fn delta_verify3<E: ElementType, const KH: i32, const VH: i32, const D: i32, const SW: i32>(
+    fn delta_verify3<
+        E: ElementType,
+        const KH: i32,
+        const VH: i32,
+        const KR: i32,
+        const D: i32,
+        const SW: i32,
+    >(
         out0: &mut Tensor<f32, { [1, 1, SW] }>,
         out1: &mut Tensor<f32, { [1, 1, SW] }>,
         out2: &mut Tensor<f32, { [1, 1, SW] }>,
@@ -248,7 +255,7 @@ pub mod fused {
         metadata2: &Tensor<i32, { [-1] }>,
     ) {
         let pid = get_tile_block_id();
-        let key = pid.0 / (VH / KH);
+        let key = pid.0 / KR % KH;
         let head_bias = bias.partition(shape![1]).load([pid.0]);
         let rate = exp(a_log.partition(shape![1]).load([pid.0]));
         let initial: Tile<f32, { [D, SW] }> = convert_tile(
@@ -314,6 +321,7 @@ pub mod fused {
         E: ElementType,
         const KH: i32,
         const VH: i32,
+        const KR: i32,
         const D: i32,
         const SW: i32,
         const MF: i32,
@@ -336,7 +344,7 @@ pub mod fused {
         let base0 = row0 * (2i32 * KH + VH);
         let base1 = row1 * (2i32 * KH + VH);
         let base2 = row2 * (2i32 * KH + VH);
-        let key = head / (VH / KH);
+        let key = head / KR % KH;
         let head_bias = parameters.partition(shape![1]).load([VH + head]);
         let rate = exp(parameters.partition(shape![1]).load([head]));
         let initial: Tile<f32, { [D, SW] }> = convert_tile(
@@ -398,7 +406,14 @@ pub mod fused {
         reason = "CUDA state kernel binds three verification lanes' rows explicitly"
     )]
     #[cutile::entry()]
-    fn delta_commit3<E: ElementType, const KH: i32, const VH: i32, const D: i32, const SW: i32>(
+    fn delta_commit3<
+        E: ElementType,
+        const KH: i32,
+        const VH: i32,
+        const KR: i32,
+        const D: i32,
+        const SW: i32,
+    >(
         state: &mut Tensor<E, { [1, D, SW] }>,
         qkv0: &Tensor<f32, { [-1] }>,
         qkv1: &Tensor<f32, { [-1] }>,
@@ -417,7 +432,7 @@ pub mod fused {
         count: i32,
     ) {
         let pid = get_tile_block_id();
-        let key = pid.0 / (VH / KH);
+        let key = pid.0 / KR % KH;
         let head_bias = bias.partition(shape![1]).load([pid.0]);
         let rate = exp(a_log.partition(shape![1]).load([pid.0]));
         let initial: Tile<f32, { [D, SW] }> =
@@ -464,6 +479,7 @@ pub mod fused {
         E: ElementType,
         const KH: i32,
         const VH: i32,
+        const KR: i32,
         const D: i32,
         const SW: i32,
         const MF: i32,
@@ -489,7 +505,7 @@ pub mod fused {
         let enabled: bool =
             tile_to_scalar(ge_tile(count, 1i32.broadcast(shape![1])).reshape(shape![]));
         if enabled {
-            let key = head / (VH / KH);
+            let key = head / KR % KH;
             let head_bias = parameters.partition(shape![1]).load([VH + head]);
             let rate = exp(parameters.partition(shape![1]).load([head]));
             let initial: Tile<f32, { [D, SW] }> =
@@ -547,6 +563,7 @@ pub mod fused {
         E: ElementType,
         const KH: i32,
         const VH: i32,
+        const KR: i32,
         const D: i32,
         const SW: i32,
         const MF: i32,
@@ -564,7 +581,7 @@ pub mod fused {
         let slot = pid.0;
         let head = pid.2 / (D / SW);
         let split = pid.2 % (D / SW);
-        let key = head / (VH / KH);
+        let key = head / KR % KH;
         let head_bias = parameters.partition(shape![1]).load([VH + head]);
         let rate = exp(parameters.partition(shape![1]).load([head]));
         let mut current: Tile<f32, { [D, SW] }> = convert_tile(
@@ -599,6 +616,7 @@ pub mod fused {
         E: ElementType,
         const KH: i32,
         const VH: i32,
+        const KR: i32,
         const D: i32,
         const SW: i32,
         const MF: i32,
@@ -619,7 +637,7 @@ pub mod fused {
         let enabled: bool =
             tile_to_scalar(ge_tile(count, 1i32.broadcast(shape![1])).reshape(shape![]));
         if enabled {
-            let key = head / (VH / KH);
+            let key = head / KR % KH;
             let head_bias = parameters.partition(shape![1]).load([VH + head]);
             let rate = exp(parameters.partition(shape![1]).load([head]));
             let mut current: Tile<f32, { [D, SW] }> =

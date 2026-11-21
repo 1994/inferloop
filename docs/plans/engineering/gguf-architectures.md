@@ -6,15 +6,21 @@ safetensors 完全相同。新增一个架构是填一个适配器，不改加�
 
 ## 分层
 
+平台在 `storage::gguf`，不出现任何模型名；适配器在 `providers/<family>/gguf/`，由 `ModelRegistry`
+登记（`providers/gguf.rs` 是唯一的内置列表），与 provider 的登记方式相同。
+
 | 归属 | 内容 | 位置 |
 |---|---|---|
-| 平台 | 容器解析、grouped-int 编码、tokenizer（按 `tokenizer.ggml.pre` 选切分规则）、mmproj 发现 | `infer-format`、`storage::gguf_tokenizer`、`GgufPackage` |
-| 平台 | llama.cpp 共有的 block 字段名（`attn_q`、`ffn_gate`……） | `gguf_arch::common_block_field` |
-| 平台 | 尾部 `nextn` block 拆成草稿头：`{arch}.nextn_predict_layers` 个尾 block 不属于主干 | `gguf_arch::LayerPlan` |
-| 平台 | 值变换的逆运算（`1 + w` 的 norm、`-exp(A_log)`），在解码 float 张量时做 | `gguf_arch::ValueTransform` |
-| 平台 | 每个存储张量必须有去处；未知张量、重复名、对 grouped-int 张量做值变换都显式报错 | `GgufPackage::open` |
+| 平台 | 容器解析、grouped-int 编码、tokenizer（按 `tokenizer.ggml.pre` 选切分规则）、mmproj 发现 | `infer-format`、`gguf::tokenizer_json`、`GgufPackage::open_auto_in` |
+| 平台 | llama.cpp 共有的 block 字段名（`attn_q`、`ffn_gate`……） | `gguf::common_block_field` |
+| 平台 | 尾部 `nextn` block 拆成草稿头：`{arch}.nextn_predict_layers` 个尾 block 不属于主干 | `gguf::LayerPlan` |
+| 平台 | 值变换的逆运算（`1 + w` 的 norm、`-exp(A_log)`），在解码 float 张量时做 | `gguf::ValueTransform` |
+| 平台 | 每个存储张量必须有去处；未知张量、重复名、对 grouped-int 张量做值变换都显式报错 | `GgufPackage::open_in` |
+| 平台 | 按名字与形状核对整套张量 | `gguf::ExpectedTensors` |
+| 平台 | mmproj：两片时间维 patch 融合成 `Conv3D`、视觉槽位、按 `clip.projector_type` 选适配器 | `GgufVisionPackage::open_in` |
 | 平台 | 草稿头按规范名绑定（`imported.speculation.prefix`），与格式无关 | `QuantizedPackage::bind_gguf` |
 | 适配器 | 合成 HF 配置；本架构特有的张量名、变换与形状；架构级校验 | `impl GgufArchitecture` |
+| 适配器 | 视觉编码器几何、mmproj 张量名、图像预处理配置 | `impl GgufProjector` |
 
 适配器的全部接口：
 
@@ -27,20 +33,31 @@ pub trait GgufArchitecture: Sync {
     fn validate(&self, text: &Metadata, tensors: &[TensorSpec]) -> Result<()> { Ok(()) }
     fn accepts_vision(&self) -> bool { false }
 }
+
+pub trait GgufProjector: Sync {
+    fn name(&self) -> &'static str;                       // clip.projector_type
+    fn validate(&self, metadata: &Metadata, tensors: &[TensorSpec]) -> Result<()>;
+    fn encoder(&self, metadata: &Metadata) -> Result<ModalityEncoder>;
+    fn tensor(&self, name: &str, encoder: &ModalityEncoder) -> Option<VisionTensor>;
+    fn preprocessor(&self, metadata: &Metadata, encoder: &ModalityEncoder) -> Result<Vec<u8>>;
+}
 ```
 
 `MappedTensor` 是规范名 + `ValueTransform` + 可选的规范形状（例如 `ssm_conv1d` 存为 `[C, K]`，HF 是
-`[C, 1, K]`）。未登记的架构报 `Unsupported` 并列出已知架构。
+`[C, 1, K]`）。未登记的架构或 projector 报 `Unsupported` 并列出已知的名字。
 
 ## 新增一个架构
 
-1. 在 `providers/<family>/gguf/` 写适配器，登记到 `gguf_arch::ARCHITECTURES`；
+1. 在 `providers/<family>/gguf/` 写适配器，加进 `GgufAdapters::builtin`（外部 crate 用
+   `ModelRegistry::gguf_mut().register_architecture`）；
 2. `config`：从 `{arch}.*` 元数据合成 provider 已能导入的 HF 配置（层数用 `LayerPlan::backbone`，MTP 层数用
    `LayerPlan::draft`；`output.weight` 缺失即 tie）；
 3. `tensor`：先查平台的 `common_block_field`，再映射本架构特有字段，并写明转换器改了什么（看 llama.cpp
    `convert_hf_to_gguf.py` 的 `modify_tensors`）；
 4. `validate`：转换器做了加载时无法还原的变换（例如对量化张量重排列）时显式 `Unsupported`；
-5. 验证：BF16 GGUF 的每个张量（解码 + 逆变换）与 safetensors 同名张量逐一比对，greedy 输出与 safetensors 包一致，
+5. 测试：在 `crates/model/package/tests/gguf/` 加一个模块，只通过公开 API（`default_registry().gguf()`）
+   测配置合成、张量映射与校验；
+6. 验证：BF16 GGUF 的每个张量（解码 + 逆变换）与 safetensors 同名张量逐一比对，greedy 输出与 safetensors 包一致，
    再跑量化文件和显式 MTP。
 
 ## Qwen3.5（`qwen35`）
@@ -51,11 +68,14 @@ pub trait GgufArchitecture: Sync {
 线性注意力几何来自 `qwen35.ssm.*`（`group_count` = key heads，`time_step_rank` = value heads，`state_size` =
 key dim，`inner_size / time_step_rank` = value dim）。
 
-已知限制：
+value head 多于 key head（4B/9B 为 16/32，27B 为 16/48）时，转换器把所有 value 侧张量（`in_proj_qkv` 的 v 行、
+`z`、`a`/`b`、`A_log`、`dt_bias`、conv 的 v 通道、`ssm_out` 的列）重排成 tiled 顺序。量化 `ssm_out` 的列无法在
+加载时还原，所以不还原：适配器在配置里声明 `linear_value_head_order: "tiled"`，provider 写入
+`Mixer::LinearAttention::value_order` 与 `TensorOp::Delta::value_order`（`ValueHeadOrder`），CUDA 与 Metal 的
+delta kernel 按 `key_run`（相邻共享一个 key head 的 value head 数；grouped 为 `VH / KH`，tiled 为 1）读
+`v / key_run % KH` 号 key head。grouped 的算术与改动前逐位相同。
 
-- key heads ≠ value heads（27B 是 16/48）时转换器把 value head 重排成 tiled 顺序，连量化的 `ssm_out` 列也一起
-  重排，加载时无法还原，显式 `Unsupported`；需要 delta kernel 直接读该顺序；
-- `nextn_predict_layers > 1` 显式 `Unsupported`。
+已知限制：`nextn_predict_layers > 1` 显式 `Unsupported`。
 
 验证（RTX 5090，`/home/r/benchmarks/inference.rs/gguf-mtp-2026-11-21/`）：
 

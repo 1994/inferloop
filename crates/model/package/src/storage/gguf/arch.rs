@@ -1,74 +1,9 @@
-//! GGUF architecture adapters: what one `general.architecture` fills in on the shared GGUF path.
-//!
-//! The platform owns the container, the tokenizer, the llama.cpp names every architecture shares,
-//! the split of trailing `nextn` blocks into a speculative draft head, value transforms and the
-//! rule that every stored tensor maps somewhere. An adapter only declares what its architecture
-//! adds: the HF configuration it synthesizes, its own tensor names and the inverse of what its
-//! converter changed. The result is an ordinary HF configuration and canonical tensor names, so
-//! providers, recipes and backends are the same for every checkpoint format.
-use crate::providers::dflash2::DFLASH2;
-use crate::providers::qwen::gguf::validate::TensorSpec;
-use crate::providers::qwen::gguf::{QWEN3VL, QWEN35};
+//! The adapter contracts one GGUF architecture or mmproj projector fills in, and the helpers
+//! every adapter shares.
+use super::tensor::{MappedTensor, TensorSpec, VisionTensor};
 use infer_core::{Error, Result};
 use infer_format::{Metadata, MetadataValue};
-
-/// The inverse of a value change a converter applied, undone when a float tensor is decoded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValueTransform {
-    /// Stored as is.
-    Identity,
-    /// Stored as `1 + w`, as llama.cpp stores the norms of families that scale by `1 + w`.
-    PlusOne,
-    /// Stored as `-exp(x)`, as llama.cpp stores gated-delta `A_log`.
-    NegatedExp,
-}
-
-impl ValueTransform {
-    /// Recover the original values in place.
-    pub fn undo(self, values: &mut [f32]) {
-        match self {
-            Self::Identity => {}
-            Self::PlusOne => values.iter_mut().for_each(|value| *value -= 1.0),
-            Self::NegatedExp => values.iter_mut().for_each(|value| *value = (-*value).ln()),
-        }
-    }
-}
-
-/// Where one stored tensor goes and how to read it back.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MappedTensor {
-    /// Canonical HF name.
-    pub slot: String,
-    pub transform: ValueTransform,
-    /// The canonical shape when the converter reshaped the tensor; `None` keeps the stored one.
-    pub shape: Option<Vec<usize>>,
-}
-
-impl MappedTensor {
-    /// A tensor stored under its canonical meaning.
-    #[must_use]
-    pub fn named(slot: impl Into<String>) -> Self {
-        Self {
-            slot: slot.into(),
-            transform: ValueTransform::Identity,
-            shape: None,
-        }
-    }
-
-    /// The same mapping with a value transform to undo.
-    #[must_use]
-    pub const fn transformed(mut self, transform: ValueTransform) -> Self {
-        self.transform = transform;
-        self
-    }
-
-    /// The same mapping with a canonical shape.
-    #[must_use]
-    pub fn reshaped(mut self, shape: Vec<usize>) -> Self {
-        self.shape = Some(shape);
-        self
-    }
-}
+use infer_spi::ModalityEncoder;
 
 /// How the stored blocks divide between the backbone and a speculative draft head.
 ///
@@ -174,25 +109,24 @@ pub trait GgufArchitecture: Sync {
     }
 }
 
-/// Every architecture the GGUF path reads.
-const ARCHITECTURES: [&dyn GgufArchitecture; 3] = [&QWEN3VL, &QWEN35, &DFLASH2];
-
-/// The adapter for `metadata`'s `general.architecture`.
-/// # Errors
-/// Rejects an architecture no adapter declares, naming the ones that exist.
-pub fn architecture(metadata: &Metadata) -> Result<&'static dyn GgufArchitecture> {
-    let name = metadata.require_str("general.architecture")?;
-    ARCHITECTURES
-        .iter()
-        .copied()
-        .find(|architecture| architecture.name() == name)
-        .ok_or_else(|| {
-            let known: Vec<_> = ARCHITECTURES.iter().map(|known| known.name()).collect();
-            Error::unsupported(format!(
-                "GGUF architecture {name} has no adapter (known: {})",
-                known.join(", ")
-            ))
-        })
+/// What one mmproj projector (`clip.projector_type`) fills in.
+pub trait GgufProjector: Sync {
+    /// The `clip.projector_type` value this adapter reads.
+    fn name(&self) -> &'static str;
+    /// Check the stored tensor set against the projector geometry, before any tensor is read.
+    /// # Errors
+    /// Rejects a missing or extra tensor, a shape mismatch, or an unsupported type.
+    fn validate(&self, metadata: &Metadata, tensors: &[TensorSpec]) -> Result<()>;
+    /// The vision encoder the metadata declares.
+    /// # Errors
+    /// Rejects missing or malformed geometry.
+    fn encoder(&self, metadata: &Metadata) -> Result<ModalityEncoder>;
+    /// Where a stored tensor goes; `None` for one the encoder does not read.
+    fn tensor(&self, name: &str, encoder: &ModalityEncoder) -> Option<VisionTensor>;
+    /// The HF `preprocessor_config.json` of the encoder's image processor.
+    /// # Errors
+    /// Rejects missing or malformed normalization metadata.
+    fn preprocessor(&self, metadata: &Metadata, encoder: &ModalityEncoder) -> Result<Vec<u8>>;
 }
 
 /// A count stored under `key`.
@@ -220,6 +154,23 @@ pub fn u64_array(metadata: &Metadata, key: &str) -> Result<Vec<u64>> {
         .collect()
 }
 
+/// A boolean array stored under `key`.
+/// # Errors
+/// Rejects a missing key or a non-boolean element.
+pub fn bool_array(metadata: &Metadata, key: &str) -> Result<Vec<bool>> {
+    metadata
+        .get(key)
+        .and_then(MetadataValue::as_array)
+        .ok_or_else(|| Error::invalid(format!("GGUF metadata {key} is not an array")))?
+        .iter()
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| Error::invalid(format!("GGUF metadata {key} is not a bool array")))
+        })
+        .collect()
+}
+
 /// `values` without trailing zeros, as llama.cpp pads `RoPE` section arrays.
 #[must_use]
 pub fn trim_trailing_zeros(mut values: Vec<u64>) -> Vec<u64> {
@@ -240,7 +191,3 @@ pub fn token_id(metadata: &Metadata, marker: &str) -> Result<u32> {
         .ok_or_else(|| Error::invalid(format!("GGUF tokenizer is missing {marker}")))?;
     u32::try_from(index).map_err(|_| Error::invalid("GGUF token id exceeds u32"))
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/gguf_arch.rs"]
-mod tests;

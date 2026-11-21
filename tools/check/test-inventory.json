@@ -16,7 +16,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 32
+      "tests": 36
     },
     "compiler": {
       "benches": 0,
@@ -34,13 +34,13 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 522
+      "tests": 529
     },
     "cuda-kernels": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 20
+      "tests": 23
     },
     "format": {
       "benches": 0,
@@ -52,7 +52,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 197
+      "tests": 198
     },
     "ir": {
       "benches": 0,
@@ -88,7 +88,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 194
+      "tests": 210
     },
     "quality": {
       "benches": 0,
@@ -100,13 +100,13 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 3
+      "tests": 6
     },
     "runtime": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 114
+      "tests": 118
     },
     "scheduler": {
       "benches": 0,
@@ -174,6 +174,7 @@
   "gated": {
     "all(feature = \"tile\", target_os = \"linux\"": 1,
     "feature = \"cuda\"": 1,
+    "feature = \"gguf\"": 1,
     "target_os = \"linux\"": 6,
     "target_os = \"macos\"": 1
   },
@@ -287,9 +288,9 @@
     "requires GPU and INFER_ATTENTION_GATE; use make check-attention": 1,
     "requires Linux NUMA policy and move_pages query permission; make check-linux-numa": 1,
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
-    "requires a CUDA device": 14,
+    "requires a CUDA device": 15,
     "requires a CUDA device and INFER_TEST_MODEL with gated-delta layers": 3,
-    "requires a CUDA device; run inside safe-run": 5,
+    "requires a CUDA device; run inside safe-run": 6,
     "requires a CUDA device; timing": 1,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
     "requires a qualified CUDA device": 4,
@@ -297,6 +298,7 @@
     "requires a reserved CUDA device": 1,
     "requires a reserved CUDA device; compares every output with the prior tower": 1,
     "requires a reserved CUDA device; compares full outputs with scalar and existing paths": 1,
+    "requires a reserved CUDA device; compares the one-graph encode with the host path": 1,
     "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 9,
     "requires nvJPEG hardware and JPEG fixture in INFER_NVJPEG_JPEG_FIXTURE": 1,
     "requires nvJPEG hardware and JPEG/RGB fixtures in INFER_NVJPEG_JPEG_FIXTURE and INFER_NVJPEG_RGB_FIXTURE": 1,
@@ -503,6 +505,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/loading/grouped_int_tiled.rs",
+      "mount": "../../tests/unit/grouped_int_rows.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/loading/head_padding.rs",
       "mount": "../../tests/unit/head_padding.rs"
     },
@@ -613,6 +620,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/loading/weights.rs",
+      "mount": "../../tests/unit/loading_e4m3.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/mlp/projection.rs",
       "mount": "../../tests/unit/projection_tensors.rs"
     },
@@ -630,6 +642,11 @@
       "crate": "cuda",
       "file": "src/resident/attention.rs",
       "mount": "../../tests/unit/resident_embedding_rows.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/attention.rs",
+      "mount": "../../tests/unit/resident_media_feature_rows.rs"
     },
     {
       "crate": "cuda",
@@ -1177,6 +1194,11 @@
       "mount": "../../tests/unit/target.rs"
     },
     {
+      "crate": "cuda-kernels",
+      "file": "src/tile/identities.rs",
+      "mount": "../../tests/unit/tile_identities.rs"
+    },
+    {
       "crate": "kernel-api",
       "file": "src/attention.rs",
       "mount": "../tests/unit/attention_tests.rs"
@@ -1260,6 +1282,11 @@
       "crate": "runtime",
       "file": "src/stages/worker.rs",
       "mount": "../../tests/unit/stages_worker.rs"
+    },
+    {
+      "crate": "runtime",
+      "file": "tests/rank_group.rs",
+      "mount": "support/rank_group.rs"
     },
     {
       "crate": "runtime",
@@ -1508,16 +1535,6 @@
     },
     {
       "crate": "package",
-      "file": "src/providers/qwen/gguf/mod.rs",
-      "mount": "../../../../tests/unit/providers_gguf.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/providers/qwen/gguf/tokenizer.rs",
-      "mount": "../../../../tests/unit/providers_gguf_tokenizer.rs"
-    },
-    {
-      "crate": "package",
       "file": "src/providers/qwen/mod.rs",
       "mount": "../../../tests/unit/providers_qwen.rs"
     },
@@ -1525,11 +1542,6 @@
       "crate": "package",
       "file": "src/providers/registry.rs",
       "mount": "../../tests/unit/providers_registry.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/storage/gguf_requirements.rs",
-      "mount": "../../tests/unit/gguf_requirements.rs"
     },
     {
       "crate": "package",
@@ -1743,11 +1755,11 @@
     }
   ],
   "totals": {
-    "all": 1360,
+    "all": 1398,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1360
+    "tests": 1398
   }
 }

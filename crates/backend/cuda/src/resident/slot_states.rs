@@ -251,6 +251,7 @@ pub(super) fn record_batch(
         value_heads,
         key_dim,
         value_dim,
+        value_order,
     } = node.op
     else {
         return Ok(false);
@@ -287,6 +288,7 @@ pub(super) fn record_batch(
             &PoolDeltaPlan {
                 key_heads,
                 value_heads,
+                key_run: value_order.key_run(key_heads, value_heads),
                 dim: key_dim,
                 block,
                 slots,

@@ -67,12 +67,14 @@ impl Capture<'_> {
                 value_heads,
                 key_dim,
                 value_dim,
+                value_order,
             } => self.checkpoint_delta(
                 node,
                 output,
                 state,
                 snapshot,
                 (key_heads, value_heads, key_dim, value_dim),
+                value_order.key_run(key_heads, value_heads),
             ),
             _ => Err(error("unsupported checkpoint state operation")),
         }
@@ -117,6 +119,7 @@ impl Capture<'_> {
         state: &[StateTensor],
         snapshot: &[StateTensor],
         (key_heads, value_heads, key_dim, value_dim): (usize, usize, usize, usize),
+        key_run: usize,
     ) -> Result<()> {
         if key_dim != value_dim
             || !key_dim.is_power_of_two()
@@ -140,6 +143,7 @@ impl Capture<'_> {
                 &DeltaStepPlan {
                     key_heads,
                     value_heads,
+                    key_run,
                     dim: key_dim,
                     block,
                     lanes: None,

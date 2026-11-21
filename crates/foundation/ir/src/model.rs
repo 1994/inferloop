@@ -2,6 +2,36 @@ use crate::{DType, Modality};
 use infer_core::{Error, ModelId, Result};
 use serde::{Deserialize, Serialize};
 
+/// Which key head each value head of a gated-delta layer reads.
+///
+/// It matters when value heads outnumber key heads, and it is a weight layout: every value-side tensor (the value rows of the fused input
+/// projection, the gate, `a`/`b`, `A_log`, `dt_bias`, the value convolution channels and the
+/// output projection's columns) is stored in this order, so the recurrence only has to look its
+/// key up the same way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValueHeadOrder {
+    /// Value head `v` reads key head `v / (value_heads / key_heads)`: each key head's value
+    /// heads are adjacent, as Hugging Face checkpoints store them.
+    #[default]
+    Grouped,
+    /// Value head `v` reads key head `v % key_heads`: the key heads repeat, as llama.cpp's
+    /// converter stores them for broadcasting.
+    Tiled,
+}
+
+impl ValueHeadOrder {
+    /// How many adjacent value heads share one key head, so value head `v` reads key head
+    /// `v / key_run % key_heads` in either order.
+    #[must_use]
+    pub const fn key_run(self, key_heads: usize, value_heads: usize) -> usize {
+        match self {
+            Self::Grouped if key_heads > 0 => value_heads / key_heads,
+            Self::Grouped | Self::Tiled => 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackboneKind {
     Encoder,
@@ -27,6 +57,8 @@ pub enum Mixer {
         key_dim: usize,
         value_dim: usize,
         conv_kernel: usize,
+        #[serde(default)]
+        value_order: ValueHeadOrder,
     },
     Recurrent {
         state_width: usize,
@@ -155,6 +187,7 @@ impl ModelIr {
                     key_dim,
                     value_dim,
                     conv_kernel,
+                    ..
                 } if [*key_heads, *value_heads, *key_dim, *value_dim, *conv_kernel]
                     .contains(&0)
                     || value_heads % key_heads != 0 =>

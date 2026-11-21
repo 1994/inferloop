@@ -49,7 +49,6 @@ pub fn configured_engine(
         ..choice
     };
     if let Some(package) = package {
-        #[cfg(feature = "gguf")]
         if package
             .extension()
             .is_some_and(|extension| extension == "gguf")

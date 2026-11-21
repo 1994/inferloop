@@ -20,6 +20,7 @@ fn unsupported<T>(identity: &str) -> Result<T> {
 pub fn recurrent_wy(
     _device: &Device,
     _shape: [usize; RECURRENT_RANK],
+    _key_run: usize,
     _splits: &[usize],
 ) -> Result<Vec<String>> {
     unsupported("recurrent_wy")
@@ -100,6 +101,7 @@ pub fn gated_norm_candidates(
 pub fn exact_recurrence(
     _device: &Device,
     _shape: [usize; RECURRENT_RANK],
+    _key_run: usize,
     _value_columns: usize,
     _metadata_fields: usize,
 ) -> Result<Vec<String>> {

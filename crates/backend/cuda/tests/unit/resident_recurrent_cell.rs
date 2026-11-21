@@ -100,6 +100,7 @@ where
     let plan = DeltaStepPlan {
         key_heads: case.key_heads,
         value_heads: heads,
+        key_run: case.key_run,
         dim,
         block: dim,
         lanes: None,
@@ -190,14 +191,18 @@ fn tile_sources_pass_the_shared_cases() -> Result<()> {
                 active,
             },
         )?;
-        let delta = Delta {
-            key_heads: 2,
-            value_heads: 4,
-            dim: 128,
-            active,
-        };
-        check_delta(&device, delta)?;
-        check_bf16_delta(&device, delta)?;
+        // Grouped heads (HF order) and tiled heads (llama.cpp order) read different key heads.
+        for key_run in [2, 1] {
+            let delta = Delta {
+                key_heads: 2,
+                value_heads: 4,
+                key_run,
+                dim: 128,
+                active,
+            };
+            check_delta(&device, delta)?;
+            check_bf16_delta(&device, delta)?;
+        }
     }
     Ok(())
 }

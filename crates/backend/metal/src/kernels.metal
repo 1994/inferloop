@@ -115,9 +115,11 @@ kernel void conv(ARGS) {
   }
 }
 // Every value head owns its recurrent state; token order never crosses a dispatch boundary.
+// Value head t reads key head t/e%a: e adjacent value heads share a key head (grouped order),
+// or e is 1 and the key heads repeat (tiled order).
 kernel void delta(ARGS) {
   if(t>=p.b) return;
-  uint kh=t/(p.b/p.a), ks=p.a*p.c, base=t*p.c*p.d, channels=2*ks+p.b*p.d;
+  uint kh=t/p.e%p.a, ks=p.a*p.c, base=t*p.c*p.d, channels=2*ks+p.b*p.d;
   for(uint row=0;row<p.rows;row++) {
     uint qstart=row*channels+kh*p.c, kstart=row*channels+ks+kh*p.c;
     uint vstart=row*channels+2*ks+t*p.d;

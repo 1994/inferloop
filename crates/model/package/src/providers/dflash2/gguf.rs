@@ -4,15 +4,16 @@
 //! embedding output (one above HF's `target_layer_ids`), but not how deep the target is: the
 //! synthesized configuration leaves `num_target_layers` to the target it is attached to.
 use super::ARCHITECTURE;
-use crate::providers::qwen::gguf::validate::TensorSpec;
-use crate::storage::gguf_arch::{
-    Block, GgufArchitecture, LayerPlan, MappedTensor, common_block_field, count, u64_array,
+use crate::storage::gguf::{
+    Block, GgufArchitecture, LayerPlan, MappedTensor, TensorSpec, common_block_field, count,
+    u64_array,
 };
 use infer_core::{Error, Result};
 use infer_format::{Metadata, MetadataValue};
 use serde::Serialize;
 
-const ARCH: &str = "dflash";
+/// The `general.architecture` of a `DFlash2` draft.
+pub const ARCH: &str = "dflash";
 
 /// The `dflash` architecture.
 pub struct DFlash2Gguf;
@@ -175,7 +176,3 @@ impl GgufArchitecture for DFlash2Gguf {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "../../../tests/unit/gguf_dflash2.rs"]
-mod tests;

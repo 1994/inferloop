@@ -77,6 +77,7 @@ fn capture(
                 RecurrentShape {
                     key_heads: kh,
                     value_heads: vh,
+                    key_run: vh / kh,
                     dim: DIM,
                     lanes,
                 },
@@ -112,7 +113,12 @@ fn capture(
                 &input.decay,
                 &input.metadata,
             )
-            .generics(vec![kh.to_string(), vh.to_string(), DIM.to_string()]),
+            .generics(vec![
+                kh.to_string(),
+                vh.to_string(),
+                (vh / kh).to_string(),
+                DIM.to_string(),
+            ]),
         )?;
         cutile(scope)?.record(
             baseline::legacy_scan32(

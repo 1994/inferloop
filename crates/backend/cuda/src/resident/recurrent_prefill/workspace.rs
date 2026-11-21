@@ -62,6 +62,7 @@ impl Workspace {
                     value_heads,
                     key_dim,
                     value_dim,
+                    ..
                 } = node.op
                     && key_dim == value_dim
                     && node.inputs[..GDN_PROJECTED_INPUTS]
@@ -185,6 +186,7 @@ impl Workspace {
             value_heads,
             key_dim,
             value_dim,
+            key_run,
         } = delta;
         let state = states
             .get(&node.states[0])
@@ -215,7 +217,16 @@ impl Workspace {
             scratch,
             self.prepared.get(&(key_heads, value_heads, key_dim)),
             metadata,
-            [key_heads, value_heads, key_dim, self.lanes, block],
+            (
+                RecurrentShape {
+                    key_heads,
+                    value_heads,
+                    key_run,
+                    dim: key_dim,
+                    lanes: self.lanes,
+                },
+                block,
+            ),
             wy,
         )?;
         weights
@@ -226,6 +237,7 @@ impl Workspace {
                 RecurrentShape {
                     key_heads,
                     value_heads,
+                    key_run,
                     dim: value_dim,
                     lanes: self.lanes,
                 },
@@ -235,8 +247,6 @@ impl Workspace {
             .map_err(error)
     }
 }
-
-const DELTA_GEOMETRY_RANK: usize = 5;
 
 #[expect(
     clippy::too_many_arguments,
@@ -251,9 +261,14 @@ fn record_delta(
     scratch: &Allocation<f32>,
     prepared: Option<&prepared::Inputs>,
     metadata: &Allocation<i32>,
-    [key_heads, value_heads, key_dim, lanes, block]: [usize; DELTA_GEOMETRY_RANK],
+    (shape, block): (RecurrentShape, usize),
     wy: bool,
 ) -> Result<()> {
+    let RecurrentShape {
+        dim: key_dim,
+        lanes,
+        ..
+    } = shape;
     let decay = weights
         .constants
         .get(&node.inputs[3])
@@ -282,7 +297,7 @@ fn record_delta(
                 ],
                 (state.buffer(), scratch),
                 metadata,
-                (key_heads, value_heads, key_dim, lanes, block),
+                (shape, block),
             )?;
     } else {
         weights
@@ -295,12 +310,7 @@ fn record_delta(
                 } else {
                     DeltaKernel::Scan
                 },
-                RecurrentShape {
-                    key_heads,
-                    value_heads,
-                    dim: key_dim,
-                    lanes,
-                },
+                shape,
                 block,
                 DeltaBuffers {
                     state: state.buffer(),

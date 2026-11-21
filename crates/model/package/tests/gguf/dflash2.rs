@@ -1,6 +1,7 @@
-use super::*;
-use crate::providers::dflash2::DFlash2Config;
-use infer_format::GgufType;
+//! The `dflash` adapter: a `DFlash2` draft as llama.cpp stores it.
+use super::support::{architecture, mapped as map, spec};
+use infer_format::{GgufType, Metadata, MetadataValue};
+use infer_models::DFlash2Config;
 
 fn metadata(causal: bool) -> Metadata {
     let u = MetadataValue::U64;
@@ -49,18 +50,19 @@ fn metadata(causal: bool) -> Metadata {
 }
 
 fn mapped(name: &str) -> Option<String> {
-    let layers = LayerPlan::of(&metadata(false), "dflash").unwrap();
-    let spec = TensorSpec {
-        name: name.into(),
-        shape: vec![64],
-        ty: GgufType::Bf16,
-    };
-    DFLASH2.tensor(&spec, &layers).map(|mapped| mapped.slot)
+    map(
+        architecture("dflash"),
+        &metadata(false),
+        &spec(name, &[64], GgufType::Bf16),
+    )
+    .map(|mapped| mapped.slot)
 }
 
 #[test]
 fn the_synthesized_config_parses_as_the_draft_with_hf_tap_numbers() {
-    let config = DFLASH2.config(&metadata(false), &[], None).unwrap();
+    let config = architecture("dflash")
+        .config(&metadata(false), &[], None)
+        .unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&config).unwrap();
     assert!(value.get("num_target_layers").is_none());
     value["num_target_layers"] = 6.into();
@@ -104,7 +106,13 @@ fn tensors_take_the_safetensors_draft_names() {
 
 #[test]
 fn a_causal_draft_is_rejected() {
-    assert!(DFLASH2.validate(&metadata(false), &[]).is_ok());
-    let error = DFLASH2.validate(&metadata(true), &[]).unwrap_err();
+    assert!(
+        architecture("dflash")
+            .validate(&metadata(false), &[])
+            .is_ok()
+    );
+    let error = architecture("dflash")
+        .validate(&metadata(true), &[])
+        .unwrap_err();
     assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
 }
