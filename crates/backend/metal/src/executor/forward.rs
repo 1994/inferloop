@@ -370,11 +370,13 @@ impl MetalBackend {
                 value_heads,
                 key_dim,
                 value_dim,
+                value_order,
             } => {
                 p.a = u32_size(*key_heads)?;
                 p.b = u32_size(*value_heads)?;
                 p.c = u32_size(*key_dim)?;
                 p.d = u32_size(*value_dim)?;
+                p.e = u32_size(value_order.key_run(*key_heads, *value_heads))?;
                 threads = *value_heads;
             }
             TensorOp::GatedNorm { head_dim, epsilon } => {

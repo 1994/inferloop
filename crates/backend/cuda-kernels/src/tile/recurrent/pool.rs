@@ -156,6 +156,7 @@ impl RecurrentPool for TileRecurrentPool {
         let DeltaStepPlan {
             key_heads,
             value_heads,
+            key_run,
             dim,
             block,
             ..
@@ -201,6 +202,7 @@ impl RecurrentPool for TileRecurrentPool {
                             dtype,
                             key_heads.to_string(),
                             value_heads.to_string(),
+                            key_run.to_string(),
                             dim.to_string(),
                             block.to_string(),
                         ]),
@@ -222,6 +224,7 @@ impl RecurrentPool for TileRecurrentPool {
         let DeltaStepPlan {
             key_heads,
             value_heads,
+            key_run,
             dim,
             block,
             ..
@@ -260,6 +263,7 @@ impl RecurrentPool for TileRecurrentPool {
                             dtype,
                             key_heads.to_string(),
                             value_heads.to_string(),
+                            key_run.to_string(),
                             dim.to_string(),
                             block.to_string(),
                         ]),
@@ -281,6 +285,7 @@ impl RecurrentPool for TileRecurrentPool {
         let PoolDeltaPlan {
             key_heads,
             value_heads,
+            key_run,
             dim,
             block,
             slots,
@@ -307,6 +312,7 @@ impl RecurrentPool for TileRecurrentPool {
                     dtype,
                     key_heads.to_string(),
                     value_heads.to_string(),
+                    key_run.to_string(),
                     dim.to_string(),
                     block.to_string(),
                     fields.to_string(),
@@ -360,6 +366,7 @@ impl RecurrentPool for TileRecurrentPool {
         let PoolDeltaPlan {
             key_heads,
             value_heads,
+            key_run,
             dim,
             block,
             slots,
@@ -382,6 +389,7 @@ impl RecurrentPool for TileRecurrentPool {
                     dtype,
                     key_heads.to_string(),
                     value_heads.to_string(),
+                    key_run.to_string(),
                     dim.to_string(),
                     block.to_string(),
                     fields.to_string(),

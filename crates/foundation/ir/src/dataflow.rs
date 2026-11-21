@@ -1,4 +1,4 @@
-use crate::{DType, StateKind};
+use crate::{DType, StateKind, ValueHeadOrder};
 use infer_core::{Error, OpId, Result, TensorId};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, collections::BTreeSet};
@@ -61,6 +61,8 @@ pub enum TensorOp {
         value_heads: usize,
         key_dim: usize,
         value_dim: usize,
+        #[serde(default)]
+        value_order: ValueHeadOrder,
     },
     GatedNorm {
         head_dim: usize,

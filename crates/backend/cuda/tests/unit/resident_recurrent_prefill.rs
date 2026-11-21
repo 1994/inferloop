@@ -4,6 +4,7 @@ use crate::resident::buffers::buffer as operand;
 use crate::resident::recurrent::recurrent::delta as recurrent_delta;
 use crate::test_support::f32_state;
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::RecurrentShape;
 use infer_cuda_kernels::kernels as contract_kernels;
 use std::env::var_os;
 use std::error::Error;
@@ -160,6 +161,7 @@ fn check_case(
         .generics(f32_state(vec![
             kh.to_string(),
             vh.to_string(),
+            (vh / kh).to_string(),
             dim.to_string(),
             lanes.to_string(),
             block.to_string(),
@@ -248,6 +250,7 @@ fn per_lane_delta_matches_independent_recurrence_at_model_geometry() -> Result<(
         .generics(f32_state(vec![
             kh.to_string(),
             vh.to_string(),
+            (vh / kh).to_string(),
             dim.to_string(),
             block.to_string(),
         ]))
@@ -378,6 +381,7 @@ fn recurrence_gap(
     .generics(f32_state(vec![
         kh.to_string(),
         vh.to_string(),
+        (vh / kh).to_string(),
         dim.to_string(),
         lanes.to_string(),
         dim.to_string(),
@@ -408,6 +412,7 @@ fn recurrence_gap(
         .generics(f32_state(vec![
             kh.to_string(),
             vh.to_string(),
+            (vh / kh).to_string(),
             dim.to_string(),
             dim.to_string(),
         ]))
@@ -604,6 +609,7 @@ fn check_wy_fixture(
         .generics(f32_state(vec![
             kh.to_string(),
             vh.to_string(),
+            (vh / kh).to_string(),
             dim.to_string(),
             lanes.to_string(),
             block.to_string(),
@@ -820,7 +826,16 @@ fn check_ordered_fixture(
             ],
             (operand(&state)?.into(), &output),
             &metadata,
-            (kh, vh, dim, lanes, block),
+            (
+                RecurrentShape {
+                    key_heads: kh,
+                    value_heads: vh,
+                    key_run: vh / kh,
+                    dim,
+                    lanes,
+                },
+                block,
+            ),
         )?;
         Ok(())
     })?;
@@ -854,6 +869,7 @@ fn check_ordered_fixture(
         .generics(f32_state(vec![
             kh.to_string(),
             vh.to_string(),
+            (vh / kh).to_string(),
             dim.to_string(),
             dim.to_string(),
         ]))

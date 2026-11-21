@@ -18,6 +18,7 @@ pub mod kernels {
         E: ElementType,
         const KH: i32,
         const VH: i32,
+        const KR: i32,
         const D: i32,
         const LANES: i32,
         const SW: i32,
@@ -43,7 +44,7 @@ pub mod kernels {
             convert_tile(state.load_like(state).reshape(shape![D, SW]));
         for lane in 0i32..LANES {
             if lane < count && base + lane + offset >= 0 {
-                let key = pid.0 / (VH / KH);
+                let key = pid.0 / KR % KH;
                 let qp = qkv.partition(shape![1, 1, D]);
                 let mut q = qp.load([lane, key, 0i32]).reshape(shape![D]);
                 let mut k = qp.load([lane, KH + key, 0i32]).reshape(shape![D]);
@@ -295,6 +296,7 @@ pub mod kernels {
         E: ElementType,
         const KH: i32,
         const VH: i32,
+        const KR: i32,
         const D: i32,
         const LANES: i32,
         const SW: i32,
@@ -320,7 +322,7 @@ pub mod kernels {
             convert_tile(state.load_like(state).reshape(shape![D, SW]));
         for lane in 0i32..LANES {
             if lane < count && base + lane + offset >= 0 {
-                let key = pid.0 / (VH / KH);
+                let key = pid.0 / KR % KH;
                 let qp = qkv.partition(shape![1, 1, D]);
                 let mut q = qp.load([lane, key, 0i32]).reshape(shape![D]);
                 let mut k = qp.load([lane, KH + key, 0i32]).reshape(shape![D]);
@@ -458,6 +460,7 @@ pub mod kernels {
         E: ElementType,
         const KH: i32,
         const VH: i32,
+        const KR: i32,
         const D: i32,
         const LANES: i32,
         const SW: i32,
@@ -485,7 +488,7 @@ pub mod kernels {
         let vp = qkv.partition(shape![1, 1, SW]);
         let bp = betas.partition(shape![1, 1]);
         let dp = decays.partition(shape![1, 1]);
-        let key = pid.0 / (VH / KH);
+        let key = pid.0 / KR % KH;
         let key_value = KH + key;
         let value_head = 2i32 * KH + pid.0;
         let rows = num_tiles(&qp, 0i32);
@@ -623,6 +626,7 @@ pub mod kernels {
         E: ElementType,
         const KH: i32,
         const VH: i32,
+        const KR: i32,
         const D: i32,
         const LANES: i32,
         const SW: i32,
@@ -656,7 +660,7 @@ pub mod kernels {
                     0i32.broadcast(shape![32]),
                 );
             let valid = active.reshape(shape![32, 1]).broadcast(shape![32, D]);
-            let key = pid.0 / (VH / KH);
+            let key = pid.0 / KR % KH;
             let qp = qkv.partition(shape![32, 1, D]);
             let q = qp.load([chunk, key, 0i32]).reshape(shape![32, D]);
             let k = qp.load([chunk, KH + key, 0i32]).reshape(shape![32, D]);

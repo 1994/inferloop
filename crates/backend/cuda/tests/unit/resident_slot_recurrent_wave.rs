@@ -82,7 +82,7 @@ fn capture_verify(
                 &fixture.metadata,
             )
             .generics(f32_state(
-                [KH, VH, D, block, 4]
+                [KH, VH, VH / KH, D, block, 4]
                     .iter()
                     .map(ToString::to_string)
                     .collect(),
@@ -129,7 +129,7 @@ fn check_commits(
                         &counts,
                     )
                     .generics(f32_state(
-                        [KH, VH, D, selected, 4]
+                        [KH, VH, VH / KH, D, selected, 4]
                             .iter()
                             .map(ToString::to_string)
                             .collect(),

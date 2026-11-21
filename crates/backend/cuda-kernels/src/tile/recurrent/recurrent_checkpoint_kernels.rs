@@ -63,6 +63,7 @@ pub mod checkpoint {
         E: ElementType,
         const KH: i32,
         const VH: i32,
+        const KR: i32,
         const D: i32,
         const SW: i32,
     >(
@@ -80,7 +81,7 @@ pub mod checkpoint {
             tile_to_scalar(metadata.partition(shape![1]).load([2i32]).reshape(shape![]));
         if position >= 0 {
             let pid = get_tile_block_id();
-            let key = pid.0 / (VH / KH);
+            let key = pid.0 / KR % KH;
             let qp = qkv.partition(shape![D]);
             let mut q = qp.load([key]);
             let mut k = qp.load([KH + key]);

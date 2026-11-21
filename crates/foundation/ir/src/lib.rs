@@ -43,6 +43,7 @@ pub use image::{
 };
 pub use model::{
     BackboneKind, FeedForward, Head, Mixer, ModelIr, PositionSpec, StateKind, StateRequirement,
+    ValueHeadOrder,
 };
 pub use multimodal::{
     MediaInput, MediaItem, MediaNode, MediaPixels, MediaPlan, MediaStage, Modality, MultimodalGraph,

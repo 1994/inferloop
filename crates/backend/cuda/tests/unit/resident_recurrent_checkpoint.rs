@@ -167,6 +167,7 @@ fn run_delta(
     let generics = vec![
         key_heads.to_string(),
         value_heads.to_string(),
+        (value_heads / key_heads).to_string(),
         dim.to_string(),
         block.to_string(),
     ];

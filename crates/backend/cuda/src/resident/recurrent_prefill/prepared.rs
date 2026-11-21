@@ -35,6 +35,7 @@ fn geometries(graph: &DataflowGraph, weights: &ProgramWeights, lanes: usize) -> 
             value_heads,
             key_dim,
             value_dim,
+            ..
         } = node.op
             && key_dim == ORDERED_DIM
             && value_dim == key_dim
@@ -120,15 +121,9 @@ impl Inputs {
         [qkv_storage, beta, alpha, a_log, bias]: [Buffer<'_, f32>; INPUT_BINDINGS],
         (state, output): (StateBuffer<'_>, &O),
         metadata: &Allocation<i32>,
-        (kh, vh, dim, lanes, block): (usize, usize, usize, usize, usize),
+        (shape, block): (RecurrentShape, usize),
     ) -> Result<()> {
         let recording = scope;
-        let shape = RecurrentShape {
-            key_heads: kh,
-            value_heads: vh,
-            dim,
-            lanes,
-        };
         if self.chunk.is_none() {
             recurrent
                 .normalize(recording, shape, buffer(&self.normalized)?, qkv_storage)

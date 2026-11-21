@@ -2,6 +2,7 @@ use super::fixture_weights;
 use crate::resident::ProgramGeometry;
 use crate::resident::recurrent_prefill::required_bytes;
 use infer_core::{OpId, Result, TensorId};
+use infer_ir::ValueHeadOrder;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 
 fn graph() -> DataflowGraph {
@@ -14,6 +15,7 @@ fn graph() -> DataflowGraph {
                 value_heads: 48,
                 key_dim: 128,
                 value_dim: 128,
+                value_order: ValueHeadOrder::Grouped,
             },
             inputs: vec![TensorId::ONE; 3],
             outputs: vec![TensorId::ONE],
@@ -49,6 +51,7 @@ fn quantized_recurrent_admission_counts_retained_prompt_graphs_and_shares_layers
         value_heads: 48,
         key_dim: 128,
         value_dim: 128,
+        value_order: ValueHeadOrder::Grouped,
     };
     let mut later = graph.nodes[0].clone();
     later.id = OpId::new(2)?;
@@ -57,6 +60,7 @@ fn quantized_recurrent_admission_counts_retained_prompt_graphs_and_shares_layers
         value_heads: 48,
         key_dim: 128,
         value_dim: 128,
+        value_order: ValueHeadOrder::Grouped,
     };
     graph.nodes.push(later.clone());
     later.id = OpId::new(3)?;
@@ -104,6 +108,7 @@ fn recurrent_admission_rejects_scratch_overflow_before_allocation() {
         value_heads: usize::MAX,
         key_dim: 128,
         value_dim: 128,
+        value_order: ValueHeadOrder::Grouped,
     };
     assert!(required_bytes(&graph, &weights, 256).is_err());
 }
@@ -120,6 +125,7 @@ fn ordered_recurrent_preparation_counts_distinct_key_geometries() -> Result<()> 
         value_heads: 48,
         key_dim: 128,
         value_dim: 128,
+        value_order: ValueHeadOrder::Grouped,
     };
     graph.nodes.push(node.clone());
     node.id = OpId::new(3)?;
@@ -151,6 +157,7 @@ fn quantized_default_prices_only_exact_ordered_recurrent_shapes() -> Result<()> 
         value_heads: 2,
         key_dim: 32,
         value_dim: 32,
+        value_order: ValueHeadOrder::Grouped,
     };
     assert_eq!(required_bytes(&unsupported, &weights, 64)?, 0);
     let mut mixed = graph;

@@ -145,6 +145,7 @@ fn record_node(
             value_heads,
             key_dim,
             value_dim,
+            value_order,
         } => {
             let [state] = state.as_mut_slice() else {
                 return Err(Error::invariant("commit delta state"));
@@ -160,6 +161,7 @@ fn record_node(
                 &PoolDeltaPlan {
                     key_heads,
                     value_heads,
+                    key_run: value_order.key_run(key_heads, value_heads),
                     dim: key_dim,
                     block,
                     slots: inputs.slots,

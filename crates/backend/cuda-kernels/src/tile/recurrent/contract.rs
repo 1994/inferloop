@@ -286,6 +286,7 @@ impl Recurrent for TileRecurrent {
         let DeltaStepPlan {
             key_heads,
             value_heads,
+            key_run,
             dim,
             block,
             ..
@@ -322,6 +323,7 @@ impl Recurrent for TileRecurrent {
                             dtype,
                             key_heads.to_string(),
                             value_heads.to_string(),
+                            key_run.to_string(),
                             dim.to_string(),
                             block.to_string(),
                         ]),
@@ -384,6 +386,7 @@ impl Recurrent for TileRecurrent {
         let DeltaStepPlan {
             key_heads,
             value_heads,
+            key_run,
             dim,
             block,
             lanes,
@@ -404,6 +407,7 @@ impl Recurrent for TileRecurrent {
                     dtype,
                     key_heads.to_string(),
                     value_heads.to_string(),
+                    key_run.to_string(),
                     dim.to_string(),
                     block.to_string(),
                 ];
@@ -491,6 +495,7 @@ impl Recurrent for TileRecurrent {
         let RecurrentShape {
             key_heads: kh,
             value_heads: vh,
+            key_run,
             dim,
             lanes,
         } = shape;
@@ -539,11 +544,18 @@ impl Recurrent for TileRecurrent {
                         .generics(vec![
                             kh.to_string(),
                             vh.to_string(),
+                            key_run.to_string(),
                             dim.to_string(),
                         ]),
                     )
                     .map_err(backend_error)?;
-                let generics = vec![dtype, kh.to_string(), vh.to_string(), lanes.to_string()];
+                let generics = vec![
+                    dtype,
+                    kh.to_string(),
+                    vh.to_string(),
+                    key_run.to_string(),
+                    lanes.to_string(),
+                ];
                 let recorded = if vh == WIDE_SCAN_VALUE_HEADS {
                     scope.record(
                         recurrent_chunk::chunk_scan_wide(
@@ -593,6 +605,7 @@ impl Recurrent for TileRecurrent {
             value_heads: vh,
             dim,
             lanes,
+            ..
         } = shape;
         let mut normalized =
             self.tensor(recording, normalized, "normalized", &[lanes, 2 * kh, dim])?;
@@ -644,6 +657,7 @@ impl Recurrent for TileRecurrent {
         let RecurrentShape {
             key_heads: kh,
             value_heads: vh,
+            key_run,
             dim,
             lanes,
         } = shape;
@@ -678,6 +692,7 @@ impl Recurrent for TileRecurrent {
                             dtype,
                             kh.to_string(),
                             vh.to_string(),
+                            key_run.to_string(),
                             dim.to_string(),
                             lanes.to_string(),
                             block.to_string(),
@@ -701,6 +716,7 @@ impl Recurrent for TileRecurrent {
         let RecurrentShape {
             key_heads: kh,
             value_heads: vh,
+            key_run,
             dim,
             lanes,
         } = shape;
@@ -720,6 +736,7 @@ impl Recurrent for TileRecurrent {
                     dtype,
                     kh.to_string(),
                     vh.to_string(),
+                    key_run.to_string(),
                     dim.to_string(),
                     lanes.to_string(),
                     block.to_string(),

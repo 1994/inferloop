@@ -15,6 +15,8 @@ pub(super) struct Delta {
     pub value_heads: usize,
     pub key_dim: usize,
     pub value_dim: usize,
+    /// Adjacent value heads that share a key head, as the weights' value-head order lays them out.
+    pub key_run: usize,
 }
 
 impl Delta {
@@ -55,12 +57,14 @@ impl Recurrence {
                 value_heads,
                 key_dim,
                 value_dim,
+                value_order,
             } => {
                 let delta = Delta {
                     key_heads,
                     value_heads,
                     key_dim,
                     value_dim,
+                    key_run: value_order.key_run(key_heads, value_heads),
                 };
                 if !delta.supported() {
                     return Err(error("resident delta dimensions"));

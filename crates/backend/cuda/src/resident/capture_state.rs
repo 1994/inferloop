@@ -162,6 +162,7 @@ impl Capture<'_> {
                     &DeltaStepPlan {
                         key_heads: delta.key_heads,
                         value_heads: delta.value_heads,
+                        key_run: delta.key_run,
                         dim: delta.key_dim,
                         block,
                         lanes: None,
@@ -264,6 +265,7 @@ impl Capture<'_> {
             &DeltaStepPlan {
                 key_heads: delta.key_heads,
                 value_heads: delta.value_heads,
+                key_run: delta.key_run,
                 dim: delta.key_dim,
                 block,
                 lanes: Some(lanes),

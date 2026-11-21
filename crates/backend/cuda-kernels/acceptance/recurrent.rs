@@ -164,6 +164,9 @@ impl Conv {
 pub struct Delta {
     pub key_heads: usize,
     pub value_heads: usize,
+    /// Adjacent value heads that share a key head: value head `v` reads key head
+    /// `v / key_run % key_heads` (grouped heads: `value_heads / key_heads`; tiled heads: 1).
+    pub key_run: usize,
     pub dim: usize,
     pub active: bool,
 }
@@ -215,9 +218,8 @@ impl Delta {
         };
         let mut output = Vec::with_capacity(self.value_heads * dim);
         let mut next = state;
-        let group = self.value_heads / self.key_heads;
         for head in 0..self.value_heads {
-            let key = head / group;
+            let key = head / self.key_run % self.key_heads;
             let q = unit(&qkv[key * dim..(key + 1) * dim], 1.0 / width.sqrt());
             let k = unit(
                 &qkv[(self.key_heads + key) * dim..(self.key_heads + key + 1) * dim],

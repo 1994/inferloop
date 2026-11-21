@@ -1,6 +1,7 @@
 //! The `qwen35` adapter: Qwen3.5's hybrid backbone and its `nextn` MTP head.
 use super::support::{architecture, mapped as map, spec as tensor, with};
 use infer_format::{GgufType, Metadata, MetadataValue};
+use infer_ir::{TensorOp, ValueHeadOrder};
 use infer_models::gguf::{MappedTensor, TensorSpec, ValueTransform};
 
 fn metadata() -> Metadata {
@@ -140,7 +141,12 @@ fn the_synthesized_config_imports_as_the_hybrid_with_its_mtp_head() {
 }
 
 #[test]
-fn tiled_value_heads_are_rejected_explicitly() {
+fn tiled_value_heads_are_declared_and_reach_the_delta_op() {
+    let grouped = architecture("qwen35")
+        .config(&metadata(), &[], None)
+        .unwrap();
+    let grouped: serde_json::Value = serde_json::from_slice(&grouped).unwrap();
+    assert_eq!(grouped["text_config"]["linear_value_head_order"], "grouped");
     let tiled = with(
         &with(
             &metadata(),
@@ -150,8 +156,39 @@ fn tiled_value_heads_are_rejected_explicitly() {
         "qwen35.ssm.inner_size",
         Some(MetadataValue::U64(96)),
     );
-    let error = architecture("qwen35")
-        .validate(&tiled, &[spec("token_embd.weight", &[3, 64])])
-        .unwrap_err();
-    assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
+    let tensors = [spec("token_embd.weight", &[3, 64])];
+    architecture("qwen35").validate(&tiled, &tensors).unwrap();
+    let config = architecture("qwen35")
+        .config(&tiled, &tensors, None)
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&config).unwrap();
+    assert_eq!(value["text_config"]["linear_value_head_order"], "tiled");
+    let provider = infer_models::default_registry().resolve(&config).unwrap();
+    let imported = provider.import(infer_core::ModelId::ONE, &config).unwrap();
+    let graph = provider.graph(&imported.model).unwrap();
+    let orders: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter_map(|node| match node.op {
+            TensorOp::Delta {
+                key_heads,
+                value_heads,
+                value_order,
+                ..
+            } => Some((key_heads, value_heads, value_order)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(orders.len(), 3);
+    assert!(
+        orders
+            .iter()
+            .all(|order| *order == (2, 6, ValueHeadOrder::Tiled))
+    );
+    let uneven = with(
+        &tiled,
+        "qwen35.ssm.group_count",
+        Some(MetadataValue::U64(4)),
+    );
+    assert!(architecture("qwen35").validate(&uneven, &tensors).is_err());
 }

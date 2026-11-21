@@ -103,7 +103,7 @@ impl Fixture {
                     &metadata[2],
                 )
                 .generics(f32_state(
-                    [KH, VH, D, self.block]
+                    [KH, VH, VH / KH, D, self.block]
                         .iter()
                         .map(ToString::to_string)
                         .collect(),
@@ -142,7 +142,7 @@ impl Fixture {
                     &self.metadata,
                 )
                 .generics(f32_state(
-                    [KH, VH, D, self.block, 4]
+                    [KH, VH, VH / KH, D, self.block, 4]
                         .iter()
                         .map(ToString::to_string)
                         .collect(),
@@ -207,7 +207,7 @@ impl Fixture {
                     counts[slot],
                 )
                 .generics(f32_state(
-                    [KH, VH, D, self.block]
+                    [KH, VH, VH / KH, D, self.block]
                         .iter()
                         .map(ToString::to_string)
                         .collect(),
@@ -252,7 +252,7 @@ impl Fixture {
                         &counts,
                     )
                     .generics(f32_state(
-                        [KH, VH, D, self.block, 4]
+                        [KH, VH, VH / KH, D, self.block, 4]
                             .iter()
                             .map(ToString::to_string)
                             .collect(),

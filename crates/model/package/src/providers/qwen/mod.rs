@@ -6,7 +6,7 @@ use crate::vision::validate;
 use infer_core::{Error, ModelId, ProviderId, Result};
 use infer_ir::{
     BackboneKind, DType, FeedForward, Head, Mixer, Modality, ModelIr, PositionSpec, PrecisionPlan,
-    StateKind, StateRequirement,
+    StateKind, StateRequirement, ValueHeadOrder,
 };
 use infer_model_recipes::decoder::lower;
 use infer_spi::{
@@ -128,6 +128,9 @@ struct TextConfig {
     linear_value_head_dim: usize,
     #[serde(default)]
     linear_conv_kernel_dim: usize,
+    /// Not an HF key: a GGUF adapter declares the value-head order its converter stored.
+    #[serde(default)]
+    linear_value_head_order: ValueHeadOrder,
     #[serde(default)]
     rope_parameters: Option<RopeConfig>,
     #[serde(default)]
@@ -465,6 +468,7 @@ impl TextConfig {
                         key_dim: self.linear_key_head_dim,
                         value_dim: self.linear_value_head_dim,
                         conv_kernel: self.linear_conv_kernel_dim,
+                        value_order: self.linear_value_head_order,
                     });
                     self.import_linear_state(layer, &mut state)?;
                 }

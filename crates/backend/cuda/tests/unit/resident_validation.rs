@@ -2,6 +2,7 @@ use super::check_kernel_geometry;
 use crate::constants::CONV_KERNEL_SIZE;
 use infer_core::ErrorCode;
 use infer_ir::TensorOp;
+use infer_ir::ValueHeadOrder;
 
 const fn rope(head_dim: usize, rotary_dim: usize) -> TensorOp {
     TensorOp::Rope {
@@ -27,6 +28,7 @@ const fn delta(key_heads: usize, value_heads: usize, key_dim: usize, value_dim: 
         value_heads,
         key_dim,
         value_dim,
+        value_order: ValueHeadOrder::Grouped,
     }
 }
 

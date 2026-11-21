@@ -1,7 +1,7 @@
 use infer_core::{Error, IdAllocator, Result, TensorId};
 use infer_ir::{
     BackboneKind, DType, DataflowGraph, FeedForward, Mixer, ModelIr, StateKind, TensorNode,
-    TensorOp, TensorSpec, TensorStorage,
+    TensorOp, TensorSpec, TensorStorage, ValueHeadOrder,
 };
 
 pub(crate) struct Builder {
@@ -169,6 +169,7 @@ struct DeltaLayout {
     key_dim: usize,
     value_dim: usize,
     conv_kernel: usize,
+    value_order: ValueHeadOrder,
 }
 impl Builder {
     fn mixer(
@@ -207,6 +208,7 @@ impl Builder {
                 key_dim,
                 value_dim,
                 conv_kernel,
+                value_order,
             } => self.delta(
                 norm,
                 prefix,
@@ -218,6 +220,7 @@ impl Builder {
                     key_dim,
                     value_dim,
                     conv_kernel,
+                    value_order,
                 },
             ),
             Mixer::Recurrent { .. } => Err(Error::unsupported("recurrent graph provider required")),
@@ -373,6 +376,7 @@ impl Builder {
             key_dim,
             value_dim,
             conv_kernel,
+            value_order,
         } = layout;
         let ksize = mul(key_heads, key_dim)?;
         let vsize = mul(value_heads, value_dim)?;
@@ -438,6 +442,7 @@ impl Builder {
                 value_heads,
                 key_dim,
                 value_dim,
+                value_order,
             },
             vec![mixed, beta, a, a_log, dt_bias],
             &[vsize],

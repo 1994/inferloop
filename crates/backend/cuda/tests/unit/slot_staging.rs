@@ -4,6 +4,7 @@ use crate::device::device_error;
 use crate::test_support::fixture_graph;
 use cutile::prelude::DeviceOp;
 use infer_core::OpId;
+use infer_ir::ValueHeadOrder;
 use infer_ir::{DType, DataflowGraph, TensorSpec, TensorStorage};
 use std::mem::take;
 
@@ -52,6 +53,7 @@ fn staging_fixture(width: usize) -> Result<(DataflowGraph, [TensorId; 3], Vec<Te
                 value_heads: 4,
                 key_dim: 4,
                 value_dim: 4,
+                value_order: ValueHeadOrder::Grouped,
             },
             inputs: vec![first, second, third, TensorId::ONE, TensorId::ONE],
             outputs: vec![second],

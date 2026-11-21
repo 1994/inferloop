@@ -1,4 +1,5 @@
 use super::*;
+use infer_ir::ValueHeadOrder;
 
 const WY_BLOCK: usize = 32;
 const DELTA: Delta = Delta {
@@ -6,6 +7,7 @@ const DELTA: Delta = Delta {
     value_heads: 48,
     key_dim: ORDERED_DIM,
     value_dim: ORDERED_DIM,
+    key_run: 3,
 };
 const CHUNK: Chunk = Chunk {
     lanes: 64,
@@ -22,6 +24,7 @@ fn delta_op(delta: Delta) -> TensorOp {
         value_heads: delta.value_heads,
         key_dim: delta.key_dim,
         value_dim: delta.value_dim,
+        value_order: ValueHeadOrder::Grouped,
     }
 }
 

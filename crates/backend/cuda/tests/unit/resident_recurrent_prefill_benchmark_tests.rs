@@ -10,6 +10,7 @@ use cutile::{
     bench::{BenchOptions, do_bench_paired},
     prelude::*,
 };
+use infer_cuda_kernels::contract::RecurrentShape;
 use infer_cuda_kernels::kernels as contract_kernels;
 use infer_cuda_kernels::runtime::Graph;
 use std::error::Error;
@@ -102,7 +103,16 @@ fn bench_case(
                 ],
                 (operand(&state)?.into(), &scratch),
                 &metadata,
-                (kh, vh, dim, lanes, block),
+                (
+                    RecurrentShape {
+                        key_heads: kh,
+                        value_heads: vh,
+                        key_run: vh / kh,
+                        dim,
+                        lanes,
+                    },
+                    block,
+                ),
             )?;
         } else {
             cutile(scope)?.record(
@@ -165,6 +175,7 @@ fn per_lane_baseline(
                 .generics(f32_state(vec![
                     kh.to_string(),
                     vh.to_string(),
+                    (vh / kh).to_string(),
                     dim.to_string(),
                     dim.to_string(),
                 ])),

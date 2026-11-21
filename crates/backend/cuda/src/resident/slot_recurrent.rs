@@ -323,6 +323,7 @@ pub(super) fn record_verify(
             value_heads,
             key_dim,
             value_dim,
+            value_order,
         } => {
             let [state] = state.as_slice() else {
                 return Err(error("delta state layout"));
@@ -337,6 +338,7 @@ pub(super) fn record_verify(
                     &DeltaStepPlan {
                         key_heads,
                         value_heads,
+                        key_run: value_order.key_run(key_heads, value_heads),
                         dim: key_dim,
                         block: fused_block(value_dim, split),
                         lanes: None,
@@ -414,6 +416,7 @@ pub(super) fn record_commit(
             value_heads,
             key_dim,
             value_dim,
+            value_order,
         } => {
             let [state] = state.as_slice() else {
                 return Err(error("delta state layout"));
@@ -431,6 +434,7 @@ pub(super) fn record_commit(
                     &DeltaStepPlan {
                         key_heads,
                         value_heads,
+                        key_run: value_order.key_run(key_heads, value_heads),
                         dim: key_dim,
                         block: fused_block(value_dim, split),
                         lanes: None,

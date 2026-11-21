@@ -9,6 +9,7 @@ use crate::{
 use cutile::half::bf16;
 use infer_core::{OpId, Result, TensorId};
 use infer_cuda_kernels::kernels as tile_kernels;
+use infer_ir::ValueHeadOrder;
 use infer_ir::{DType, DataflowGraph, StateKind, TensorNode, TensorOp, TensorSpec, TensorStorage};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -418,6 +419,7 @@ fn graph_at((key_heads, value_heads, dim): DeltaGeometry) -> Result<DataflowGrap
                 value_heads,
                 key_dim: dim,
                 value_dim: dim,
+                value_order: ValueHeadOrder::Grouped,
             },
             vec![2, 4, 6, 7, 8],
             10,

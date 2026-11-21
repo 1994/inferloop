@@ -1,5 +1,6 @@
 use crate::resident::prefill_projection::DensePlan;
 use infer_core::{OpId, TensorId};
+use infer_ir::ValueHeadOrder;
 use infer_ir::{DType, DataflowGraph, StateKind, TensorNode, TensorOp, TensorSpec, TensorStorage};
 
 fn id(value: u64) -> TensorId {
@@ -68,6 +69,7 @@ fn fixture(heads: usize, columns: usize) -> DataflowGraph {
                 value_heads: heads,
                 key_dim: 4,
                 value_dim: 4,
+                value_order: ValueHeadOrder::Grouped,
             },
             vec![6, 3, 5, 7, 8],
             vec![10],

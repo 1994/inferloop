@@ -68,11 +68,14 @@ pub trait GgufProjector: Sync {
 线性注意力几何来自 `qwen35.ssm.*`（`group_count` = key heads，`time_step_rank` = value heads，`state_size` =
 key dim，`inner_size / time_step_rank` = value dim）。
 
-已知限制：
+value head 多于 key head（4B/9B 为 16/32，27B 为 16/48）时，转换器把所有 value 侧张量（`in_proj_qkv` 的 v 行、
+`z`、`a`/`b`、`A_log`、`dt_bias`、conv 的 v 通道、`ssm_out` 的列）重排成 tiled 顺序。量化 `ssm_out` 的列无法在
+加载时还原，所以不还原：适配器在配置里声明 `linear_value_head_order: "tiled"`，provider 写入
+`Mixer::LinearAttention::value_order` 与 `TensorOp::Delta::value_order`（`ValueHeadOrder`），CUDA 与 Metal 的
+delta kernel 按 `key_run`（相邻共享一个 key head 的 value head 数；grouped 为 `VH / KH`，tiled 为 1）读
+`v / key_run % KH` 号 key head。grouped 的算术与改动前逐位相同。
 
-- key heads ≠ value heads（27B 是 16/48）时转换器把 value head 重排成 tiled 顺序，连量化的 `ssm_out` 列也一起
-  重排，加载时无法还原，显式 `Unsupported`；需要 delta kernel 直接读该顺序；
-- `nextn_predict_layers > 1` 显式 `Unsupported`。
+已知限制：`nextn_predict_layers > 1` 显式 `Unsupported`。
 
 验证（RTX 5090，`/home/r/benchmarks/inference.rs/gguf-mtp-2026-11-21/`）：
 
