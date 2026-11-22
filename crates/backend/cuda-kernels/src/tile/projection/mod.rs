@@ -5,6 +5,7 @@ pub mod fp4_probe;
 mod fp8_gemm_kernels;
 mod fp8_quant_reduction_kernels;
 mod grouped_int_byte_kernels;
+mod grouped_int_dot;
 mod grouped_int_high_kernels;
 mod grouped_int_nibble_kernels;
 mod linear_batch_kernels;

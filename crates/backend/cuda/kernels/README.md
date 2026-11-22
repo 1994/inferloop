@@ -48,7 +48,7 @@ make check-cuda-artifacts
 python3 tools/cuda/kernels.py verify --kernel oxide-attention
 ```
 
-一个清单登记 9 组制品的生成器、源文件、PTX、目标架构、符号和数值 profile。
+一个清单登记 10 组制品的生成器、源文件、PTX、目标架构、符号和数值 profile。
 新增制品目录或 PTX 未登记会失败。源码和产物 SHA256 继续由原有 provenance/manifest
 持有，避免复制第二套哈希。6 个 `verify-artifact.py` 仅兼容转发到统一入口。
 

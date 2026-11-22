@@ -1,6 +1,6 @@
 # GGUF grouped-int 性能：问题记录与修复方案
 
-状态：P1、P2 已修复；P3 前两步（word-load GEMV、tile 按行拆给多个 CTA）已修复；P4 第一步（5/6-bit nibble + 高位平面）、P6 第一步（行块 GEMV）已实现；P3 余项、P4 余项、P5、P6 余项为方案。格式与 kernel 家族的结构见
+状态：P1、P2 已修复；P3 前两步（word-load GEMV、tile 按行拆给多个 CTA）已修复；P4 第一步（5/6-bit nibble + 高位平面）、P6（行块 GEMV、int8 点积 kernel）已实现；P3 余项、P4 余项、P5 为方案。格式与 kernel 家族的结构见
 [grouped-int kernel family](../engineering/grouped-int-kernels.md)。
 
 测量环境：RTX 5090，Qwen3-VL-2B 由 BF16 HF 权重经 `convert_hf_to_gguf.py` + `llama-quantize`
@@ -227,6 +227,53 @@ C4 批量 decode 快 1.9–2.0 倍，C1 decode 与 C8 不变（C8 的 8 行走�
 仍慢于不开 MTP（0.677 s），`--num-speculative-tokens auto` 对 grouped-int 目标暂不启用 MTP，显式深度
 照常加载。把行维放到最后一维（每线程持有全部行）测过，耗时不变。
 
+## P6 第二步：int8 点积 kernel（#291）
+
+先排查到：3 行验证落在 4 行块里，块越出输入的 x 读取走谓词化慢路径，3 行比 4 行慢近一倍（gate 44 vs
+24 µs）。cuTile 的行块 GEMV 改为把越界的尾块单独 launch，用不越界的两行 + 一行读取（`row_block`，
+`TAIL` generic）；其余块不变。设备装不进 int8 kernel 时走这条路径。
+
+再试过 cuTile 内的 int8 `mmai`：理想情况下（激活已量化、无 bias）gate 16 行也要 22 µs，瓶颈是把解码后的
+int8 code 转成 tensor core 操作数布局（经 shared memory），省下的乘加被换掉了，放弃。
+
+最终方案是手写 CUDA（`crates/backend/cuda/kernels/grouped-int-dot/`，nvcc PTX，`kernels.json` 登记），
+与 llama.cpp MMVQ 同类：
+- 每 CTA 8 warp，4 个 16 行 tile × 2 段 K（输出少时 1 tile × 8 段 K，宽 CTA 数不足 SM 数一半时选用）；
+- 每段 K 的激活在 shared memory 里量化一次，每 32 值一个 scale `amax/127`、ties to even，同时记录每 16 值的
+  精确 f32 和；
+- 每线程读一个 64 值组中 16 个 lane 的一个 4 行 word，用 `PRMT` 在寄存器里转置成“每行 4 lane”，
+  nibble / 5/6-bit 高位平面 / 8-bit 三种 packing 统一成 u8 code，`dp4a` 链式累加；zero point 用
+  `zero·Σq`，bias 乘精确 `Σx`，每 16 值做一次 f32 epilogue；
+- 2/4/8 行三个变体覆盖 2–8 行；1 行 decode 仍用 F32 GEMV。
+
+数值：2–8 行改为 int8 激活（数值契约变化，与 llama.cpp 相同）。设备测试 `grouped_int_rows` 对 8 种格式 ×
+1–9 行比对：2–8 行与按 kernel 相同步骤量化后的 f64 参考相差 ≤ 2e-6·Σ|w·x|，与未量化乘积相差
+≤ Σ|w·x|/254。
+
+kernel（冷 L2，µs，Qwen3.5-2B `Q4_K_M`，main → 本 PR）：
+
+| 投影 | 1 行 | 3 行 | 4 行 | 8 行 |
+|---|---:|---:|---:|---:|
+| head `Q6_K` 248320×2048 | 338 → 338 | 1170 → 335 | 720 → 340 | 1399 → 346 |
+| gate `Q4_K` 6144×2048 | 10.8 → 10.7 | 44.4 → 11.6 | 24.1 → 12.6 | 38.5 → 19.0 |
+| down `Q6_K` 2048×6144 | 12.6 → 12.6 | 39.7 → 18.3 | 20.0 → 18.3 | 35.3 → 26.3 |
+
+serving（`fixed-work-serving.py`，每请求 256 token，两轮新进程交替，中位数；
+`/home/r/benchmarks/inference.rs/gguf-mtp-dot-2026-11-22/`）：
+
+| 模型 | 场景 | main | 本 PR |
+|---|---|---:|---:|
+| Qwen3.5-2B `Q4_K_M` | C1 decode | 0.703 s | 0.687 s |
+| Qwen3.5-2B `Q4_K_M` | C1 MTP 深度 2 | 0.793 s | 0.444 s |
+| Qwen3.5-2B `Q4_K_M` | C4 decode | 1.666 s | 1.148 s |
+| Qwen3.5-2B `Q4_K_M` | C8 decode | 2.300 s | 2.300 s |
+| Qwen3.5-0.8B `Q8_0` | C1 decode | 0.459 s | 0.459 s |
+| Qwen3.5-0.8B `Q8_0` | C1 MTP 深度 2 | 0.639 s | 0.409 s |
+
+C1 MTP 深度 2 比不开 MTP 快 1.55 倍（`Q4_K_M`），`--num-speculative-tokens auto` 去掉 grouped-int 例外。
+只有尾块修复（无 int8 kernel）时：`Q4_K_M` MTP 0.721 s、`Q8_0` MTP 0.440 s（`gguf-mtp-tail-2026-11-21/`）。
+C8 不变：未定位到 C8 decode 中 8 行投影占主导的证据，留待分解。
+
 ## 后续方案
 
 **P3 余项（优先）。** 目标：单请求 TPOT 4-bit ≤ 2.0 ms、5/6/8-bit ≤ 2.5 ms。剩余差距 0.4–0.9 ms：5/6-bit 的设备字节数（P4 第一步后 Q5_K 7、Q6_K 8 bits/值 vs 文件 5.5/6.56）、非 GEMV kernel（norm、rope、attention 的 split/merge，约 0.5 ms，与 BF16 路径共有）以及 kernel 间空隙（约 0.2 ms）。
@@ -249,12 +296,7 @@ C4 批量 decode 快 1.9–2.0 倍，C1 decode 与 C8 不变（C8 的 8 行走�
 2. 再评估 int8 激活（per-32 块 scale）+ int8 MMA：属于数值契约变化，需单独的精度对照；
 3. 验收：2049 token prompt ≤ 150 ms（Q4_K_M），并给出每投影的设备时间分解。
 
-**P6 余项：让验证行摊薄。** 行块 GEMV 只省了重复解码，没省每行的乘加。llama.cpp 的 MMVQ 把激活量化为
-q8_1，用 `dp4a`/int8 MMA 一次处理 4 个权重、最多 8 行；对应地：
-1. 1–8 行的 int8 激活（每 32 值一个 scale）+ 整数点积 kernel，属于数值契约变化，需与 f64 参考和
-   llama.cpp 输出分别对照；
-2. 验收：3 行验证 ≤ 1.5 倍单行 decode，C1 MTP 深度 2 快于不开 MTP，届时去掉 `auto` 的 grouped-int 例外；
-3. 9–32 行仍走 GEMM，由 P5 一起重写。
+**P6 余项。** 9–32 行仍走 BF16 GEMM，由 P5 一起重写；int8 kernel 的 K 切分与宽窄选择只在 RTX 5090 上测过。
 
 **P2 的剩余项。** pooled serving 之前对 grouped-int 每个宽度重试一次才失败；现在已能构造，但
 失败路径仍逐宽度重试，与错误码无关。若以后出现非容量错误（`Unsupported`），应直接停止重试。

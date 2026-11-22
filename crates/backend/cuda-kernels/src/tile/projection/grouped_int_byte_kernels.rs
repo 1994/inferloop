@@ -8,6 +8,8 @@
 //! and subtracting `2^23`, which keeps integer conversions out of the loop. Each step covers
 //! `VALUES` values. `gemv_zero` subtracts the format's constant zero point; `gemv` subtracts a
 //! per-group bias. Both carry `R` activation rows per CTA and decode each word once for all of them.
+//! A last row block that overhangs the input takes its `TAIL` valid rows through in-bounds
+//! loads (`row_block`).
 //!
 //! `gemm` / `gemm_zero` cover `ROWS` activation rows per CTA: each span is decoded once into a
 //! `[256, 16]` BF16 weight tile and multiplied by the `[32, 256]` BF16 activation tile with F32
@@ -16,7 +18,7 @@
 pub mod byte {
     use cutile::core::{
         BroadcastScalar, Reshape, Shape_1, Shape_2, Shape_3, Shape_4, StoreTileAtCurrentBlock,
-        Tensor_1, Tensor_2, Tile_1, Tile_2, Tile_3, Tile_4, andi, bf16, bitcast, constant,
+        Tensor_1, Tensor_2, Tile_1, Tile_2, Tile_3, Tile_4, andi, bf16, bitcast, cat, constant,
         convert_scalar, convert_tile, get_tile_block_id, iota, mmaf, ori, reduce_sum, shri,
     };
 
@@ -24,6 +26,38 @@ pub mod byte {
     const MAGIC_BITS: u32 = 0x4b00_0000;
     /// `2^23`, subtracted to recover the integer from [`MAGIC_BITS`].
     const MAGIC: f32 = 8_388_608.0;
+
+    /// The `[R, VALUES]` activations of step `block` for row block `block_row`. Through the
+    /// block partition, a block that overhangs the input takes a predicated load: three rows of a
+    /// four-row block took 1.8x the time of four (RTX 5090, `Q4_K` 6144x2048). Such a block is
+    /// launched alone over its own rows with `TAIL` of them valid and `R = 4`: it loads them as an
+    /// in-bounds pair and a single row repeated to four rows; the repeats are never stored.
+    fn row_block<const R: i32, const VALUES: i32, const K: i32, const TAIL: i32>(
+        x: &Tensor<f32, { [-1, K] }>,
+        block_row: i32,
+        block: i32,
+    ) -> Tile<f32, { [R, VALUES] }> {
+        if TAIL == 0 {
+            x.partition(shape![R, VALUES]).load([block_row, block])
+        } else if TAIL == 1 {
+            let row: Tile<f32, { [1, VALUES] }> =
+                x.partition(shape![1, VALUES]).load([0i32, block]);
+            row.broadcast(shape![R, VALUES])
+        } else if TAIL == 2 {
+            let pair: Tile<f32, { [2, VALUES] }> =
+                x.partition(shape![2, VALUES]).load([0i32, block]);
+            let four: Tile<f32, { [4, VALUES] }> = cat(pair, pair, 0i32);
+            four.reshape(shape![R, VALUES])
+        } else {
+            let pair: Tile<f32, { [2, VALUES] }> =
+                x.partition(shape![2, VALUES]).load([0i32, block]);
+            let row: Tile<f32, { [1, VALUES] }> =
+                x.partition(shape![1, VALUES]).load([2i32, block]);
+            let four: Tile<f32, { [4, VALUES] }> =
+                cat(pair, row.broadcast(shape![2, VALUES]), 0i32);
+            four.reshape(shape![R, VALUES])
+        }
+    }
 
     /// `OUT = 4 * W` rows of a sixteen-row tile for `R` activation rows, `factor * (code - ZERO)`:
     /// CTA `(r, p)` covers row block `r` and part `p % PARTS` of tile `p / PARTS`. Each of the
@@ -41,6 +75,7 @@ pub mod byte {
         const W: i32,
         const PARTS: i32,
         const OUT: i32,
+        const TAIL: i32,
     >(
         out: &mut Tensor<f32, { [R, OUT] }>,
         x: &Tensor<f32, { [-1, K] }>,
@@ -52,7 +87,6 @@ pub mod byte {
         let fp = factors.partition(shape![GROUPS, OUT]);
         let tile = pid.1 / PARTS;
         let part = pid.1 % PARTS;
-        let xp = x.partition(shape![R, VALUES]);
         let zero: f32 = convert_scalar(ZERO);
         let shift: f32 = MAGIC + zero;
         let offset = shift.broadcast(shape![VALUES, W, 4]);
@@ -83,10 +117,10 @@ pub mod byte {
             let weight: Tile<f32, { [R, VALUES, W, 4] }> = weight
                 .reshape(shape![1, VALUES, W, 4])
                 .broadcast(shape![R, VALUES, W, 4]);
-            let activation: Tile<f32, { [R, VALUES, W, 4] }> = xp
-                .load([pid.0, block])
-                .reshape(shape![R, VALUES, 1, 1])
-                .broadcast(shape![R, VALUES, W, 4]);
+            let activation: Tile<f32, { [R, VALUES, W, 4] }> =
+                row_block::<R, VALUES, K, TAIL>(x, pid.0, block)
+                    .reshape(shape![R, VALUES, 1, 1])
+                    .broadcast(shape![R, VALUES, W, 4]);
             acc = acc + weight * activation;
         }
         let sums: Tile<f32, { [R, W, 4] }> = reduce_sum(acc, 1i32);
@@ -106,6 +140,7 @@ pub mod byte {
         const W: i32,
         const PARTS: i32,
         const OUT: i32,
+        const TAIL: i32,
     >(
         out: &mut Tensor<f32, { [R, OUT] }>,
         x: &Tensor<f32, { [-1, K] }>,
@@ -119,7 +154,6 @@ pub mod byte {
         let bp = biases.partition(shape![GROUPS, OUT]);
         let tile = pid.1 / PARTS;
         let part = pid.1 % PARTS;
-        let xp = x.partition(shape![R, VALUES]);
         let offset = MAGIC.broadcast(shape![VALUES, W, 4]);
         let mask = (0xffu32).broadcast(shape![VALUES, W, 4]);
         let magic = MAGIC_BITS.broadcast(shape![VALUES, W, 4]);
@@ -152,10 +186,10 @@ pub mod byte {
             let weight: Tile<f32, { [R, VALUES, W, 4] }> = weight
                 .reshape(shape![1, VALUES, W, 4])
                 .broadcast(shape![R, VALUES, W, 4]);
-            let activation: Tile<f32, { [R, VALUES, W, 4] }> = xp
-                .load([pid.0, block])
-                .reshape(shape![R, VALUES, 1, 1])
-                .broadcast(shape![R, VALUES, W, 4]);
+            let activation: Tile<f32, { [R, VALUES, W, 4] }> =
+                row_block::<R, VALUES, K, TAIL>(x, pid.0, block)
+                    .reshape(shape![R, VALUES, 1, 1])
+                    .broadcast(shape![R, VALUES, W, 4]);
             acc = acc + weight * activation;
         }
         let sums: Tile<f32, { [R, W, 4] }> = reduce_sum(acc, 1i32);

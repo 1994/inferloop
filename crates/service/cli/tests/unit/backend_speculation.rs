@@ -98,7 +98,7 @@ fn unsupported_heads_disable_only_automatic_speculation() -> Result<()> {
 }
 
 #[test]
-fn automatic_mtp_keeps_grouped_int_targets_on_plain_decode() -> Result<()> {
+fn automatic_mtp_drafts_for_grouped_int_targets() -> Result<()> {
     let mut package = package_with_head()?;
     let data = package.weights["lm_head.weight"].data().clone();
     package.weights.insert(
@@ -108,7 +108,7 @@ fn automatic_mtp_keeps_grouped_int_targets_on_plain_decode() -> Result<()> {
             format: GroupedIntFormat::Q4K,
         },
     );
-    assert_eq!(resolve(SpeculativeTokens::Auto, None, &package), 0);
+    assert_eq!(resolve(SpeculativeTokens::Auto, None, &package), 2);
     assert_eq!(resolve(SpeculativeTokens::Depth(2), None, &package), 2);
     Ok(())
 }

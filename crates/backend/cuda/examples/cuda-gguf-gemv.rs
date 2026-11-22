@@ -1,6 +1,7 @@
 //! Native GGUF tensor projection for any grouped-int format: read real blocks, pack, run the
-//! GEMV (one row) or the rows kernel (more rows) and compare with the reference
-//! decode. The rows kernel multiplies BF16 operands, so its reference rounds both to BF16.
+//! GEMV (one row), the int8 dot-product kernel (two to eight rows) or the rows kernel (more rows)
+//! and compare with the reference decode. The int8 kernel is held to its quantization bound; the
+//! rows kernel multiplies BF16 operands, so its reference rounds both to BF16.
 use infer_backend_cuda::device::CudaDevice;
 use infer_backend_cuda::loading::GroupedIntTiled;
 use infer_cuda_kernels::contract::{
@@ -19,6 +20,13 @@ const COLD_BYTES: usize = 256 << 20;
 const USAGE: &str = "usage: cuda-gguf-gemv <model.gguf> <hf-slot> [rows]";
 /// Largest relative error accepted against the reference.
 const TOLERANCE: f64 = 2e-3;
+/// Rows from which the int8 dot-product kernel replaces the F32 GEMV.
+const DOT_ROWS: usize = 2;
+/// The int8 kernel's error bound relative to an output's absolute products: each activation moves
+/// by at most half an int8 step, `amax / 254`.
+const DOT_TOLERANCE: f64 = 1.0 / 254.0;
+/// Most rows the F32 GEMV takes; more take the BF16 rows kernel.
+const GEMV_ROWS: usize = 8;
 /// Low mantissa bits an F32 drops when rounded to BF16.
 const BF16_SHIFT: u32 = 16;
 
@@ -116,7 +124,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     })?;
     device.tile().sync(graph.launch())?;
     let actual = runtime.read(&out_alloc)?;
-    let max_relative = check(&actual, &expected)?;
+    let max_relative = check(&actual, &expected, tolerance(batch))?;
     println!(
         "native {} {batch}x{rows}x{columns} correctness max relative {max_relative:.3e}",
         slot.dtype.name(),
@@ -138,12 +146,22 @@ fn inputs(rows: usize, columns: usize) -> Vec<f32> {
     values
 }
 
-fn check(actual: &[f32], expected: &[f32]) -> Result<f64, Box<dyn Error>> {
+/// The error bound of `batch` rows: the int8 kernel's quantization bound, or the F32/BF16 one.
+fn tolerance(batch: usize) -> f64 {
+    if (DOT_ROWS..=GEMV_ROWS).contains(&batch) {
+        DOT_TOLERANCE
+    } else {
+        TOLERANCE
+    }
+}
+
+/// The largest error of `actual` relative to each output's absolute products, at most `tolerance`.
+fn check(actual: &[f32], expected: &[(f32, f32)], tolerance: f64) -> Result<f64, Box<dyn Error>> {
     let mut max_relative = 0.0f64;
-    for (row, (actual, expected)) in actual.iter().zip(expected).enumerate() {
-        let relative = f64::from((actual - expected).abs()) / f64::from(expected.abs().max(1.0));
+    for (row, (actual, &(expected, magnitude))) in actual.iter().zip(expected).enumerate() {
+        let relative = f64::from((actual - expected).abs()) / f64::from(magnitude.max(1.0));
         max_relative = max_relative.max(relative);
-        if relative > TOLERANCE {
+        if relative > tolerance {
             return Err(format!("row {row}: actual {actual} expected {expected}").into());
         }
     }
@@ -186,12 +204,15 @@ const fn to_bf16(value: f32) -> f32 {
     f32::from_bits(bits.wrapping_add(rounding) & !((1 << BF16_SHIFT) - 1))
 }
 
-/// The reference outputs of `batch` rows of `x`; more than one row runs the BF16 rows kernel, so
-/// its reference rounds both operands to BF16.
-fn expected(mut values: Vec<f32>, columns: usize, x: &[f32], batch: usize) -> Vec<f32> {
+/// The reference outputs of `batch` rows of `x`; more than [`GEMV_ROWS`] rows run the BF16 rows
+/// kernel, so their reference rounds both operands to BF16.
+fn expected(mut values: Vec<f32>, columns: usize, x: &[f32], batch: usize) -> Vec<(f32, f32)> {
     let rows = values.len() / columns;
-    if batch == 1 {
-        return reference(&values, rows, columns, x);
+    if batch <= GEMV_ROWS {
+        return x
+            .chunks_exact(columns)
+            .flat_map(|x| reference(&values, rows, columns, x))
+            .collect();
     }
     for value in &mut values {
         *value = to_bf16(*value);
@@ -202,14 +223,17 @@ fn expected(mut values: Vec<f32>, columns: usize, x: &[f32], batch: usize) -> Ve
         .collect()
 }
 
-fn reference(values: &[f32], rows: usize, columns: usize, x: &[f32]) -> Vec<f32> {
+/// Each output of one activation row and the sum of its absolute products.
+fn reference(values: &[f32], rows: usize, columns: usize, x: &[f32]) -> Vec<(f32, f32)> {
     (0..rows)
         .map(|row| {
-            values[row * columns..][..columns]
-                .iter()
-                .zip(x)
-                .map(|(value, activation)| value * activation)
-                .sum()
+            values[row * columns..][..columns].iter().zip(x).fold(
+                (0.0, 0.0),
+                |(sum, magnitude), (value, activation)| {
+                    let product = value * activation;
+                    (sum + product, magnitude + product.abs())
+                },
+            )
         })
         .collect()
 }

@@ -139,11 +139,12 @@ grouped_int_mmq<BITS, TILE_N, TWO_TERM>(...) // M>=16
 ### 4. rows 路径
 
 ```text
-M == 1          -> gemv / gemv_zero
-M >= 2          -> gemm / gemm_zero，[32, 16] 输出块，末块谓词化
+M == 1          -> gemv / gemv_zero（F32）
+2 <= M <= 8     -> grouped_int_dot（手写 CUDA，int8 激活 + dp4a）；设备装不进 PTX 时走行块 GEMV
+M >= 9          -> gemm / gemm_zero，[32, 16] 输出块，末块谓词化
 ```
 
-`Mode::Prompt`、`Mode::Rows`、`Mode::Slots` 都走 `RowsKernel::GroupedInt`，一次 launch 覆盖全部行块；不再有逐行循环。2–12 行的谓词化开销见性能方案 P6。
+`Mode::Prompt`、`Mode::Rows`、`Mode::Slots` 都走 `RowsKernel::GroupedInt`，一次 launch 覆盖全部行块；不再有逐行循环。2–8 行的 int8 点积 kernel 与行块 GEMV 尾块见性能方案 P6。
 
 ### 5. Kernel 观测
 
