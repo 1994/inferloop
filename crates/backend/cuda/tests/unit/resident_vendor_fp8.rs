@@ -463,7 +463,7 @@ fn device(performance: bool) -> TestResult<CudaDevice> {
             return Err("performance requires release build".into());
         }
         let compile = CompileOptions::default();
-        if compile.device_debug || compile.opt_level.is_some_and(|level| level != 3) {
+        if compile.codegen.opt_level() != 3 {
             return Err("performance requires CUDA JIT O3 without device debug".into());
         }
     }

@@ -9,6 +9,7 @@ use crate::device::{CudaDevice, device_error};
 use crate::resident::attention_mma;
 use crate::resident::buffers::kv_cache;
 use crate::resident::tensor_buffer as buffer;
+use infer_core::digest::lower_hex;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     AppendBuffers, DecodeBuffers, DecodePlan, Kernels, PrefillAppendPlan, PrefillDecodePlan,
@@ -259,7 +260,7 @@ pub(super) fn fingerprint(device: &CudaDevice, s: Shape) -> Result<String> {
         var_os("CUTILE_FORCE_DEVICE_CHECKS"),
     ))
     .map_err(device_error)?;
-    Ok(format!("{:x}", Sha256::digest(payload)))
+    Ok(lower_hex(&Sha256::digest(payload)))
 }
 
 #[cfg(test)]

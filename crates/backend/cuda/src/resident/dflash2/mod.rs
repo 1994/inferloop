@@ -21,7 +21,7 @@ use infer_cuda_kernels::contract::{
     DraftTop, DraftWalk, Recording,
 };
 use infer_cuda_kernels::kernels as tile_kernels;
-use infer_cuda_kernels::runtime::{Allocation, Graph};
+use infer_cuda_kernels::runtime::{Allocation, DeviceCopy, Graph};
 pub use weights::DraftWeights;
 
 use super::buffers::buffer;
@@ -530,7 +530,7 @@ impl Engine {
     }
 }
 
-fn zeros<T: DType>(device: &CudaDevice, shape: &[usize]) -> Result<Allocation<T>> {
+fn zeros<T: DType + DeviceCopy>(device: &CudaDevice, shape: &[usize]) -> Result<Allocation<T>> {
     device.runtime().zeros(shape.iter().product())
 }
 

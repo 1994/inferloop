@@ -6,6 +6,6 @@ edition = "2024"
 license = "MIT"
 [workspace]
 [dependencies]
-cuda-device = { git = "https://github.com/NVIDIA/cuda-rust", rev = "bc46b1ffb751885073066b087594045f07f0f81b" }
-cuda-host = { git = "https://github.com/NVIDIA/cuda-rust", rev = "bc46b1ffb751885073066b087594045f07f0f81b" }
-cuda-core = { git = "https://github.com/NVIDIA/cuda-rust", rev = "bc46b1ffb751885073066b087594045f07f0f81b" }
+cuda-device = { git = "https://github.com/NVIDIA/cuda-rust", rev = "9d0c9bfbc954a9a29565ab81b78da70f054d8e04" }
+cuda-host = { git = "https://github.com/NVIDIA/cuda-rust", rev = "9d0c9bfbc954a9a29565ab81b78da70f054d8e04" }
+cuda-core = { git = "https://github.com/NVIDIA/cuda-rust", rev = "9d0c9bfbc954a9a29565ab81b78da70f054d8e04" }

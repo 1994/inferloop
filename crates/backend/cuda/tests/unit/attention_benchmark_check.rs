@@ -19,8 +19,16 @@ pub fn measure(
     }
     let mut samples = Vec::new();
     for _ in 0..60 {
-        let start = device.stream().device().new_event().map_err(device_error)?;
-        let end = device.stream().device().new_event().map_err(device_error)?;
+        let start = device
+            .stream()
+            .context()
+            .new_event()
+            .map_err(device_error)?;
+        let end = device
+            .stream()
+            .context()
+            .new_event()
+            .map_err(device_error)?;
         start.record(device.stream()).map_err(device_error)?;
         graph
             .launch()

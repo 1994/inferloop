@@ -14,12 +14,13 @@ use crate::contract::buffer::{Buffer, Owner};
 use crate::contract::grouped_int::{CodePacking, GROUPED_INT_TILE_ROWS, GroupedIntWeight};
 use crate::contract::recording::{Foreign, Recording};
 use crate::tile::backend_error;
+use crate::tile::runtime::primary_context;
 use crate::tile::runtime::{Argument, KernelLaunch};
 use cuda_core::sys::{
     CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT as MULTIPROCESSORS,
     cuDeviceGetAttribute, cudaError_enum_CUDA_SUCCESS as CUDA_SUCCESS,
 };
-use cuda_core::{Device, Function};
+use cuda_core::{CudaContext, Function};
 use infer_core::{Error, Result};
 use infer_ir::{CodeOffset, GROUPED_INT_SPAN, GroupedIntFormat};
 use std::collections::BTreeMap;
@@ -150,8 +151,8 @@ fn entries(ordinal: usize) -> Result<Option<Arc<Entries>>> {
 
 /// Load every entry on `ordinal`; a module the driver refuses means the device lacks the kernel.
 fn load(ordinal: usize) -> Result<Option<Arc<Entries>>> {
-    let device = Device::new(ordinal).map_err(backend_error)?;
-    let Ok(module) = device.load_module_from_ptx_src(PTX) else {
+    let context = primary_context(ordinal)?;
+    let Ok(module) = context.load_module_from_ptx_src(PTX) else {
         return Ok(None);
     };
     let mut functions = BTreeMap::new();
@@ -167,16 +168,16 @@ fn load(ordinal: usize) -> Result<Option<Arc<Entries>>> {
     }
     Ok(Some(Arc::new(Entries {
         functions,
-        multiprocessors: multiprocessors(&device)?,
+        multiprocessors: multiprocessors(&context)?,
     })))
 }
 
-/// The multiprocessor count of `device`.
-fn multiprocessors(device: &Device) -> Result<usize> {
+/// The multiprocessor count of the device behind `context`.
+fn multiprocessors(context: &CudaContext) -> Result<usize> {
     let mut value = 0;
-    // SAFETY: `device` is live and `value` is a live output.
+    // SAFETY: `context` retains its live device and `value` is a live output.
     let status =
-        unsafe { cuDeviceGetAttribute(&raw mut value, MULTIPROCESSORS, device.cu_device()) };
+        unsafe { cuDeviceGetAttribute(&raw mut value, MULTIPROCESSORS, context.cu_device()) };
     if status != CUDA_SUCCESS {
         return Err(Error::invariant(format!(
             "multiprocessor count query failed: {status}"

@@ -12,6 +12,7 @@ use crate::resident::attention_oxide::Support as AttentionOxideSupport;
 use crate::resident::attention_oxide::artifact_identity;
 use crate::resident::buffers::kv_cache;
 use crate::resident::tensor_buffer as buffer;
+use infer_core::digest::lower_hex;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     AppendBuffers, DecodeBuffers, DecodePlan, Kernels, PrefillAppendPlan, PrefillDecodePlan,
@@ -422,7 +423,7 @@ pub(super) fn native_fingerprint(device: &CudaDevice, shape: Shape) -> Result<St
         artifact_identity(),
     ))
     .map_err(device_error)?;
-    let identity = format!("{:x}", Sha256::digest(payload));
+    let identity = lower_hex(&Sha256::digest(payload));
     cache
         .lock()
         .map_err(|_| Error::invariant("exact attention identity cache poisoned"))?

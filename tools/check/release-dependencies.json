@@ -2,15 +2,33 @@
  "configurations": [
   {
    "backend": "cuda",
-   "crates": 287,
+   "crates": 292,
    "duplicates": {
     "base64": [
      "0.13.1",
-     "0.22.1",
      "0.23.1"
     ],
-    "getrandom": [
+    "block-buffer": [
+     "0.10.4",
+     "0.12.1"
+    ],
+    "cpufeatures": [
      "0.2.17",
+     "0.3.1"
+    ],
+    "crypto-common": [
+     "0.1.7",
+     "0.2.2"
+    ],
+    "digest": [
+     "0.10.7",
+     "0.11.3"
+    ],
+    "foldhash": [
+     "0.1.5",
+     "0.2.0"
+    ],
+    "getrandom": [
      "0.3.4",
      "0.4.3"
     ],
@@ -20,16 +38,24 @@
      "0.17.1"
     ],
     "itertools": [
-     "0.12.1",
+     "0.13.0",
      "0.14.0"
+    ],
+    "libloading": [
+     "0.8.9",
+     "0.9.1"
+    ],
+    "miniz_oxide": [
+     "0.8.9",
+     "0.9.1"
     ],
     "object": [
      "0.36.7",
      "0.39.1"
     ],
-    "rustc-hash": [
-     "1.1.0",
-     "2.1.3"
+    "sha2": [
+     "0.10.9",
+     "0.11.1"
     ],
     "shlex": [
      "1.3.0",
@@ -37,7 +63,7 @@
     ],
     "syn": [
      "2.0.119",
-     "3.0.6"
+     "3.0.10"
     ],
     "thiserror": [
      "1.0.69",
@@ -48,7 +74,7 @@
      "2.0.21"
     ]
    },
-   "edges": 954,
+   "edges": 972,
    "features": [
     "cuda"
    ],
@@ -57,37 +83,35 @@
   },
   {
    "backend": "metal",
-   "crates": 260,
+   "crates": 268,
    "duplicates": {
     "base64": [
      "0.13.1",
-     "0.22.1",
      "0.23.1"
-    ],
-    "bitflags": [
-     "1.3.2",
-     "2.13.2"
     ],
     "core-foundation": [
      "0.10.1",
      "0.9.4"
     ],
     "getrandom": [
-     "0.2.17",
      "0.3.4",
      "0.4.3"
     ],
+    "miniz_oxide": [
+     "0.8.9",
+     "0.9.1"
+    ],
     "syn": [
      "2.0.119",
-     "3.0.6"
+     "3.0.10"
     ]
    },
-   "edges": 699,
+   "edges": 705,
    "features": [],
    "name": "macos-metal",
    "target": "aarch64-apple-darwin"
   }
  ],
- "lockfile_sha256": "4954221469810643c710f7941fe82ef929c93b9e4d07174c41a9846de1cc3521",
+ "lockfile_sha256": "7ed73fd1f702cb90e69ca44695e4a8b3f0cf34432491a8166c8f14eeb3632445",
  "schema": 1
 }

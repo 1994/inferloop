@@ -25,7 +25,7 @@ use crate::loading::kv_block_bytes;
 use infer_core::{Error, ErrorCode, Result, TensorId};
 use infer_cuda_kernels::contract::{KvElement, Owner, VERIFY_LANES, Width};
 use infer_cuda_kernels::runtime::Allocation;
-use infer_cuda_kernels::runtime::{DType, Element};
+use infer_cuda_kernels::runtime::{DType, DeviceCopy, Element};
 use infer_cuda_kernels::runtime::{Staging, Transfers};
 use infer_ir::KvCacheInspection;
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
@@ -305,7 +305,7 @@ fn gather_typed<T>(
     device: &CudaDevice,
 ) -> Result<KvState<T>>
 where
-    T: DType + Element<Marker: KvElement + Width>,
+    T: DType + DeviceCopy + Element<Marker: KvElement + Width>,
 {
     let dst = KvState::zeros(device, KvLayout { rows, ..src.layout })?;
     for (to, from) in [(&dst.keys, &src.keys), (&dst.values, &src.values)] {

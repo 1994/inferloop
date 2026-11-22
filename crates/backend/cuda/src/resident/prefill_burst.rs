@@ -12,7 +12,7 @@ use crate::constants::METADATA_FIELDS;
 use crate::device::{CudaDevice, PinnedUpload, ReadbackSource, Readbacks, device_error};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::runtime::DType;
-use infer_cuda_kernels::runtime::{Allocation, Graph};
+use infer_cuda_kernels::runtime::{Allocation, DeviceCopy, Graph};
 use infer_ir::DataflowGraph;
 use infer_models::mrope::ROTARY_AXES;
 use std::iter::successors;
@@ -246,7 +246,7 @@ fn workspaces(
 }
 
 /// `len` zeroed elements the host owns, for views that hold their memory.
-fn memory<T: DType>(device: &CudaDevice, len: usize) -> Result<Allocation<T>> {
+fn memory<T: DType + DeviceCopy>(device: &CudaDevice, len: usize) -> Result<Allocation<T>> {
     device.runtime().zeros(len)
 }
 

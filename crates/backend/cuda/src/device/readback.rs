@@ -255,16 +255,14 @@ impl Readbacks<f32> {
 }
 
 /// Queue a bounded host gate for device-completion tests.
+/// The closure must be bounded and call no CUDA APIs; it owns its data.
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[expect(
-    unsafe_code,
-    reason = "Test-only stream callback: closure owns its data, is bounded and calls no CUDA APIs"
-)]
 pub fn queue_test_gate(device: &CudaDevice, gate: impl FnOnce() + Send + 'static) -> Result<()> {
-    // SAFETY: callers supply a bounded, CUDA-free closure with owned state; the stream
-    // and every captured resource remain alive through the test's completion drain.
-    unsafe { device.stream().launch_host_function(gate) }.map_err(device_error)
+    device
+        .stream()
+        .launch_host_function(gate)
+        .map_err(device_error)
 }
 
 fn source_bytes<T: DType + DeviceCopy>(

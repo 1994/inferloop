@@ -4,7 +4,7 @@ use crate::{AttentionProfile, device::CudaDevice};
 use infer_core::Result;
 use infer_cuda_kernels::contract::Owner;
 use infer_cuda_kernels::runtime::Allocation;
-use infer_cuda_kernels::runtime::{DType, bf16, f16};
+use infer_cuda_kernels::runtime::{DType, DeviceCopy, bf16, f16};
 use infer_ir::{DataflowGraph, TensorOp};
 
 /// The query and key lengths the bridge writes for the AOT kernel.
@@ -22,7 +22,7 @@ pub(super) struct Buffers<T: DType> {
     pub output: Allocation<T>,
     pub used: Allocation<i32>,
 }
-impl<T: DType> Buffers<T> {
+impl<T: DType + DeviceCopy> Buffers<T> {
     fn new(device: &CudaDevice, capacity: usize, lanes: usize) -> Result<Self> {
         let q = lanes * catalog::HEADS * catalog::DIM;
         let kv = capacity * catalog::KV_HEADS * catalog::DIM;

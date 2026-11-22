@@ -36,12 +36,12 @@ impl<T: DeviceCopy> Staging<T> {
         if depth == 0 {
             return Err(Error::invalid("staging needs at least one slot"));
         }
-        let context = CudaContext::new(stream.device().ordinal()).map_err(backend_error)?;
+        let context = CudaContext::new(stream.context().ordinal()).map_err(backend_error)?;
         let slots = (0..depth)
             .map(|_| {
                 Ok(Slot {
                     pinned: PinnedHostBuffer::zeroed(&context, elements).map_err(backend_error)?,
-                    read: stream.device().new_event().map_err(backend_error)?,
+                    read: stream.context().new_event().map_err(backend_error)?,
                     pending: false,
                 })
             })
@@ -107,8 +107,7 @@ impl Transfers<'_> {
         })?;
         if let Err(error) = slot.read.record(self.stream()) {
             // Untracked, the slot could be refilled while the copy still reads it.
-            // SAFETY: the stream is live and owned by its device; this only waits for its work.
-            unsafe { self.stream().synchronize() }.map_err(backend_error)?;
+            self.stream().synchronize().map_err(backend_error)?;
             return Err(backend_error(error));
         }
         slot.pending = true;

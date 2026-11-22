@@ -71,7 +71,7 @@ pub fn update_rotary(
 fn row(graph: &Graph, output: Buffer<'_, i32>, fields: usize) -> Result<Tensor<i32>> {
     borrowed(
         output.require("control metadata", fields)?,
-        graph.stream().device().ordinal(),
+        graph.stream().context().ordinal(),
         &[fields],
     )
 }
@@ -153,7 +153,7 @@ pub mod kernels {
 pub fn load_rotary(device: &Device, output: Buffer<'_, i32>) -> Result<()> {
     let stream = device.stream();
     let fields = output.len();
-    let mut output = borrowed(output, stream.device().ordinal(), &[fields])?;
+    let mut output = borrowed(output, stream.context().ordinal(), &[fields])?;
     kernels::write_rotary(
         (&mut output).partition([fields]),
         0.0,

@@ -106,7 +106,7 @@ fn nvfp4_prefill_performance_comparison() -> TestResult {
         return Err("performance measurements require cargo test --release".into());
     }
     let compile = CompileOptions::default();
-    if compile.device_debug || compile.opt_level.is_some_and(|level| level != 3) {
+    if compile.codegen.opt_level() != 3 {
         return Err("performance measurements require CUDA JIT O3 without device debug".into());
     }
     CudaDevice::enable_kernel_cache()?;

@@ -57,7 +57,7 @@ fn small_mma_performance() -> Result<(), Box<dyn Error>> {
         return Err("performance requires release".into());
     }
     let compile = CompileOptions::default();
-    if compile.device_debug || compile.opt_level.is_some_and(|x| x != 3) {
+    if compile.codegen.opt_level() != 3 {
         return Err("performance requires CUDA O3".into());
     }
     CudaDevice::enable_kernel_cache()?;
@@ -623,7 +623,7 @@ fn checkpoint_pool_small_f32_projection_cost() -> Result<(), Box<dyn Error>> {
         return Err("cost diagnostic requires release".into());
     }
     let compile = CompileOptions::default();
-    if compile.device_debug || compile.opt_level.is_some_and(|level| level != 3) {
+    if compile.codegen.opt_level() != 3 {
         return Err("cost diagnostic requires CUDA O3".into());
     }
     CudaDevice::enable_kernel_cache()?;

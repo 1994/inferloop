@@ -13,6 +13,7 @@ use crate::tuning::search;
 use crate::tuning::shipped_table;
 use crate::tuning::table_path;
 use crate::{device::CudaDevice, tuning::resident_gemm::ResidentTuningSession};
+use infer_core::digest::lower_hex;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::jit::JitOptions;
 use sha2::{Digest, Sha256};
@@ -74,15 +75,12 @@ fn memo() -> &'static Memo {
 }
 fn key(device: &CudaDevice, shape: Shape) -> Result<Key> {
     let mut key = super::exact::key(device, shape)?;
-    key.fingerprint = format!(
-        "{:x}",
-        Sha256::digest(format!(
-            "{}:{}:{}",
-            key.fingerprint,
-            shared_identity(),
-            vector_identity(),
-        ))
-    );
+    key.fingerprint = lower_hex(&Sha256::digest(format!(
+        "{}:{}:{}",
+        key.fingerprint,
+        shared_identity(),
+        vector_identity(),
+    )));
     key.schema = SCHEMA.into();
     Ok(key)
 }

@@ -8,6 +8,7 @@ use crate::{
     device::CudaDevice,
     tuning::attention::{Choice, Shape},
 };
+use infer_core::digest::lower_hex;
 use infer_core::{Error, Result};
 use sha2::{Digest, Sha256};
 
@@ -47,7 +48,7 @@ pub fn artifact_identity() -> String {
     hash.update(PROVENANCE);
     hash.update(SO);
     hash.update(PROFILE);
-    format!("{:x}", hash.finalize())
+    lower_hex(&hash.finalize())
 }
 
 /// Artifact, architecture and shape scoped identity for logs and tests. No tunable cache is
@@ -62,7 +63,7 @@ pub fn fingerprint(device: &CudaDevice, shape: Shape) -> Result<String> {
     hash.update(shape.dim.to_le_bytes());
     hash.update(shape.lanes.to_le_bytes());
     hash.update(shape.window.to_le_bytes());
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(lower_hex(&hash.finalize()))
 }
 
 /// Deterministic target selection for the already validated SM120 artifact.

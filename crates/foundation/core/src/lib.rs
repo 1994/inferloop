@@ -2,6 +2,7 @@
 pub mod arena;
 pub(crate) mod constants;
 pub mod credits;
+pub mod digest;
 mod error;
 pub mod event;
 pub mod id;

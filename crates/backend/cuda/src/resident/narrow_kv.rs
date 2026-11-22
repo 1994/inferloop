@@ -3,7 +3,9 @@ use crate::device::CudaDevice;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::{KvCache, KvElement, Width};
 use infer_cuda_kernels::runtime::DType;
-use infer_cuda_kernels::runtime::{Allocation, Element, HeadMajor, Transfers, f8e4m3fn, f16};
+use infer_cuda_kernels::runtime::{
+    Allocation, DeviceCopy, Element, HeadMajor, Transfers, f8e4m3fn, f16,
+};
 use infer_ir::{DataflowGraph, StateKind, TensorOp, TensorStorage};
 use std::collections::BTreeMap;
 
@@ -166,7 +168,10 @@ impl<T: DType + Element<Marker: KvElement>> KvState<T> {
     /// Zeroed caches of `layout`.
     /// # Errors
     /// Reports a failed allocation.
-    pub fn zeros(device: &CudaDevice, layout: KvLayout) -> Result<Self> {
+    pub fn zeros(device: &CudaDevice, layout: KvLayout) -> Result<Self>
+    where
+        T: DeviceCopy,
+    {
         let runtime = device.runtime();
         Ok(Self {
             keys: runtime.zeros(layout.len())?,

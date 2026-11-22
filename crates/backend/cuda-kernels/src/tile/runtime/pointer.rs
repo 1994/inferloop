@@ -155,7 +155,7 @@ impl Device {
         format!(
             "pointer=0x{address:x}, stream={:p}, device_context={:p}, current_status={current_status}, current={current:p}, ordinal_status={ordinal_status}, ordinal={ordinal}, memory_status={memory_status}, memory_type={memory_type}, accessible_status={accessible_status}, accessible=0x{accessible:x}, pool_status={pool_status}, pool={pool:p}",
             self.stream().cu_stream(),
-            self.stream().device().cu_ctx()
+            self.stream().context().cu_ctx()
         )
     }
 }

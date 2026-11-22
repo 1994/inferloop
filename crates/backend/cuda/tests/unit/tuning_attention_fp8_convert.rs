@@ -30,7 +30,7 @@ fn conversion_gate(device: &CudaDevice, ptx: &str) -> Result<()> {
         .map_err(device_error)?;
     let module = device
         .stream()
-        .device()
+        .context()
         .load_module_from_ptx_src(ptx)
         .map_err(device_error)?;
     let function = module
@@ -56,8 +56,7 @@ fn conversion_gate(device: &CudaDevice, ptx: &str) -> Result<()> {
         )
     }
     .map_err(device_error)?;
-    // SAFETY: retained allocations/module stay live until completion on their owning stream.
-    unsafe { device.stream().synchronize() }.map_err(device_error)?;
+    device.stream().synchronize().map_err(device_error)?;
     drop(ctx);
     let actual = device.read_borrowed(&output)?;
     for (i, value) in actual.iter().enumerate() {

@@ -1,4 +1,5 @@
 use super::*;
+use infer_core::digest::lower_hex;
 use infer_ir::Mixer;
 use std::fs::read;
 use std::path::Path;
@@ -296,7 +297,7 @@ fn the_fusion_golden_matches_the_registered_contract() {
                 .join("../../../examples/qwen3.8-27b-dflash2/config.json"),
         )
         .unwrap();
-        format!("{:x}", Sha256::digest(&bytes))
+        lower_hex(&Sha256::digest(&bytes))
     };
     assert_eq!(golden["model"]["config_sha256"], digest);
     let taps: Vec<usize> = golden["target_layer_ids"]

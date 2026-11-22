@@ -21,6 +21,7 @@ use crate::{
     },
     tuning::resident_gemm::ResidentTuningSession,
 };
+use infer_core::digest::lower_hex;
 use infer_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -306,17 +307,14 @@ fn resolve(
     }
     let mut key = super::exact::key(device, shape)?;
     key.schema = SCHEMA.into();
-    key.fingerprint = format!(
-        "{:x}",
-        Sha256::digest(format!(
-            "{}:{}:{}:{}:{}",
-            key.fingerprint,
-            shared_identity(),
-            vector_identity(),
-            attention_mma::artifact_identity(),
-            serde_json::to_string(&baseline).map_err(device_error)?
-        ))
-    );
+    key.fingerprint = lower_hex(&Sha256::digest(format!(
+        "{}:{}:{}:{}:{}",
+        key.fingerprint,
+        shared_identity(),
+        vector_identity(),
+        attention_mma::artifact_identity(),
+        serde_json::to_string(&baseline).map_err(device_error)?
+    )));
     if let Some(entry) = memo()
         .lock()
         .map_err(|_| Error::invariant("MMA memo poisoned"))?

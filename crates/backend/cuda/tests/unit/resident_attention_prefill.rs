@@ -1312,7 +1312,7 @@ fn fp8_model_geometry_append_and_compute_paired_cold_warm_ab_ba() -> NumericResu
         return Err("attention costs require release".into());
     }
     let compile = CompileOptions::default();
-    if compile.device_debug || compile.opt_level.is_some_and(|level| level != 3) {
+    if compile.codegen.opt_level() != 3 {
         return Err("attention costs require CUDA O3 without debug".into());
     }
     CudaDevice::enable_kernel_cache()?;

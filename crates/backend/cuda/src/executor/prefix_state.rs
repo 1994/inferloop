@@ -12,7 +12,7 @@ use crate::{
 };
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::KvElement;
-use infer_cuda_kernels::runtime::{DType, Element, bf16};
+use infer_cuda_kernels::runtime::{DType, DeviceCopy, Element, bf16};
 use infer_ir::DataflowGraph;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -290,7 +290,7 @@ async fn copy_state(
 }
 
 /// Zeroed caches of `layout`, allocated on the device stream.
-async fn zeroed<T: DType + Element<Marker: KvElement>>(
+async fn zeroed<T: DType + DeviceCopy + Element<Marker: KvElement>>(
     device: &CudaDevice,
     layout: KvLayout,
 ) -> Result<KvState<T>> {

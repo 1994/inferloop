@@ -71,9 +71,10 @@ fn borrowed<T: DType>(buffer: Buffer<'_, T>, ordinal: usize, shape: &[usize]) ->
     for axis in (0..shape.len().saturating_sub(1)).rev() {
         strides[axis] = strides[axis + 1] * shape[axis + 1];
     }
+    let context = runtime::primary_context(ordinal)?;
     // SAFETY: `Buffer::new` guarantees a contiguous allocation outliving every replay, and the
     // caller checked the plan's shape covers exactly its elements. The tensor frees nothing.
-    Ok(unsafe { Tensor::<T>::borrow_raw_parts(buffer.address(), ordinal, shape, strides) })
+    Ok(unsafe { Tensor::<T>::borrow_raw_parts(buffer.address(), context, shape, strides) })
 }
 
 /// The capture scope of a recording, which every cuTile launch needs.

@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     use cutile::prelude::*;
     enable_default()?;
     let target = CudaDevice::new(0)?.target().name();
-    let device = Device::new(0)?;
+    let device = cuda_core::CudaContext::new(0)?;
     let stream = device.new_stream()?;
     let mut results = Vec::new();
     for (m, n, k, bm, bn, bk) in [

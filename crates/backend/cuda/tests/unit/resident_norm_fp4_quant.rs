@@ -251,7 +251,7 @@ fn measure(device: &CudaDevice, a: &Graph, b: &Graph) -> TestResult {
 #[ignore = "actual 27B checkpoint, CUDA release and protected runner"]
 fn actual_norm_fp4_quant_screen() -> TestResult {
     let options = CompileOptions::default();
-    if cfg!(debug_assertions) || options.device_debug || options.opt_level.is_some_and(|v| v != 3) {
+    if cfg!(debug_assertions) || options.codegen.opt_level() != 3 {
         return Err("release and CUDA O3 without device debug required".into());
     }
     CudaDevice::enable_kernel_cache()?;

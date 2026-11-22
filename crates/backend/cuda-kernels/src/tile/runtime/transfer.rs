@@ -264,7 +264,7 @@ impl Inflight {
     pub(super) fn retain(&mut self, stream: &Arc<Stream>, owners: Vec<Owner>) -> Result<()> {
         let event = match self.spare.pop() {
             Some(event) => event,
-            None => match stream.device().new_event() {
+            None => match stream.context().new_event() {
                 Ok(event) => event,
                 Err(error) => return Err(settle(stream, owners, error)),
             },
@@ -308,8 +308,7 @@ impl Drop for Inflight {
 /// Wait for the stream before dropping `owners` after a failure left their batch untracked, or
 /// leak them when even that fails.
 fn settle(stream: &Stream, owners: Vec<Owner>, error: impl Display) -> Error {
-    // SAFETY: the stream is live and owned by its device; this only waits for its work.
-    if unsafe { stream.synchronize() }.is_err() {
+    if stream.synchronize().is_err() {
         leak(owners);
     }
     backend_error(error)

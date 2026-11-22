@@ -70,7 +70,7 @@ impl Device {
             cuDeviceGetAttribute(
                 &raw mut value,
                 attribute.driver(),
-                self.stream().device().cu_device(),
+                self.stream().context().cu_device(),
             )
         };
         driver(status)?;
@@ -81,7 +81,7 @@ impl Device {
     /// # Errors
     /// Returns the driver's failure to report it.
     pub fn name(&self) -> Result<String> {
-        self.stream().device().name().map_err(backend_error)
+        self.stream().context().name().map_err(backend_error)
     }
 
     /// Make this device's context current on the calling thread, for driver calls made outside
@@ -90,7 +90,7 @@ impl Device {
     /// Returns the driver's failure to bind it.
     pub fn bind_to_thread(&self) -> Result<()> {
         self.stream()
-            .device()
+            .context()
             .bind_to_thread()
             .map_err(backend_error)
     }
@@ -99,8 +99,7 @@ impl Device {
     /// # Errors
     /// Returns the driver's failure to synchronize.
     pub fn synchronize(&self) -> Result<()> {
-        // SAFETY: the device is live while the stream holds it; this only waits for its work.
-        unsafe { self.stream().device().synchronize() }.map_err(backend_error)
+        self.stream().context().synchronize().map_err(backend_error)
     }
 
     /// Whether `other` enqueues on the same stream as this device.
@@ -114,7 +113,7 @@ impl Device {
     /// Returns the driver's failure to bind the context or report memory.
     pub fn memory_info(&self) -> Result<(u64, u64)> {
         self.stream()
-            .device()
+            .context()
             .bind_to_thread()
             .map_err(backend_error)?;
         let (mut free, mut total) = (0, 0);

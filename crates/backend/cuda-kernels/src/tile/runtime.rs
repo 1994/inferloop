@@ -17,11 +17,12 @@ use cutile::tensor::KernelOutputStored;
 use infer_core::{Error, ErrorCode, Result};
 use std::any::Any;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::mem::{ManuallyDrop, take};
 use std::ops::Range;
 use std::result::Result as StdResult;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use transfer::Inflight;
 
 mod events;
@@ -279,6 +280,32 @@ impl<T: DType> Allocation<T> {
     }
 }
 
+/// The primary context of device `ordinal`, retained once per process: borrowed tensors and new
+/// streams name their device through it, and every user of the device shares that context.
+/// # Errors
+/// Returns the driver's failure to initialize or retain the context.
+pub(crate) fn primary_context(ordinal: usize) -> Result<Arc<CudaContext>> {
+    static RETAINED: OnceLock<Mutex<BTreeMap<usize, Arc<CudaContext>>>> = OnceLock::new();
+    let retained = RETAINED.get_or_init(Mutex::default);
+    let poisoned = || Error::invariant("primary context cache poisoned");
+    let cached = retained
+        .lock()
+        .map_err(|_| poisoned())?
+        .get(&ordinal)
+        .cloned();
+    if let Some(context) = cached {
+        return Ok(context);
+    }
+    let context = CudaContext::new(ordinal).map_err(backend_error)?;
+    Ok(Arc::clone(
+        retained
+            .lock()
+            .map_err(|_| poisoned())?
+            .entry(ordinal)
+            .or_insert(context),
+    ))
+}
+
 /// A range of an allocation as cuTile sees it; holding the allocation keeps the range valid.
 struct View<T: DType> {
     memory: Allocation<T>,
@@ -299,6 +326,10 @@ unsafe impl<T: DType> DeviceAllocation for View<T> {
 
     fn len_bytes(&self) -> usize {
         self.bytes
+    }
+
+    fn context(&self) -> Arc<CudaContext> {
+        Arc::clone(self.memory.tensor.context())
     }
 
     fn device_id(&self) -> usize {
@@ -385,7 +416,7 @@ impl Device {
     /// `len` zeroed elements, complete when this returns.
     /// # Errors
     /// Reports a failed allocation.
-    pub fn zeros<T: DType>(&self, len: usize) -> Result<Allocation<T>> {
+    pub fn zeros<T: DType + DeviceCopy>(&self, len: usize) -> Result<Allocation<T>> {
         let tensor = api::zeros::<T>(&[len])
             .sync_on(&self.stream)
             .map_err(backend_error)?;
@@ -500,7 +531,7 @@ impl Device {
     /// device has written them, without blocking the host on the stream.
     /// # Errors
     /// Reports a failed allocation.
-    pub async fn zeroed<T: DType>(&self, len: usize) -> Result<Allocation<T>> {
+    pub async fn zeroed<T: DType + DeviceCopy>(&self, len: usize) -> Result<Allocation<T>> {
         let tensor = DeviceFuture::scheduled(
             api::zeros::<T>(&[len]),
             ExecutionContext::new(Arc::clone(&self.stream)),
@@ -528,10 +559,6 @@ pub struct Graph {
     submitted: AtomicBool,
 }
 
-#[expect(
-    unsafe_code,
-    reason = "Waiting on the graph's own live stream before its executable and owners go"
-)]
 impl Drop for Graph {
     fn drop(&mut self) {
         if !*self.submitted.get_mut() {
@@ -539,8 +566,7 @@ impl Drop for Graph {
         }
         // A replay may still run: the executable and the memory it addresses outlive it, and only
         // a failed device, which never completes the stream, leaks them instead.
-        // SAFETY: the stream is live and owned by its device; this only waits for its work.
-        if unsafe { self.inner.stream().synchronize() }.is_err() {
+        if self.inner.stream().synchronize().is_err() {
             let _leaked = ManuallyDrop::new(take(&mut self.owners));
         }
     }
@@ -568,10 +594,8 @@ impl Graph {
     /// Wait until the stream this graph replays on has finished everything queued so far.
     /// # Errors
     /// Returns the driver's failure to synchronize.
-    #[expect(unsafe_code, reason = "Waiting on the graph's own live stream")]
     pub fn drain(&self) -> Result<()> {
-        // SAFETY: the stream is live and owned by its device; this only waits for its work.
-        unsafe { self.inner.stream().synchronize() }.map_err(backend_error)
+        self.inner.stream().synchronize().map_err(backend_error)
     }
 
     #[inline]

@@ -3,6 +3,7 @@
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::{CudaDevice, device_error};
 use infer_core::Result;
+use infer_core::digest::lower_hex;
 use infer_cuda_kernels::contract::{DecodeBuffers, KvBuffers, Owner, Recording};
 use infer_cuda_kernels::runtime::Function;
 use infer_cuda_kernels::runtime::{Argument, KernelLaunch};
@@ -220,10 +221,10 @@ pub fn artifact_identity() -> &'static str {
         let source = include_str!("../../kernels/oxide-attention/src/main.rs");
         let provenance = include_str!("../../kernels/oxide-attention/provenance.json");
         format!(
-            "{:x}:{:x}:{:x}",
-            Sha256::digest(PTX),
-            Sha256::digest(source),
-            Sha256::digest(provenance)
+            "{}:{}:{}",
+            lower_hex(&Sha256::digest(PTX)),
+            lower_hex(&Sha256::digest(source)),
+            lower_hex(&Sha256::digest(provenance))
         )
     })
 }

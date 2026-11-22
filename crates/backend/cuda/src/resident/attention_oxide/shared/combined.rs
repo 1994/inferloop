@@ -2,6 +2,7 @@
 use super::super::Support;
 use crate::device::{CudaDevice, device_error};
 use infer_core::Result;
+use infer_core::digest::lower_hex;
 use std::sync::{Arc, OnceLock};
 
 const PTX: &str = include_str!("../../../../kernels/vector-attention-combined/v-combined.ptx");
@@ -43,11 +44,11 @@ impl Support {
                 include_str!("../../../../kernels/vector-attention-combined/provenance.json");
             let launch = format!("{HOST_CONTRACT}:{THREADS}:{ROWS_PER_CTA}:{LANES:?}");
             format!(
-                "{:x}:{:x}:{:x}:{:x}",
-                Sha256::digest(PTX),
-                Sha256::digest(source),
-                Sha256::digest(provenance),
-                Sha256::digest(launch)
+                "{}:{}:{}:{}",
+                lower_hex(&Sha256::digest(PTX)),
+                lower_hex(&Sha256::digest(source)),
+                lower_hex(&Sha256::digest(provenance)),
+                lower_hex(&Sha256::digest(launch))
             )
         })
     }

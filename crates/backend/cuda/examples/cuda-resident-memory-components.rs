@@ -3,7 +3,7 @@
 use std::error::Error as StdError;
 #[cfg(cuda_backend)]
 mod profile {
-    use cuda_core::Device;
+    use cuda_core::CudaContext;
     use infer_backend_cuda::{
         device::CudaDevice,
         loading::{LoadOptions, LoadedModel},
@@ -38,7 +38,7 @@ mod profile {
         println!("{}", json!({"stage": stage, "memory": counters}));
     }
 
-    fn sample(query: &CudaDevice, core: &Arc<Device>) -> Result<Counters, Failure> {
+    fn sample(query: &CudaDevice, core: &Arc<CudaContext>) -> Result<Counters, Failure> {
         let (driver_free, total) = query.memory_info()?;
         let stats = core.default_mem_pool()?.mem_stats()?;
         let pool_reusable = stats.reserved_current.saturating_sub(stats.used_current);
@@ -54,7 +54,11 @@ mod profile {
         })
     }
 
-    fn settled(query: &CudaDevice, core: &Arc<Device>, stage: &str) -> Result<Counters, Failure> {
+    fn settled(
+        query: &CudaDevice,
+        core: &Arc<CudaContext>,
+        stage: &str,
+    ) -> Result<Counters, Failure> {
         let mut previous = None;
         let mut stable = 0;
         for index in 0..20 {
@@ -79,7 +83,7 @@ mod profile {
     fn allocation(
         loaded: &LoadedModel,
         query: &CudaDevice,
-        core: &Arc<Device>,
+        core: &Arc<CudaContext>,
     ) -> Result<(DeviceProgram, DeviceProgram), Failure> {
         let before = settled(query, core, "before-program-pair")?;
         let target = loaded.sequence(CAPACITY)?;
@@ -132,7 +136,7 @@ mod profile {
     fn observe_allocations(
         loaded: &LoadedModel,
         query: &CudaDevice,
-        core: &Arc<Device>,
+        core: &Arc<CudaContext>,
         before: Counters,
         after_load: Counters,
         limit: u64,
@@ -194,9 +198,9 @@ mod profile {
         let (model, utilization) = arguments()?;
         CudaDevice::enable_kernel_cache()?;
         let query = CudaDevice::new(0)?;
-        // cuda-core0.4.0 Device::new retains device0's primary context, as does CudaDevice.
+        // `CudaContext::new` retains device 0's primary context, as does CudaDevice.
         // Observing its default pool creates no second CUDA context or tensor allocation.
-        let core = Device::new(0)?;
+        let core = CudaContext::new(0)?;
         let before = settled(&query, &core, "before-model")?;
         #[expect(
             clippy::cast_precision_loss,

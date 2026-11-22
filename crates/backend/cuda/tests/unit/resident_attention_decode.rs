@@ -283,7 +283,7 @@ fn split_kv_performance() -> Result<(), Box<dyn Error>> {
         return Err("performance requires release".into());
     }
     let compile = CompileOptions::default();
-    if compile.device_debug || compile.opt_level.is_some_and(|x| x != 3) {
+    if compile.codegen.opt_level() != 3 {
         return Err("performance requires CUDA O3".into());
     }
     CudaDevice::enable_kernel_cache()?;

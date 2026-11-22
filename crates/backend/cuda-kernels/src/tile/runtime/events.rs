@@ -3,14 +3,14 @@
     unsafe_code,
     reason = "Driver event records and D2H copies over memory whose extent a buffer's contract guarantees"
 )]
-use super::{Device, Element};
+use super::{Device, Element, primary_context};
 use crate::contract::buffer::{Buffer, Owner};
 use crate::contract::recording::{Foreign, Recording};
 use crate::contract::target::Arch;
 use crate::tile::backend_error;
 use cuda_core::sys::{
-    CUevent_flags_enum_CU_EVENT_DEFAULT, CUevent_record_flags_enum_CU_EVENT_RECORD_EXTERNAL,
-    cuEventRecordWithFlags, cuMemcpyDtoH_v2, cudaError_enum_CUDA_SUCCESS,
+    CUevent_record_flags_enum_CU_EVENT_RECORD_EXTERNAL, cuEventRecordWithFlags, cuMemcpyDtoH_v2,
+    cudaError_enum_CUDA_SUCCESS,
 };
 use cuda_core::{CudaContext, CudaEvent, DType};
 use infer_core::{Error, Result};
@@ -23,7 +23,7 @@ use std::sync::Arc;
 pub fn timing_event(device: &Device) -> Result<Arc<CudaEvent>> {
     CudaContext::new(device.ordinal())
         .map_err(backend_error)?
-        .new_event(Some(CUevent_flags_enum_CU_EVENT_DEFAULT))
+        .new_event()
         .map(Arc::new)
         .map_err(backend_error)
 }
@@ -68,12 +68,12 @@ impl Device {
     /// # Errors
     /// Fails when the device or its stream is unavailable.
     pub fn open(ordinal: usize) -> Result<(Self, Arch)> {
-        let device = cuda_core::Device::new(ordinal).map_err(backend_error)?;
-        // SAFETY: `Device::new` initialized CUDA and owns this live device handle.
+        let context = primary_context(ordinal)?;
+        // SAFETY: `primary_context` initialized CUDA and retains this live device's context.
         let name =
-            unsafe { cuda_core::get_device_sm_name(device.cu_device()) }.map_err(backend_error)?;
+            unsafe { cuda_core::get_device_sm_name(context.cu_device()) }.map_err(backend_error)?;
         let arch = Arch::from_sm_name(&name).unwrap_or(Arch::Other { major: 0, minor: 0 });
-        let stream = device.new_stream().map_err(backend_error)?;
+        let stream = context.new_stream().map_err(backend_error)?;
         Ok((Self::new(stream, ordinal), arch))
     }
 

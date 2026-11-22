@@ -94,7 +94,7 @@ Unsupported request fields are rejected instead of silently ignored. Field-level
 |---|---|
 | Linux / CUDA | NVIDIA GPU and driver, and the cuTile JIT toolchain (`tileiras`) to run; CUDA Toolkit headers, a C compiler and libclang to build |
 | macOS / Metal | A Metal-capable Apple GPU |
-| Rust | `1.99.0`, pinned by `rust-toolchain.toml` (MSRV `1.90`) |
+| Rust | `1.99.1`, pinned by `rust-toolchain.toml` (MSRV `1.90`) |
 | Build helper | Python 3.12+ for the `make` entry points; a plain `cargo build` does not need it |
 | Video input | `ffmpeg` and `ffprobe` on the host |
 

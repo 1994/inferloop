@@ -158,7 +158,7 @@ fn checkpoint_state_prefill_demand_paired_cost() -> Result<()> {
         return Err(Error::invalid("cost requires release"));
     }
     let compile = CompileOptions::default();
-    if compile.device_debug || compile.opt_level.is_some_and(|level| level != 3) {
+    if compile.codegen.opt_level() != 3 {
         return Err(Error::invalid("cost requires CUDA O3"));
     }
     let path = var("INFER_TEST_MODEL").map_err(|e| Error::invalid(e.to_string()))?;

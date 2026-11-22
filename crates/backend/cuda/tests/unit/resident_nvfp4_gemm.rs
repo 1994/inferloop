@@ -305,7 +305,7 @@ fn nvfp4_quantization_split_performance() -> Result<(), Box<dyn StdError>> {
         return Err("performance measurements require cargo test --release".into());
     }
     let compile = CompileOptions::default();
-    if compile.device_debug || compile.opt_level.is_some_and(|level| level != 3) {
+    if compile.codegen.opt_level() != 3 {
         return Err("performance measurements require CUDA JIT O3 without device debug".into());
     }
     println!("build_profile=release cuda_jit_opt_level=3 device_debug=false");

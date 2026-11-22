@@ -44,7 +44,7 @@ impl Device {
     /// Returns the driver's failure to load it.
     pub fn load_ptx(&self, ptx: &str) -> Result<Module> {
         self.stream()
-            .device()
+            .context()
             .load_module_from_ptx_src(ptx)
             .map(Module)
             .map_err(backend_error)
@@ -63,7 +63,7 @@ impl Device {
     /// Returns the driver's failure to create it.
     pub fn event(&self) -> Result<Event> {
         self.stream()
-            .device()
+            .context()
             .new_event()
             .map(Event)
             .map_err(backend_error)
@@ -77,7 +77,7 @@ impl Device {
         self.bind_to_thread()?;
         let pool = self
             .stream()
-            .device()
+            .context()
             .default_mem_pool()
             .map_err(backend_error)?;
         let stats = pool.mem_stats().map_err(backend_error)?;
@@ -87,11 +87,9 @@ impl Device {
     /// Wait until this device's stream has finished everything queued on it.
     /// # Errors
     /// Returns the driver's failure to bind the context or synchronize.
-    #[expect(unsafe_code, reason = "Waiting on this device's own live stream")]
     pub fn drain_stream(&self) -> Result<()> {
         self.bind_to_thread()?;
-        // SAFETY: the stream is live and its context is current; this only waits for its work.
-        unsafe { self.stream().synchronize() }.map_err(backend_error)
+        self.stream().synchronize().map_err(backend_error)
     }
 
     /// The stream's identity, which a [`KernelLaunch`](super::KernelLaunch) is pinned to.

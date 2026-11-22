@@ -6,6 +6,7 @@ use crate::constants::MAX_BENCHMARK_REQUESTS;
 use crate::constants::MAX_BENCHMARK_TICKS;
 use crate::constants::MAX_EXPERIMENT_HISTORY;
 use crate::{AgentBackend, AgentContext};
+use infer_core::digest::lower_hex;
 use infer_core::{Error, ErrorCode, ExperimentId, RequestId, Result};
 use infer_ir::{CanonicalRequest, WorkloadOutput};
 use infer_quality::{BenchmarkReport, ExperimentVerdict, VerificationReport};
@@ -197,7 +198,7 @@ fn elapsed(start: &Instant) -> u64 {
 
 fn fingerprint(plan: &BenchmarkPlan) -> Result<String> {
     let bytes = serde_json::to_vec(&plan.requests).map_err(|e| Error::invalid(e.to_string()))?;
-    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+    Ok(format!("sha256:{}", lower_hex(&Sha256::digest(bytes))))
 }
 
 fn validate_plan(plan: &ExperimentPlan) -> Result<()> {

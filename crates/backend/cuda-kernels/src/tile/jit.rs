@@ -4,7 +4,7 @@
 //! it: changing a formatting here would invalidate every cached entry.
 use crate::tile::backend_error;
 use cutile::cutile_compiler::cuda_tile_runtime_utils as compiler;
-use cutile::cutile_compiler::hints::CompileOptions;
+use cutile::cutile_compiler::hints::{CodegenMode, CompileOptions};
 use cutile::jit_cache::enable_default;
 use cutile::tile_kernel::validate_programmatic_dependent_launch;
 use infer_core::Result;
@@ -62,16 +62,18 @@ impl JitOptions {
         self.0.occupancy
     }
 
-    /// The pinned `tileiras` optimization level; `None` leaves the compiler's default.
+    /// The `tileiras` optimization level when it differs from the compiler's default; device
+    /// debugging compiles at level 0.
     #[must_use]
-    pub const fn opt_level(&self) -> Option<u8> {
-        self.0.opt_level
+    pub fn opt_level(&self) -> Option<u8> {
+        let level = self.0.codegen.opt_level();
+        (level != CodegenMode::RELEASE.opt_level()).then_some(level)
     }
 
     /// Whether kernels compile for device debugging.
     #[must_use]
-    pub const fn device_debug(&self) -> bool {
-        self.0.device_debug
+    pub fn device_debug(&self) -> bool {
+        self.0.codegen == CodegenMode::Debug
     }
 }
 

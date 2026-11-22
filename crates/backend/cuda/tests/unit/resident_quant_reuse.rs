@@ -739,10 +739,7 @@ fn measure_case(
 fn run(performance: bool) -> TestResult {
     if performance {
         let compile = CompileOptions::default();
-        if cfg!(debug_assertions)
-            || compile.device_debug
-            || compile.opt_level.is_some_and(|x| x != 3)
-        {
+        if cfg!(debug_assertions) || compile.codegen.opt_level() != 3 {
             return Err("cost requires release and CUDA JIT O3 without device debug".into());
         }
     }

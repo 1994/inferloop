@@ -4,7 +4,9 @@ use crate::input::tool::MAX_TOOL_CALLS;
 use crate::input::tool::ToolCall;
 use crate::input::tool::ToolDialect;
 use crate::{ModelRegistry, PackageSource};
+use infer_core::digest::lower_hex;
 use infer_core::{Error, ErrorCode, Result};
+use minijinja::value::Serde;
 use minijinja_contrib::pycompat::unknown_method_callback;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -228,7 +230,7 @@ impl TextAssets {
             tokenizer: Arc::new(tokenizer),
             template,
             special,
-            fingerprint: format!("{:x}", hash.finalize()),
+            fingerprint: lower_hex(&hash.finalize()),
             max_tokens,
             tool_dialect,
             streaming_decode,
@@ -358,7 +360,7 @@ impl TextAssets {
         let rendered = env
             .get_template("chat")
             .map_err(|e| Error::invalid(e.to_string()))?
-            .render(context)
+            .render(Serde(&context))
             .map_err(|e| Error::invalid(e.to_string()))?;
         if rendered.len() > TEXT_MAX_BYTES {
             return Err(Error::new(

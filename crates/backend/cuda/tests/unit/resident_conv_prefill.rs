@@ -95,7 +95,7 @@ fn parallel_conv_performance() -> Result<(), Box<dyn Error>> {
         return Err("performance gate requires release".into());
     }
     let compile = CompileOptions::default();
-    assert!(!compile.device_debug && compile.opt_level.is_none_or(|level| level == 3));
+    assert_eq!(compile.codegen.opt_level(), 3);
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
     let options = BenchOptions {

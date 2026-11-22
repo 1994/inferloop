@@ -4,7 +4,9 @@ use crate::RecurrentProfile;
 use crate::device::CudaDevice;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, Recording, StateBuffer, Width};
-use infer_cuda_kernels::runtime::{Allocation, DType, Element, HeadMajor, Transfers, bf16};
+use infer_cuda_kernels::runtime::{
+    Allocation, DType, DeviceCopy, Element, HeadMajor, Transfers, bf16,
+};
 use std::ops::Range;
 
 /// An allocation and its logical dimensions. State copies and checks read the dimensions; kernels
@@ -36,7 +38,10 @@ impl<T: DType> Shaped<T> {
     /// Zeroed memory of `dims`.
     /// # Errors
     /// Reports a size overflow or a failed allocation.
-    pub fn zeros(device: &CudaDevice, dims: Vec<usize>) -> Result<Self> {
+    pub fn zeros(device: &CudaDevice, dims: Vec<usize>) -> Result<Self>
+    where
+        T: DeviceCopy,
+    {
         let len = dims
             .iter()
             .try_fold(1usize, |all, &dim| all.checked_mul(dim))

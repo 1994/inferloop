@@ -10,6 +10,7 @@ mod video;
 
 use self::images::{Downloads, LoadedImage};
 use self::options::{ResizeMode, ResolvedOptions};
+use infer_core::digest::lower_hex;
 
 use crate::cpu::{CpuContext, CpuPool};
 use futures_util::future::try_join_all;
@@ -682,7 +683,10 @@ fn image_digest_with_decoder(
     {
         digest.update(value.to_bits().to_le_bytes());
     }
-    Ok(format!("sha256-source-v1:{:x}", digest.finalize()))
+    Ok(format!(
+        "sha256-source-v1:{}",
+        lower_hex(&digest.finalize())
+    ))
 }
 
 fn digest(pixels: &[f32], grid: (usize, usize, usize)) -> String {

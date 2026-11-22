@@ -197,7 +197,7 @@ fn physical_page_append_paired_identity_and_fragmented_cost() -> TestResult {
         error::tensor_error,
     };
     use std::time::Duration;
-    if cfg!(debug_assertions) || CompileOptions::default().device_debug {
+    if cfg!(debug_assertions) || (CompileOptions::default().codegen.opt_level() == 0) {
         return Err("release O3 performance diagnostic required".into());
     }
     CudaDevice::enable_kernel_cache()?;

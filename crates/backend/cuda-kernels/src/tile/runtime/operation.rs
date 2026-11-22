@@ -56,7 +56,7 @@ impl Operation<'_> {
             Tensor::<T>::from_raw_parts(
                 pointer,
                 bytes,
-                self.context.get_device_id(),
+                Arc::clone(self.context.get_cuda_stream()),
                 vec![count],
                 vec![1],
             )
