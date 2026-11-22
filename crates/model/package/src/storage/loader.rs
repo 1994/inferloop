@@ -3,6 +3,7 @@ use crate::constants::F32_BYTES;
 use crate::constants::F32_BYTES_U64;
 use crate::storage::safetensors::convert_float_bytes;
 use crate::{ModelPackage, TensorDtype, WeightBinding};
+use infer_core::digest::lower_hex;
 use infer_core::{Error, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -188,6 +189,6 @@ pub fn load_weights<T: WeightTarget>(
     Ok(LoadedWeights {
         tensors,
         plan,
-        payload_fingerprint: format!("{:x}", digest.finalize()),
+        payload_fingerprint: lower_hex(&digest.finalize()),
     })
 }

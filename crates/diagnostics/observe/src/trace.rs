@@ -5,6 +5,7 @@ use crate::constants::SPAN_ID_HEX_LEN;
 use crate::constants::TRACE_ID_HEX_LEN;
 use crate::constants::TRACEPARENT_FIELDS;
 use crate::constants::TRACEPARENT_FLAGS_HEX_LEN;
+use infer_core::digest::lower_hex;
 use infer_core::{Error, Result, event::EventKind, event::ObjectKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -130,7 +131,7 @@ pub fn otlp(
     }
     let spans:Vec<_>=spans.into_iter().filter_map(|(id,span)| {
         let end=span.end?;
-        let hash=format!("{:x}",Sha256::digest(format!("{namespace}:{id}")));
+        let hash=lower_hex(&Sha256::digest(format!("{namespace}:{id}")));
         let parent=parents.get(&id);
         Some(json!({"traceId":parent.map_or_else(||hash[..TRACE_ID_HEX_LEN].to_string(),|p|p.trace_id.clone()),"spanId":&hash[TRACE_ID_HEX_LEN..TRACE_ID_HEX_LEN + SPAN_ID_HEX_LEN],"parentSpanId":parent.map_or("",|p|p.parent_span_id.as_str()),"flags":u32::from(parent.is_none_or(|p|p.sampled)),"name":"infer.request","kind":2,"startTimeUnixNano":unix_origin_us.saturating_add(span.start).saturating_mul(NANOS_PER_MICROSECOND).to_string(),"endTimeUnixNano":unix_origin_us.saturating_add(end).saturating_mul(NANOS_PER_MICROSECOND).to_string(),"attributes":[{"key":"infer.request_id","value":{"stringValue":id.to_string()}},{"key":"infer.clock","value":{"stringValue":"runtime_logical"}}],"events":span.events,"status":{"code":if span.failed {2}else{1}}}))
     }).collect();

@@ -180,7 +180,7 @@ bash tools/bench/safe-run.sh python3 tools/bench/run-task-quality.py \
 
 | 工具 | 版本 |
 |---|---|
-| Rust（固定） | 1.99.0，由 `rust-toolchain.toml` 提供 |
+| Rust（固定） | 1.99.1，由 `rust-toolchain.toml` 提供 |
 | Rust（MSRV） | 1.90.0 |
 | Python | 3.12+ |
 | uv | 任意近期版本 |

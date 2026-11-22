@@ -5,6 +5,7 @@ use crate::constants::F32_BYTES_U64;
 use crate::constants::MAX_PREFIX_ENTRIES;
 use crate::constants::MAX_TICKET_TASKS;
 use crate::constants::MIB;
+use infer_core::digest::lower_hex;
 use infer_core::{Error, ErrorCode, Result, TensorId};
 use infer_ir::{DataflowGraph, ModelIr, TensorStorage};
 use infer_model_recipes::decoder::lower;
@@ -127,8 +128,8 @@ fn identity(model: &ModelIr, payload: &str, block_size: usize) -> Result<String>
     digest.update(serde_json::to_vec(model).map_err(|e| Error::invalid(e.to_string()))?);
     digest.update(payload.as_bytes());
     Ok(format!(
-        "metal-paged-dataflow-v3:{:x}:page{block_size}",
-        digest.finalize()
+        "metal-paged-dataflow-v3:{}:page{block_size}",
+        lower_hex(&digest.finalize())
     ))
 }
 
@@ -362,11 +363,7 @@ fn upload_host(
     if !weights.is_empty() {
         return Err(Error::invalid("unconsumed Metal weights"));
     }
-    let identity = identity(
-        model,
-        &format!("{:x}", digest.finalize()),
-        config.block_size,
-    )?;
+    let identity = identity(model, &lower_hex(&digest.finalize()), config.block_size)?;
     let plan = WeightLoadPlan {
         tensors,
         source_bytes: resident_bytes,

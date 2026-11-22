@@ -15,6 +15,7 @@ use crate::tuning::resolve_table;
 use crate::tuning::search;
 use crate::tuning::shipped_table;
 use crate::tuning::table_path;
+use infer_core::digest::lower_hex;
 use infer_core::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::{
@@ -75,16 +76,13 @@ fn memo() -> &'static Memo {
 /// Combined artifact identity, kept out of the vector layer's fingerprint; the method is the
 /// key's schema.
 fn fingerprint(base: &str) -> String {
-    format!(
-        "{:x}",
-        Sha256::digest(format!(
-            "{}:{}:{}:{}",
-            base,
-            shared_identity(),
-            vector_identity(),
-            Support::combined_identity(),
-        ))
-    )
+    lower_hex(&Sha256::digest(format!(
+        "{}:{}:{}:{}",
+        base,
+        shared_identity(),
+        vector_identity(),
+        Support::combined_identity(),
+    )))
 }
 fn key(device: &CudaDevice, shape: Shape) -> Result<Key> {
     let mut key = super::exact::key(device, shape)?;

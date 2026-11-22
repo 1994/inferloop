@@ -4,7 +4,7 @@
 
 ## 环境准备
 
-1. 安装 `rust-toolchain.toml` 指定的 Rust 1.99.0（最低支持 1.90）与 C 编译器。
+1. 安装 `rust-toolchain.toml` 指定的 Rust 1.99.1（最低支持 1.90）与 C 编译器。
 2. 克隆仓库。无 GPU 环境运行 `make test` 做协议与单元检查；需要本机模型执行时使用 `make local-build`（Linux 启用 CUDA，macOS 使用 Metal）。
 
 3. 完整门禁还需要 Python 3.12+、`uv`、Go、`cargo-deny`、`cargo-audit` 等工具，版本与安装命令见[质量门禁](docs/guides/quality-gates.md)。

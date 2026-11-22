@@ -9,6 +9,7 @@ use super::attention_oxide::{Geometry, owners};
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::{CudaDevice, device_error};
 use catalog::{DIM, HEADS, KV_HEADS, Variant};
+use infer_core::digest::lower_hex;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DecodeBuffers, KvBuffers, Owner, Recording};
 use infer_cuda_kernels::runtime::Function;
@@ -296,7 +297,7 @@ pub fn artifact_identity() -> String {
             hash.update(variant.bytes());
         }
     }
-    format!("{:x}", hash.finalize())
+    lower_hex(&hash.finalize())
 }
 
 pub fn f32_artifact_identity() -> String {
@@ -309,5 +310,5 @@ pub fn f32_artifact_identity() -> String {
     hash.update(include_bytes!(
         "../../../kernels/fa4-attention-f32/bridge.cu"
     ));
-    format!("{:x}", hash.finalize())
+    lower_hex(&hash.finalize())
 }

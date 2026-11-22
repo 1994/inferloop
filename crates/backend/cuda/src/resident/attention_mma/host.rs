@@ -1,6 +1,7 @@
 //! AOT launch code owns TMA descriptors and cluster launches; serving never imports Python.
 use super::catalog::Variant;
 use crate::device::device_error;
+use infer_core::digest::lower_hex;
 use infer_core::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::env::temp_dir;
@@ -49,7 +50,7 @@ fn cache_file(name: &str, bytes: &[u8]) -> Result<PathBuf> {
         .unwrap_or_else(temp_dir)
         .join("inference.rs/fa4");
     fs::create_dir_all(&directory).map_err(device_error)?;
-    let digest = format!("{:x}", Sha256::digest(bytes));
+    let digest = lower_hex(&Sha256::digest(bytes));
     let path = directory.join(format!("{name}-{digest}.so"));
     if !path.exists() {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);

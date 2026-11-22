@@ -13,7 +13,7 @@
   ],
   "source_sha256": "feea1072e8480a7235cfec7430aeb40e7960c00e1d3aea0b725b3b623421d2f9",
   "ptx_sha256": "f3584032f21ee9fb014ad3677a6b7aca45c7805014949b3fc19c86e0893f306f",
-  "canonical_attention_ptx_sha256": "e41ad095da73871ffafa0de0318219b3f1f690f444ccad318fcd83c3b0001e66",
+  "canonical_attention_ptx_sha256": "b4630215c4af4c1c92f25c25fd638c4e8af08951ce87184dccf4fd68942c8a3f",
   "numeric_evidence": "/home/r/benchmarks/inference.rs/exact-shared-attention-2026-10-16/vector-shared-K-exact-v2/numeric-v1/result.json",
   "performance_evidence": "/home/r/benchmarks/inference.rs/exact-shared-attention-2026-10-16/vector-shared-K-exact-v2/one-shot-decision-v3.json",
   "contract": "Exact F32 operation tree, aligned SoA8 shared key layout, generic checkpointscales"

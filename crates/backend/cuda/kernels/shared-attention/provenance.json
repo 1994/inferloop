@@ -13,6 +13,6 @@
   ],
   "source_sha256": "d261701f686ab7ec771f4a33bbcb5585eba033d89479ec5fc75d59e4a440702c",
   "ptx_sha256": "692cc02c5d9982b1de0a3223b1fb5f3439bea175a80b6adb05890fe71e7afc28",
-  "canonical_attention_ptx_sha256": "e41ad095da73871ffafa0de0318219b3f1f690f444ccad318fcd83c3b0001e66",
+  "canonical_attention_ptx_sha256": "b4630215c4af4c1c92f25c25fd638c4e8af08951ce87184dccf4fd68942c8a3f",
   "numeric_evidence": "/home/r/benchmarks/inference.rs/exact-shared-attention-2026-10-16/paired-shared-consumer-v1/run-v1/result.json"
 }
