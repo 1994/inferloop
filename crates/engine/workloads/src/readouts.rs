@@ -1,5 +1,6 @@
 use crate::constants::F32_BYTES_U64;
 use crate::native::decision_tokens_fit;
+use infer_core::digest::lower_hex;
 use infer_core::{Error, ProgramId, Result};
 use infer_ir::{
     CanonicalRequest, DecisionReadout, DecisionSchema, ModelIr, ModelOutput, Workload,
@@ -112,7 +113,10 @@ impl ProjectionWorkloads {
             weights,
             hidden,
             vocab,
-            identity: format!("projection-workloads-f32-v1:{:x}", hash.finalize()),
+            identity: format!(
+                "projection-workloads-f32-v1:{}",
+                lower_hex(&hash.finalize())
+            ),
         })
     }
     #[expect(

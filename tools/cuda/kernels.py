@@ -17,7 +17,8 @@ from fa4 import rebuild_f16
 REPO = Path(__file__).resolve().parents[2]
 ROOT = REPO / "crates/backend/cuda/kernels"
 CATALOG = Path(__file__).with_name("kernels.json")
-SHARED = re.compile(r"__shared_mem_([a-f0-9]{16})_([0-9]+)")
+# The suffix is a declaration index (cuda-oxide before 0.4) or a 16-digit hex id (0.4 on).
+SHARED = re.compile(r"__shared_mem_([a-f0-9]{16})_([0-9a-f]+)\b")
 
 
 def require(condition, message):
@@ -60,14 +61,15 @@ def normalize(text, entry):
     matches = SHARED.findall(text)
     require(len({namespace for namespace, _ in matches}) == 1, "Expected one shared namespace")
     declared = re.findall(
-        r"^\.visible \.shared \.align 4 \.b8 __shared_mem_[a-f0-9]{16}_([0-9]+)\[([0-9]+)\];$",
+        r"^\.visible \.shared \.align 4 \.b8 __shared_mem_[a-f0-9]{16}_([0-9a-f]+)\[([0-9]+)\];$",
         text,
         re.M,
     )
-    expected = [(str(i), str(size)) for i, size in enumerate(entry["shared_bytes"])]
-    require(sorted(declared) == expected, "Shared allocation layout differs")
-    require({i for _, i in matches} == {i for i, _ in expected}, "Unexpected shared reference")
-    return SHARED.sub(lambda match: "__shared_mem_CANONICAL_" + match.group(2), text)
+    sizes = sorted(int(size) for _, size in declared)
+    require(sizes == sorted(entry["shared_bytes"]), "Shared allocation layout differs")
+    order = {name: index for index, (name, _) in enumerate(declared)}
+    require({name for _, name in matches} == set(order), "Unexpected shared reference")
+    return SHARED.sub(lambda match: f"__shared_mem_CANONICAL_{order[match.group(2)]}", text)
 
 
 def check_hash(path, expected):

@@ -5,6 +5,7 @@ use crate::resident::attention_oxide::vector_identity;
 use crate::tuning::MIN_REPS;
 use crate::tuning::TilingTable;
 use crate::tuning::qualify::Times;
+use infer_core::digest::lower_hex;
 use sha2::{Digest, Sha256};
 fn shape() -> Shape {
     Shape {
@@ -117,15 +118,12 @@ fn rejected_combined_candidate_and_legacy_cache_remain_exact() -> Result<()> {
 #[test]
 fn combined_fingerprint_is_isolated_from_the_vector_layer() {
     let base = "0".repeat(SHA256_HEX_LEN);
-    let without_combined = format!(
-        "{:x}",
-        Sha256::digest(format!(
-            "{}:{}:{}",
-            base,
-            shared_identity(),
-            vector_identity(),
-        ))
-    );
+    let without_combined = lower_hex(&Sha256::digest(format!(
+        "{}:{}:{}",
+        base,
+        shared_identity(),
+        vector_identity(),
+    )));
     assert_ne!(fingerprint(&base), without_combined);
     assert_ne!(fingerprint(&base), base);
     assert_ne!(fingerprint("a"), fingerprint("b"));

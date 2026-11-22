@@ -1,10 +1,10 @@
 {
-  "cuda_rust_commit": "bc46b1ffb751885073066b087594045f07f0f81b",
-  "toolchain": "nightly-2026-10-11",
+  "cuda_rust_commit": "9d0c9bfbc954a9a29565ab81b78da70f054d8e04",
+  "toolchain": "1.99.1",
   "target": "sm_120",
   "command": "cargo oxide build --arch sm_120 --no-fmad",
   "source_sha256": "f516fa2e944d00ca78be6f9cf4164491004985fd208dd72ac4080a3ab800ef97",
-  "ptx_sha256": "e41ad095da73871ffafa0de0318219b3f1f690f444ccad318fcd83c3b0001e66",
+  "ptx_sha256": "b4630215c4af4c1c92f25c25fd638c4e8af08951ce87184dccf4fd68942c8a3f",
   "numeric_evidence": "/home/r/benchmarks/inference.rs/oxide-attention-fp8-convert-2026-10-15/numeric-key-pair-v1/result.json",
-  "compiler_backend_sha256": "686379cccd2d03d6b582279627c6091704a15e9037b0d0004833a319aa27e015"
+  "compiler_backend_sha256": "91cee2144b597195b09681e435bc99a0308c6a8067580d4ef3c450d95896b7fb"
 }

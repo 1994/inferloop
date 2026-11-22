@@ -11,13 +11,15 @@
 | 设备生命周期、buffer、CUDA Graph、调度 | Rust + CUDA Rust host runtime | 共用 stream、内存和错误处理 |
 | 通用 tile 算子、投影、融合 | cuTile Rust | 新增 tile 算子的首选，沿用现有 Cargo 工具链 |
 | 必须控制 warp、共享内存、向量访存和运算顺序的 SIMT | CUDA C++ / nvcc AOT | 新增手写 SIMT 的默认入口；只生成 PTX，无 C++ host runtime |
-| 已有 Rust SIMT attention | 固定 cuda-oxide + nightly | 保留已验证实现；有实测收益且工具链可复现时允许扩展 |
+| 已有 Rust SIMT attention | 固定 cuda-oxide 0.4.0（stable Rust 1.99.1） | 保留已验证实现；有实测收益且工具链可复现时允许扩展 |
 | FA4 tensor-core attention | 固定上游 CuTe DSL 离线 AOT | 作为第三方库管理；Python 只用于生成，运行时是固定 C ABI |
 | cuBLASLt 等厂商库 | 已有 Rust adapter | 使用库算法，不复制为新的自研 kernel 系统 |
 
 cuTile 和 cuda-oxide 属于 [NVIDIA CUDA Rust](https://nvidia.github.io/cuda-rust/) 的两种
-编程模型；混用本身不是错误。当前自写 SIMT 已存在 nvcc 实现，而 oxide 还需要独立 nightly、
-编译器后端及 Git SDK。新增 SIMT 默认优先 nvcc，以控制独立编译链的维护成本；存在明确实测收益且可复现时允许 Rust 实现。
+编程模型；混用本身不是错误。cuda-oxide 0.4.0 起与 cuTile 同在 `NVIDIA/cuda-rust`，共用 `cuda-core`，
+运行在 stable Rust（`rustc-dev`、`llvm-tools` 组件）上，后端由 `cargo oxide` 构建并缓存在
+`~/.cargo/cuda-oxide/`。新增 SIMT 目前仍默认 nvcc：oxide 与 nvcc 的同算法对照尚未在 0.4.0 上重做，
+存在明确实测收益且可复现时允许 Rust 实现。
 已有 oxide 保留为已验证实现，不能仅因为语言统一就替换其 PTX。
 45 的历史 GDN 对照中，同算法和启动配置的 C++ 流水线比 oxide 慢约 2.2%～5.0%；
 这组 oxide GDN 已删除：chunked 递推（3c1b075c）接管了它覆盖的全部 prompt 宽度，之后它不再被录制。
@@ -71,8 +73,9 @@ python3 tools/cuda/kernels.py rebuild --kernel vector-attention-combined \
   --cuda-root /opt/cuda --output artifacts/kernel-rebuild/vector-v1
 ```
 
-CUDA C++ PTX 必须逐字节一致。oxide 只允许共享符号 namespace 的一致重命名，
-声明、布局、参数及其他 PTX 字节必须一致；不是通过删除注释或反汇编重排放宽比较。
+CUDA C++ PTX 必须逐字节一致。oxide 只允许共享符号 namespace 与后缀的一致重命名（按声明顺序
+规范化；0.4.0 起后缀是 16 位十六进制 id 而非序号），声明大小、布局、参数及其他 PTX 字节必须一致；
+不是通过删除注释或反汇编重排放宽比较。
 
 ```sh
 python3 tools/cuda/kernels.py rebuild --kernel oxide-attention \
@@ -80,10 +83,13 @@ python3 tools/cuda/kernels.py rebuild --kernel oxide-attention \
   --output artifacts/kernel-rebuild/oxide-v1
 ```
 
-oxide 需要 `cargo oxide` 在 PATH 中、仓库固定的 nightly 和 provenance 指定哈希的后端库。
+oxide 需要 `cargo oxide` 0.4.0 在 PATH 中（`cargo +1.99.1 install --locked --git
+https://github.com/NVIDIA/cuda-rust.git --tag cuda-oxide/v0.4.0 cargo-oxide`）、`rust-toolchain.toml`
+固定的 stable 工具链和 provenance 指定哈希的后端库；`--oxide-backend` 经 `CUDA_OXIDE_BACKEND`
+交给 `cargo oxide`，优先于缓存的后端。
 构建在副本里进行，并检查 Cargo.lock 未变化。缺少固定编译器明确失败，不回退到最新版。
-2026-10-23 在 45 上核查时，原实验目录里的后端 `.so` 已丢失；现有 PTX 可验证，
-本轮未声称这两组已完成源码重建。恢复工具链或迁移算子应单独建立数值与性能证据。
+2026-11-22 升级到 0.4.0 时，后端 `.so` 另存于 45 的 `~/toolchains/cuda-oxide-0.4.0/`，其哈希即
+provenance 的 `compiler_backend_sha256`；此前（2026-10-23 核查）原后端已丢失、未做过源码重建。
 
 FA4 的 `--upstream` 必须包含固定版本的 `flash_attn/cute` 源码，逐文件验证哈希。
 `--sdk-site` 是带 nvidia-cutlass-dsl 4.8.0 的 site-packages；Python 环境还需 Torch 和

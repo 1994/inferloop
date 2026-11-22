@@ -1,6 +1,7 @@
 //! Reusable asynchronous HTTP source with pooled connections.
 use infer_core::{Error, ErrorCode, Result};
 use reqwest::{Client, Response, redirect::Policy};
+use rustls::crypto::{CryptoProvider, ring};
 use std::time::Duration;
 
 /// Match the previously supported redirect chain.
@@ -27,9 +28,12 @@ pub struct HttpDownload {
 impl HttpSource {
     /// Create a client using system trust roots and proxy configuration.
     ///
+    /// TLS runs on ring, installed as the process-wide rustls provider when none is set yet.
+    ///
     /// # Errors
     /// Returns a backend error when TLS or the HTTP client cannot initialize.
     pub fn new() -> Result<Self> {
+        install_crypto_provider()?;
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(HTTP_TIMEOUT_SECONDS))
             .read_timeout(Duration::from_secs(HTTP_TIMEOUT_SECONDS))
@@ -148,6 +152,21 @@ impl HttpDownload {
         }
         Ok(chunk)
     }
+}
+
+/// Make ring the process-wide rustls provider unless one is already installed. A concurrent
+/// install that wins the race leaves a provider in place too.
+fn install_crypto_provider() -> Result<()> {
+    if CryptoProvider::get_default().is_none()
+        && ring::default_provider().install_default().is_err()
+        && CryptoProvider::get_default().is_none()
+    {
+        return Err(Error::new(
+            ErrorCode::Backend,
+            "no TLS crypto provider could be installed",
+        ));
+    }
+    Ok(())
 }
 
 fn download_error(error: reqwest::Error) -> Error {

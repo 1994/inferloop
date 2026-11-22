@@ -4,6 +4,7 @@ use crate::storage::source::TensorFiles;
 #[cfg(test)]
 use crate::storage::source::load_tensor_files;
 use crate::{HostTensor, ModelRegistry, PackageSource, TensorDtype, TensorFile, default_registry};
+use infer_core::digest::lower_hex;
 use infer_core::{Error, ErrorCode, ModelId, Result};
 use infer_ir::{DataflowGraph, TensorStorage};
 use infer_spi::{ImportedModel, ModelProvider};
@@ -293,7 +294,7 @@ fn bind_weights(
         ignored_tensors,
         weights_bytes,
         host_f32_bytes: host_bytes,
-        metadata_fingerprint: format!("{:x}", digest.finalize()),
+        metadata_fingerprint: lower_hex(&digest.finalize()),
     };
     Ok(manifest)
 }

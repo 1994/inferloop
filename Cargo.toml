@@ -67,25 +67,27 @@ infer-cuda-kernels = { version = "=0.1.0", path = "crates/backend/cuda-kernels" 
 infer-media-input = { version = "=0.1.0", path = "crates/service/media" }
 libc = "0.2"
 half = "2.7.1"
-libloading = "0.8"
+libloading = "0.9"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
-base64 = "0.22"
+base64 = "0.23"
 mime = "0.3"
 crc32fast = "1"
 # png 0.18 (image 0.25's codec release) still requires miniz_oxide ^0.8 while flate2 1.1.10
 # moved to ^0.9; the lockfile holds flate2 at 1.1.9 so both resolve to one miniz_oxide 0.8.9.
 # Revisit when png's miniz_oxide range converges with flate2's.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
-fast_image_resize = { version = "=6.1.0", default-features = false, features = ["std"] }
-reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots", "http2", "system-proxy"] }
+fast_image_resize = { version = "=6.2.0", default-features = false, features = ["std"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "http2", "system-proxy"] }
+# reqwest 0.13 bundles aws-lc-rs with `rustls`; ring stays the one TLS provider (`infer-media-input`).
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 rtrb = "0.4"
 ahash = "=0.8.12"
 btree-slab = "=0.6.1"
-sha2 = "0.10"
-uuid = { version = "1.27", features = ["v7"] }
+sha2 = "0.11"
+uuid = { version = "1.29", features = ["v7"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 futures-util = "0.3"
@@ -98,9 +100,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # declarations in a member: the member keeps the features, the workspace keeps the version.
 cutile = "=0.4.0"
 cuda-core = "=0.4.0"
-metal = "=0.29.0"
-minijinja = { version = "2", features = ["json", "fuel"] }
-minijinja-contrib = { version = "2", features = ["pycompat"] }
+metal = "=0.33.0"
+minijinja = { version = "3", features = ["json", "fuel", "serde"] }
+minijinja-contrib = { version = "3", features = ["pycompat"] }
 memmap2 = "0.9"
 objc = "0.2"
 regex = "1"
