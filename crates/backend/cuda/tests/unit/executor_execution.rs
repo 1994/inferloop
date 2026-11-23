@@ -187,48 +187,104 @@ fn run_media_position_tasks(
     Ok(outputs?)
 }
 
+/// A pool slot and the full logits it produced.
+type SlotLogits = (usize, Vec<f32>);
+
+/// Logits of `state`'s next token replayed through the pool on `lanes` slots at once, each slot
+/// bound to a copy of the same sequence and positioned at an explicitly supplied rotary
+/// coordinate. Returns the leased slots with their logits, in ascending slot order.
+///
+/// The pool replays the narrowest captured graph that covers its highest busy slot, so a
+/// bitwise comparison only holds against a step that occupies the same slots; callers check
+/// that the step under test leased exactly these slots.
 fn pooled_position_reference(
     executor: &mut CudaExecutor,
     state: StateId,
-    token: u32,
-    rotary: usize,
-) -> Result<Vec<f32>, Box<dyn Error>> {
+    (token, rotary): (u32, usize),
+    lanes: usize,
+) -> Result<Vec<SlotLogits>, Box<dyn Error>> {
     use crate::device::asynchronous::block_on;
+    use std::mem::take;
     let sequence = executor.states.get(&state).ok_or("missing sequence")?;
     let device = executor.loaded.device();
     let pool = executor.slots.as_mut().ok_or("missing pool")?;
-    let slot = pool.take_free().ok_or("missing free slot")?;
-    assert!(pool.assign(slot, sequence.capacity, device)?);
-    pool.bind(
-        slot,
-        sequence.program.states(),
-        sequence.program.fp8_states(),
-        sequence.history.len(),
-        device,
-    )?;
-    let (row, output) = if let Some(width) = pool.verify() {
+    let position = sequence.history.len();
+    let mut slots = Vec::with_capacity(lanes);
+    for _ in 0..lanes {
+        let slot = pool.take_free().ok_or("missing free slot")?;
+        assert!(pool.assign(slot, sequence.capacity, device)?);
+        pool.bind(
+            slot,
+            sequence.program.states(),
+            sequence.program.fp8_states(),
+            position,
+            device,
+        )?;
+        slots.push(slot);
+    }
+    slots.sort_unstable();
+    let (rows, output): (Vec<usize>, _) = if let Some(width) = pool.verify() {
+        let lanes: Vec<_> = slots
+            .iter()
+            .map(|&slot| (slot, 0, token, rotary, position))
+            .collect();
         (
-            slot * width,
-            block_on(pool.run_verify_readout_async(
-                device,
-                &[(slot, 0, token, rotary, sequence.history.len())],
-                false,
-            ))?,
+            slots.iter().map(|&slot| slot * width).collect(),
+            block_on(pool.run_verify_readout_async(device, &lanes, false))?,
         )
     } else {
+        let lanes: Vec<_> = slots
+            .iter()
+            .map(|&slot| (slot, token, rotary, position))
+            .collect();
         (
-            0,
-            block_on(pool.run_lanes_readout_async(
-                device,
-                &[(slot, token, rotary, sequence.history.len())],
-                false,
-            ))?,
+            (0..slots.len()).collect(),
+            block_on(pool.run_lanes_readout_async(device, &lanes, false))?,
         )
     };
     block_on(device.fence())?;
-    pool.release(slot);
-    let (_, logits) = output.rows.into_iter().nth(row).ok_or("missing logits")?;
-    Ok(logits)
+    for &slot in &slots {
+        pool.release(slot);
+    }
+    let mut readout = output.rows;
+    slots
+        .into_iter()
+        .zip(rows)
+        .map(|(slot, row)| {
+            let logits = readout.get_mut(row).ok_or("missing logits")?;
+            Ok((slot, take(&mut logits.1)))
+        })
+        .collect()
+}
+
+/// Panics with the size of the disagreement when `actual` is not bitwise `expected`.
+fn assert_bitwise(actual: &[f32], expected: &[f32], context: &str) {
+    assert_eq!(actual.len(), expected.len(), "{context}: logit count");
+    let differing = actual
+        .iter()
+        .zip(expected)
+        .filter(|(actual, expected)| actual.to_bits() != expected.to_bits())
+        .count();
+    let largest = actual
+        .iter()
+        .zip(expected)
+        .map(|(actual, expected)| (actual - expected).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        differing == 0,
+        "{context}: {differing} of {} logits differ, largest |difference| {largest}, top {:?} vs {:?}",
+        expected.len(),
+        top_logit(actual),
+        top_logit(expected),
+    );
+}
+
+fn top_logit(values: &[f32]) -> Option<usize> {
+    values
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(index, _)| index)
 }
 
 fn media_position_fixture(
@@ -312,11 +368,12 @@ fn pooled_decode_preserves_multimodal_rotary_position() -> Result<(), Box<dyn Er
             },
         )
     };
-    // Use the pooled graph directly with an independently supplied rotary position. This keeps
-    // the full-logit comparison bitwise while exercising the executor's lane construction.
-    let expected = pooled_position_reference(&mut executor, states[0], 65, 8)?;
+    // Replay the pooled graph directly with an independently supplied rotary position, on the
+    // same two slots the batch will lease. This keeps the full-logit comparison bitwise while
+    // exercising the executor's lane construction.
+    let expected = pooled_position_reference(&mut executor, states[0], (65, 8), 2)?;
     assert!(
-        !expected.is_empty(),
+        expected.iter().all(|(_, logits)| !logits.is_empty()),
         "pooled reference needs complete logits"
     );
     let single = run_media_position_tasks(&mut executor, &[decode(states[0], RequestId::ONE)])?;
@@ -328,32 +385,26 @@ fn pooled_decode_preserves_multimodal_rotary_position() -> Result<(), Box<dyn Er
         ],
     )?;
     assert!(executor.states[&states[0]].slot.is_none());
-    assert!(executor.states[&states[1]].slot.is_some());
-    assert!(executor.states[&states[2]].slot.is_some());
-    for output in batch {
-        assert_eq!(output.output.logits.len(), expected.len());
-        let differences = output
-            .output
-            .logits
+    for (output, state) in batch.iter().zip(&states[1..]) {
+        let slot = executor.states[state]
+            .slot
+            .as_ref()
+            .map(|lease| lease.slot)
+            .ok_or("batched sequence has no slot")?;
+        let (_, reference) = expected
             .iter()
-            .zip(&expected)
-            .filter(|(actual, expected)| actual.to_bits() != expected.to_bits())
-            .count();
-        assert_eq!(
-            differences, 0,
-            "pooled logits differ from the positioned reference"
+            .find(|(reference, _)| *reference == slot)
+            .ok_or("batch leased a slot the reference did not replay")?;
+        assert_bitwise(
+            &output.output.logits,
+            reference,
+            &format!("pooled slot {slot} against the positioned reference"),
         );
     }
     let serial = &single[0].output.logits;
-    assert_eq!(serial.len(), expected.len());
-    let top = |values: &[f32]| {
-        values
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.total_cmp(b.1))
-            .map(|(index, _)| index)
-    };
-    assert_eq!(top(serial), top(&expected));
+    let (_, reference) = &expected[0];
+    assert_eq!(serial.len(), reference.len());
+    assert_eq!(top_logit(serial), top_logit(reference));
     Ok(())
 }
 
@@ -363,7 +414,13 @@ fn pooled_verification_preserves_multimodal_rotary_position() -> Result<(), Box<
     let (mut executor, prompt, states) = media_position_fixture(2)?;
     assert_eq!(executor.slots.as_ref().and_then(SlotPool::verify), Some(3));
     assert!(executor.states[&states[0]].speculation.is_none());
-    let expected = pooled_position_reference(&mut executor, states[0], 65, 8)?;
+    let [(slot, expected)] = <[_; 1]>::try_from(pooled_position_reference(
+        &mut executor,
+        states[0],
+        (65, 8),
+        1,
+    )?)
+    .map_err(|_| "one reference lane")?;
     assert!(!expected.is_empty(), "verification needs complete logits");
     let task = media_position_task(
         states[0],
@@ -374,15 +431,19 @@ fn pooled_verification_preserves_multimodal_rotary_position() -> Result<(), Box<
         },
     );
     let outputs = run_media_position_tasks(&mut executor, &[task])?;
-    assert!(executor.states[&states[0]].slot.is_some());
-    let logits = &outputs[0].output.logits;
-    assert_eq!(logits.len(), expected.len());
-    assert!(
-        logits
-            .iter()
-            .zip(&expected)
-            .all(|(actual, expected)| actual.to_bits() == expected.to_bits()),
-        "pooled verification logits differ from the positioned reference"
+    let leased = executor.states[&states[0]]
+        .slot
+        .as_ref()
+        .map(|lease| lease.slot);
+    assert_eq!(
+        leased,
+        Some(slot),
+        "verification replays the reference slot"
+    );
+    assert_bitwise(
+        &outputs[0].output.logits,
+        &expected,
+        "pooled verification against the positioned reference",
     );
     Ok(())
 }
