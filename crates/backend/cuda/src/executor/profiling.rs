@@ -398,5 +398,4 @@ pub(super) fn capture_outcome(
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/executor_profiling.rs"]
 mod tests;

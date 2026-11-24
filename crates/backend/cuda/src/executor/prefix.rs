@@ -113,5 +113,4 @@ impl PrefixReuse<Snapshot> for Restore<'_> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/executor_prefix.rs"]
 mod tests;

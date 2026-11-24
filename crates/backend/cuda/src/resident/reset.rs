@@ -6,7 +6,6 @@ use infer_cuda_kernels::runtime::Graph;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_reset.rs"]
 mod tests;
 
 /// Record a clear of every state tensor; the program owns them for as long as the graph lives.

@@ -491,14 +491,11 @@ impl CudaDevice {
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../tests/unit/device_tensors.rs"]
-mod tensors;
+mod tensors_tests;
 
 #[cfg(test)]
-#[path = "../tests/unit/device.rs"]
 mod tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../tests/unit/device_transfers.rs"]
 mod transfer_tests;

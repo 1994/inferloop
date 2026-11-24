@@ -342,5 +342,4 @@ pub fn with_baseline<T>(run: impl FnOnce() -> T) -> T {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/resident_swiglu_tuning.rs"]
 mod tests;

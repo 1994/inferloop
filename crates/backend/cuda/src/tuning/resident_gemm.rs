@@ -1107,5 +1107,4 @@ fn tune(
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_gemm_tuning.rs"]
 mod tests;

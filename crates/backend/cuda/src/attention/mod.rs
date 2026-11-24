@@ -6,14 +6,11 @@ pub(crate) use plan::tile_rows;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/attention_gate_check.rs"]
-mod gate;
+mod gate_tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/attention_benchmark_check.rs"]
-pub(crate) mod benchmark;
+pub(crate) mod benchmark_tests;
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/attention.rs"]
 mod tests;

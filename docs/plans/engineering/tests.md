@@ -24,7 +24,7 @@
 
 按 workspace member 的 Rust 文件中 `#[test]`、`#[tokio::test]` 声明粗统计，119 个文件包含 361 个入口。其中 80 个在普通 `src` 文件内，136 个在 `src` 内的专用 test/check/bench 文件，143 个在 crate 的 `tests/`，2 个在 examples。45 个文件只有一个声明。统计未按 cfg、ignore、平台或宏展开区分实际运行数量。
 
-例如 [waiters 测试](../../../crates/engine/runtime/src/resource/waiters/tests.rs)、[shards 测试](../../../crates/model/package/src/storage/shards_tests.rs)、[GPU 投影对照](../../../crates/backend/cuda/tests/unit/resident_prefill_gemm_bench_check.rs) 和 [checkpoint owner 测试](../../../crates/engine/runtime/tests/checkpoint_owner.rs) 分别使用不同路径和执行方式。问题是同类测试没有共同规则，不能仅按文件里的函数数量判断测试价值。
+例如 [waiters 测试](../../../crates/engine/runtime/src/resource/waiters/tests.rs)、[shards 测试](../../../crates/model/package/src/storage/shards_tests.rs)、[GPU 投影对照](../../../crates/backend/cuda/src/resident/prefill_gemm/bench_check_tests.rs) 和 [checkpoint owner 测试](../../../crates/engine/runtime/tests/checkpoint_owner.rs) 分别使用不同路径和执行方式。问题是同类测试没有共同规则，不能仅按文件里的函数数量判断测试价值。
 
 ## 统一目录
 

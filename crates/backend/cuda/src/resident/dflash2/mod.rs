@@ -9,7 +9,6 @@
 //! is bound to a slot.
 pub mod budget;
 #[cfg(test)]
-#[path = "../../../tests/unit/resident_dflash2_budget.rs"]
 mod budget_tests;
 #[cfg(test)]
 #[cfg(feature = "cuda")]

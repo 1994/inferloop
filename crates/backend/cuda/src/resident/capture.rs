@@ -516,7 +516,8 @@ impl Capture<'_> {
         };
         #[cfg(test)]
         #[cfg(feature = "cuda")]
-        let options = super::gated_norm_discovery::model_options(dimension, gated, heads, options);
+        let options =
+            super::gated_norm_discovery_tests::model_options(dimension, gated, heads, options);
         // Physical funding must not change the automatic target's arithmetic.
         // Match the established full serving pool even when fewer slots fit.
         let normalization_heads = self.normalization_heads(heads)?;
@@ -570,5 +571,4 @@ impl Capture<'_> {
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_elementwise_cell.rs"]
 mod cell_tests;

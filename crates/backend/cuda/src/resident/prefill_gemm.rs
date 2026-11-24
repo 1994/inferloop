@@ -2,8 +2,7 @@
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_prefill_gemm_bench_check.rs"]
-mod bench_check;
+mod bench_check_tests;
 #[cfg(test)]
 #[cfg(feature = "cuda")]
 pub use infer_cuda_kernels::tile::projection::prefill_gemm as gemm;

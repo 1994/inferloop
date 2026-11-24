@@ -328,5 +328,4 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/tuning_attention_mma_f32.rs"]
 mod tests;

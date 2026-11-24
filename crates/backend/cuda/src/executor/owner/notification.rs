@@ -75,5 +75,4 @@ impl Notification {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/executor_notification.rs"]
 mod tests;

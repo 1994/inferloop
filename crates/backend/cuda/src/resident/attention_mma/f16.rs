@@ -100,5 +100,4 @@ pub fn select(device: &CudaDevice, shape: Shape) -> Result<Choice> {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/resident_attention_mma_f16.rs"]
 mod tests;

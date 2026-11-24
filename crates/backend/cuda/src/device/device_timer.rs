@@ -173,5 +173,4 @@ fn nanos(milliseconds: f32) -> Result<u64> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/device_timer.rs"]
 mod tests;

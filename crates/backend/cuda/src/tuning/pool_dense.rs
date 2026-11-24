@@ -519,7 +519,6 @@ fn tune(
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/pool_dense_tuning.rs"]
 mod tests;
 
 #[cfg(test)]

@@ -447,5 +447,4 @@ fn key_of<K: DeserializeOwned>(stored: &Value) -> Option<K> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/tuning_search.rs"]
 mod tests;

@@ -5,7 +5,6 @@ pub use infer_cuda_kernels::tile::attention::resident_attention_decode as kernel
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_attention_decode.rs"]
 mod tests;
 
 pub(super) mod pooled;
@@ -15,4 +14,4 @@ pub use workspace::Workspace;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-pub use workspace::taps;
+pub use workspace::taps_tests;

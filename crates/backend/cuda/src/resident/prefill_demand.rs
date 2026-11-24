@@ -40,5 +40,4 @@ pub fn with_state_prefill<T>(value: bool, run: impl FnOnce() -> T) -> T {
     run()
 }
 
-#[path = "../../tests/unit/resident_prefill_demand.rs"]
 mod tests;

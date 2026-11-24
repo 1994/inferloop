@@ -181,5 +181,4 @@ fn validate_norm(
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_validation.rs"]
 mod tests;

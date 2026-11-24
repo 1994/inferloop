@@ -245,7 +245,8 @@ def check_exceptions():
                         ROOT / "crates/backend/cuda/src/resident/attention_mma/mod.rs",
                         # Conversion measurement: fixed buffers and access leases;
                         # synchronize on the owning stream before releasing storage.
-                        ROOT / "crates/backend/cuda/tests/unit/tuning_attention_fp8_convert.rs",
+                        ROOT
+                        / "crates/backend/cuda/src/tuning/attention/exact/fp8_convert_tests.rs",
                         # Slot state aliases: source pools outlive programs and captured
                         # graphs; only the current lease holder replays on the device stream.
                         ROOT / "crates/backend/cuda/src/resident/slot_batch.rs",

@@ -166,21 +166,38 @@ def check_crates():
     print(f"Layout: {len(members)} grouped crates, thin facades and dependency boundaries passed")
 
 
+def is_test_source(path, base):
+    """Whether a file under `src/` is a unit test next to its module rather than production code.
+
+    The test layout names those files `tests.rs` or `*_tests.rs`, or nests them under a
+    `tests/` module directory; the host scans below hold production code only.
+    """
+    return (
+        path.name == "tests.rs"
+        or path.stem.endswith("_tests")
+        or "tests" in path.relative_to(base).parts
+    )
+
+
+def production_sources(base):
+    return (path for path in base.rglob("*.rs") if not is_test_source(path, base))
+
+
 def check_kernel_boundary():
     """Kernel bodies and driver launches stay in their source directories."""
     host = ROOT / "crates/backend/cuda/src"
     allowed = {host / "resident/small_gemm.rs"}
-    for path in host.rglob("*.rs"):
+    for path in production_sources(host):
         if "#[cutile::module]" in path.read_text() and path not in allowed:
             raise SystemExit(
                 f"{path.relative_to(ROOT)}: "
                 "move the kernel module to crates/backend/cuda-kernels/src/tile"
             )
-    for path in host.rglob("*.rs"):
+    for path in production_sources(host):
         if "infer_cuda_kernels::aot" in path.read_text():
             raise SystemExit(f"{path.relative_to(ROOT)}: the host selects a source by feature")
     for directory in ("resident", "executor"):
-        for path in (host / directory).rglob("*.rs"):
+        for path in production_sources(host / directory):
             text = path.read_text()
             if ".matvec_tiled(" in text or ".matvec(" in text:
                 raise SystemExit(
@@ -239,7 +256,7 @@ def check_sources():
 
 def count_host_tokens(root=ROOT):
     counts = dict.fromkeys(CUDA_HOST_TOKENS, 0)
-    for path in (root / CUDA_HOST).rglob("*.rs"):
+    for path in production_sources(root / CUDA_HOST):
         text = path.read_text()
         for token in counts:
             counts[token] += text.count(token)
@@ -265,7 +282,7 @@ def check_cuda_host_ratchet(root=ROOT, baseline=None):
 
 def check_host_architecture_names(root=ROOT):
     host = root / CUDA_HOST
-    for path in sorted(host.rglob("*.rs")):
+    for path in sorted(production_sources(host)):
         relative = path.relative_to(host).as_posix()
         if relative.startswith(ARCHITECTURE_CATALOGS):
             continue

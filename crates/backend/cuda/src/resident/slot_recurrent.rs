@@ -459,10 +459,8 @@ pub(super) fn record_commit(
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_slot_recurrent.rs"]
 mod tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/slot_staging.rs"]
 mod staging_tests;

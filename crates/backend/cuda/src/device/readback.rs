@@ -15,8 +15,7 @@ const MAX_READBACK_STAGING_BYTES: usize = 64 * MIB;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/device_readback_check.rs"]
-mod check;
+mod check_tests;
 
 mod flight;
 

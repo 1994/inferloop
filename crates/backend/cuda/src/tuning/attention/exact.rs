@@ -233,12 +233,10 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
     Ok(Some(entry))
 }
 #[cfg(test)]
-#[path = "../../../tests/unit/tuning_attention_exact.rs"]
 mod tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../../tests/unit/tuning_attention_fp8_convert.rs"]
 mod fp8_convert_tests;
 
 #[cfg(test)]

@@ -901,7 +901,6 @@ impl LoadedModel {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/loading_mod.rs"]
 mod tests;
 
 /// Attach `options.draft_model` to `package` and verify with its block width.
@@ -1041,88 +1040,68 @@ fn bind_vision(
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/loading_support.rs"]
-mod support;
+mod support_tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/loading_shape_ab.rs"]
 mod shape_ab_tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/loading_prefill_width.rs"]
 mod prefill_width_tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_quant_reuse_model.rs"]
 mod quant_reuse_model_tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_attention_prefill_model.rs"]
 mod attention_prefill_model_tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_decode_path.rs"]
 mod decode_path_tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_prefill_demand_model.rs"]
 mod prefill_demand_model_tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/loading_parallel_quant.rs"]
 mod parallel_quant_tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/loading_parallel_quant_pool.rs"]
 mod parallel_quant_pool_tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/loading_pool_gemv_cost.rs"]
 mod pool_gemv_cost_tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/loading_pool_gemv_model.rs"]
 mod pool_gemv_model_tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/loading_pool_greedy_lifecycle.rs"]
 mod pool_greedy_lifecycle_tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/loading_oxide_attention.rs"]
 mod oxide_attention_tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/loading_gated_norm_model.rs"]
 mod gated_norm_model_tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/loading_prompt_width_buckets.rs"]
 mod prompt_width_bucket_tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_norm_maximum_model.rs"]
 mod norm_maximum_model_tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_norm_fp4_quant.rs"]
 mod norm_fp4_quant_tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_norm_fp4_model.rs"]
 mod norm_fp4_model_tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/vendor_nvfp4_fixture.rs"]
-pub(crate) mod nvfp4_fixture;
+pub(crate) mod nvfp4_fixture_tests;
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_vendor_fp4_model.rs"]
 mod vendor_fp4_model_tests;

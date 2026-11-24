@@ -99,7 +99,7 @@ def run(args):
     commands = {
         "native": [
             str(binaries["native"]),
-            "attention::gate::attention_native_gate",
+            "attention::gate_tests::attention_native_gate",
             "--exact",
             "--ignored",
             "--test-threads=1",

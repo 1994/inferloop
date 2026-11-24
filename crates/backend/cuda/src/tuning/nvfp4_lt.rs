@@ -79,5 +79,4 @@ pub(crate) fn save(path: Option<&Path>, entry: &Entry) -> bool {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/tuning_nvfp4_lt.rs"]
 mod tests;

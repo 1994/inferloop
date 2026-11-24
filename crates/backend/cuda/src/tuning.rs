@@ -749,5 +749,4 @@ pub(crate) fn select_tiling(
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/tuning.rs"]
 mod tests;

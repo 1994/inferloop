@@ -27,7 +27,7 @@ M=3、4 也测得约 0.277/0.276 ms。历史 graph-only 诊断的 target verify 
 
 ## 全模型检查的两个对照缺口
 
-[checkpoint model check](../../../crates/backend/cuda/tests/unit/resident_recurrent_prefill_model_check.rs)原先没有显式设置 chunked_recurrent。量化模型默认使用 scalar Delta，不设置环境 opt-in 时，名为 chunk 的检查可能比较两个 scalar 程序，产生假阳性。
+[checkpoint model check](../../../crates/backend/cuda/src/resident/recurrent_prefill/model_check_tests.rs)原先没有显式设置 chunked_recurrent。量化模型默认使用 scalar Delta，不设置环境 opt-in 时，名为 chunk 的检查可能比较两个 scalar 程序，产生假阳性。
 
 LEGACY_CAPTURE 还同时关闭卷积分块，原检查没有单独隔离 Delta。修复后明确启用候选，并用测试专用 LEGACY_DELTA_CAPTURE 保持卷积、权重、宽度和 GEMM policy 相同。其他 legacy 卷积检查继续使用原开关；生产默认路径与数值门槛不变。
 

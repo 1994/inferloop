@@ -335,5 +335,4 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/tuning_greedy.rs"]
 mod tests;

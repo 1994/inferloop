@@ -147,5 +147,4 @@ impl DeviceProgram {
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../../tests/unit/resident_program_greedy.rs"]
 mod tests;

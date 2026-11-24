@@ -242,5 +242,4 @@ const fn category(op: &TensorOp) -> &'static str {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_profile.rs"]
 mod tests;

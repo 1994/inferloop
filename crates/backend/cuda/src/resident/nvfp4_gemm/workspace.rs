@@ -847,5 +847,4 @@ fn vendor_diagnostic_enabled() -> bool {
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../../tests/unit/resident_norm_fp4_permissions.rs"]
 mod norm_fp4_permission_tests;

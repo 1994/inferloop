@@ -118,5 +118,4 @@ fn e4m3(code: u8) -> f32 {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/nvfp4.rs"]
 mod tests;

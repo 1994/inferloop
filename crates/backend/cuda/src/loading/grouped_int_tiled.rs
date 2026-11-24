@@ -184,10 +184,8 @@ pub const fn code_shape(format: GroupedIntFormat, rows: usize, columns: usize) -
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/grouped_int_tiled.rs"]
 mod tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/grouped_int_rows.rs"]
 mod rows_tests;
