@@ -1,7 +1,7 @@
 # KV Cache Manager 与页缓存
 
 KV 管理分为 scheduler 的逻辑页预算和 backend owner 的物理页 / 私有状态。共享前缀生命周期由 `PrefixCache<V, M>` 管理，`M: PrefixPolicy` 选择匹配与最近使用索引表示，
-`PrefixReuse<V>` 实现后端的获取/恢复操作。`KvCacheManager<P>` 在此之上组合 BlockPool，
+`PrefixReuse<V>` 实现后端的获取/恢复操作。`KvPages<P>` 在此之上组合 BlockPool，
 为共享页提供 lease 适配；CUDA 则提供连续设备快照适配。公共层不调用 CUDA / Metal API。
 
 ## 共享前缀生命周期与扩展

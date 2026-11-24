@@ -20,7 +20,7 @@
 
 | 范围 | 已有实现 | 需要补齐 |
 |---|---|---|
-| Agent 控制面 | [infer-agent](../../architecture/agent.md) 提供 JSON-RPC 诊断、控制和实验 | 不承担模型生成内容的解析；不能把模型输出直接分发到 `AgentService::register` |
+| Agent 控制面 | [infer-agent](../../architecture/agent.md) 提供 JSON-RPC 诊断、控制和实验 | 不承担模型生成内容的解析；不能把模型输出直接分发到 `AgentDispatcher::register` |
 | 工具提示词 | [TextAssets / ChatOptions](../../../crates/model/package/src/input/text.rs) 编码工具定义、typed assistant 调用历史及关联结果；模板绑定输出方言 | 后续方言需补真实模板、tokenizer 与输出样本 |
 | OpenAI 请求 | [GenerationRequest](../../../crates/service/frontdoor/src/http/openai/request.rs) 支持文本、nullable assistant content、工具历史、none/auto、required/named/strict、parallel=false 与 SSE；未知字段拒绝 | 更完整的 schema 及推测组合 |
 | OpenAI 输出 | [execution](../../../crates/service/frontdoor/src/http/openai/execution.rs) 与 [stream](../../../crates/service/frontdoor/src/http/openai/stream.rs) 共用 parser；支持 reasoning、tool_calls 与参数 deltas | 新方言或约束接入时复用当前事件契约 |

@@ -38,7 +38,7 @@ pub struct StateSnapshot {
     pub references: usize,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SequenceStateManager {
+pub struct SequenceStates {
     #[serde(skip)]
     spare_tables: Vec<Vec<StatePageId>>,
     total_pages: usize,

@@ -6,7 +6,7 @@ fn req(id: u64) -> RequestId {
 }
 #[test]
 fn cache_miss_does_not_claim_uninitialized_tokens() {
-    let mut state = SequenceStateManager::new(4, 4).unwrap();
+    let mut state = SequenceStates::new(4, 4).unwrap();
     let id = state
         .reserve(req(1), StateKind::AttentionKv, 8, Some(&prefix()))
         .unwrap();
@@ -24,7 +24,7 @@ fn prefix() -> PrefixKey {
 }
 #[test]
 fn failed_reservation_is_atomic_and_release_is_exact() {
-    let mut m = SequenceStateManager::new(2, 4).unwrap();
+    let mut m = SequenceStates::new(2, 4).unwrap();
     let s = m.reserve(req(1), StateKind::AttentionKv, 8, None).unwrap();
     assert_eq!(
         m.reserve(req(2), StateKind::LinearAttention, 1, None)
@@ -40,7 +40,7 @@ fn failed_reservation_is_atomic_and_release_is_exact() {
 }
 #[test]
 fn shared_prefix_survives_owner_and_cache_release() {
-    let mut m = SequenceStateManager::new(3, 4).unwrap();
+    let mut m = SequenceStates::new(3, 4).unwrap();
     let s = m.reserve(req(1), StateKind::AttentionKv, 8, None).unwrap();
     m.commit(s, 4).unwrap();
     m.cache_prefix(s, prefix()).unwrap();
@@ -58,7 +58,7 @@ fn shared_prefix_survives_owner_and_cache_release() {
 }
 #[test]
 fn long_reserve_cancel_sequence_has_no_leak() {
-    let mut m = SequenceStateManager::new(256, 8).unwrap();
+    let mut m = SequenceStates::new(256, 8).unwrap();
     let mut live = Vec::new();
     for id in 1..1000 {
         if id % 3 == 0 && !live.is_empty() {
@@ -81,7 +81,7 @@ fn long_reserve_cancel_sequence_has_no_leak() {
 }
 #[test]
 fn batch_growth_validates_all_states_before_committing_pages_or_ids() {
-    let mut state = SequenceStateManager::new(3, 4).unwrap();
+    let mut state = SequenceStates::new(3, 4).unwrap();
     let first = state
         .reserve_incremental(req(1), StateKind::AttentionKv, 12)
         .unwrap();

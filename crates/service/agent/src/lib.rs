@@ -10,7 +10,7 @@ mod service;
 pub mod transport;
 
 pub use context::{AgentBackend, AgentContext, CallRecord};
-pub use service::AgentService;
+pub use service::AgentDispatcher;
 
 #[cfg(test)]
 #[path = "../tests/unit/cases.rs"]

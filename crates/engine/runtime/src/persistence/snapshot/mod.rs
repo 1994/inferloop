@@ -2,7 +2,7 @@ mod capture;
 mod restore;
 mod validation;
 use crate::preparation::request_bytes;
-use crate::{Engine, RequestRecord, RuntimeConfig, engine::TenantService};
+use crate::{Engine, RequestRecord, RuntimeConfig, engine::TenantShare};
 use infer_core::map::BoundedMap;
 use infer_core::{Error, IdAllocator, RequestId, Result};
 use infer_ir::{
@@ -10,7 +10,7 @@ use infer_ir::{
     Workload,
 };
 use infer_quality::ProgressGuard;
-use infer_state::SequenceStateManager;
+use infer_state::SequenceStates;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::{collections::BTreeMap, collections::BTreeSet, collections::VecDeque};
@@ -62,7 +62,7 @@ pub struct RuntimeSnapshot {
     pub model: ModelIr,
     pub program: ExecutionProgram,
     pub config: RuntimeConfig,
-    pub state: SequenceStateManager,
+    pub state: SequenceStates,
     pub requests: BTreeMap<RequestId, RequestRecord>,
     pub queues: infer_scheduler::RequestQueue,
     pub resource_epoch: u64,
@@ -73,7 +73,7 @@ pub struct RuntimeSnapshot {
     pub priority_cursor: Option<RequestId>,
     pub seen_requests: BTreeSet<RequestId>,
     pub retired_request_floor: u64,
-    pub(crate) tenants: BoundedMap<Arc<str>, TenantService>,
+    pub(crate) tenants: BoundedMap<Arc<str>, TenantShare>,
     pub(crate) ids: IdAllocator,
     pub global_progress_epoch: u64,
     pub now_us: u64,

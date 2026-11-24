@@ -14,12 +14,12 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::time::Instant;
 
-pub struct AgentService<B: AgentBackend> {
+pub struct AgentDispatcher<B: AgentBackend> {
     context: AgentContext<B>,
     registry: CommandRegistry<AgentContext<B>>,
 }
 
-impl<B: AgentBackend> AgentService<B> {
+impl<B: AgentBackend> AgentDispatcher<B> {
     /// # Errors
     /// Returns registration errors if built-in command names collide.
     pub fn new(engine: Engine<B>, backend_catalog: Value) -> Result<Self> {

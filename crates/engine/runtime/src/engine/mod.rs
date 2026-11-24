@@ -24,7 +24,7 @@ use infer_scheduler::CostAwarePolicy;
 use infer_spi::{
     AdmissionPolicy, BackendProvider, CostModelProvider, SchedulingPolicy, WorkloadProvider,
 };
-use infer_state::{SequenceStateManager, StateSnapshot};
+use infer_state::{SequenceStates, StateSnapshot};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::{collections::BTreeSet, collections::VecDeque};
@@ -106,7 +106,7 @@ pub struct InFlight<T> {
     pub(crate) output_credit: Option<OutputCredit>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TenantService {
+pub struct TenantShare {
     pub owners: usize,
     pub active: usize,
     pub tokens: usize,
@@ -134,13 +134,13 @@ pub struct Engine<B: BackendProvider, P: SchedulingPolicy = CostAwarePolicy> {
     pub(crate) config: RuntimeConfig,
     /// Single-sequence length limits resolved once from the model ceiling and service settings.
     pub(crate) limits: crate::ResolvedLengthLimits,
-    pub(crate) state: SequenceStateManager,
+    pub(crate) state: SequenceStates,
     pub(crate) resources_pending: ResourceWaiters,
     pub(crate) resource_epoch: u64,
     pub(crate) backend_resource_epoch: u64,
     pub(crate) seen_requests: BTreeSet<RequestId>,
     pub(crate) retired_request_floor: u64,
-    pub(crate) tenants: BoundedMap<Arc<str>, TenantService>,
+    pub(crate) tenants: BoundedMap<Arc<str>, TenantShare>,
     pub(crate) ids: IdAllocator,
     pub(crate) inflight: Option<InFlight<B::Ticket>>,
     pub(crate) global_progress_epoch: u64,

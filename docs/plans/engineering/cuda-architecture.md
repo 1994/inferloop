@@ -26,7 +26,7 @@
 |---|---|---|---|
 | 时间 | 成本模型 | 没有实现 `completion_timing`，默认返回 `None`，`record_execution_completion` 不产生成本观测 | `CalibratedCosts` 在 CUDA 上得不到校准，SLO 预测和批次打包缺真实依据 |
 | 准入 | runtime / scheduler | `executor/admission_pool.rs` 的 `pool_funding`、`defer_request_pool` 决定何时捕获多大的池；`loading/budget.rs` 958 行 | 双重决策，且准入不计准备中的预留：KV 方案已复现 5×8000 并发时第 5 条超时 |
-| 页 | `infer-state` / scheduler | `SlotLedger` 和 `Paging` 私有；`shared_blocks`、`cow_copies` 恒为 0，`cow_tail` 恒为 false，页按 capacity 预付（`executor/provider.rs:88-114`） | engine 的按块准入对 CUDA 不成立；Metal 用 `KvCacheManager`，CUDA 是另一套，`cpu-runtime.md` 的目标 owner 与现状相反 |
+| 页 | `infer-state` / scheduler | `SlotLedger` 和 `Paging` 私有；`shared_blocks`、`cow_copies` 恒为 0，`cow_tail` 恒为 false，页按 capacity 预付（`executor/provider.rs:88-114`） | engine 的按块准入对 CUDA 不成立；Metal 用 `KvPages`，CUDA 是另一套，`cpu-runtime.md` 的目标 owner 与现状相反 |
 | 前缀 | `infer-state` | 生命周期已用公共 `PrefixCache`，但复用单位是整段设备快照，`PREFIX_GRANULARITY` 写在 executor | 只能整段拷贝，engine 无法按页共享 |
 | 推测 | `infer-workloads` | `mtp` 和 `draft` 共出现在 36 个文件，`executor/execution.rs` 2018 行、126 行涉及；`SpeculationPlan` 有两个同名类型（`ir/workload.rs:211`、`spi/model.rs:81`） | 每加一种 draft 都要改 executor 的策略分支 |
 
@@ -53,7 +53,7 @@ runtime                  submit / poll，不重建拓扑
 
 | 决策 | 归属 | CUDA 只负责 |
 |---|---|---|
-| 逻辑页、引用、COW、淘汰 | `infer-state` / scheduler（复用 `KvCacheManager`） | 物理块分配、拷贝、fence |
+| 逻辑页、引用、COW、淘汰 | `infer-state` / scheduler（复用 `KvPages`） | 物理块分配、拷贝、fence |
 | 推测提议、接受规则、资源描述 | `infer-workloads` | 草稿图、物理回滚、追赶 |
 | 逻辑提交、预算、公平性、准入决策 | runtime / scheduler | 上报真实设备时间和物理容量事实 |
 | 融合、宽窄图、kernel 选择 | CUDA host，加载期定成 Plan | `Kernels` 只录制 |
@@ -206,12 +206,12 @@ runtime                  submit / poll，不重建拓扑
 
 ### O3 页账
 
-- **做什么：** `infer-state` 持有页账本，复用 `KvCacheManager`，不新建共享 arena（KV 方案第八节已否证）。`SlotPool` 改成执行镜像，只负责物理块分配、设备拷贝和 fence；统一 `block_size` / `bytes_per_block` 为同一报价单位。
+- **做什么：** `infer-state` 持有页账本，复用 `KvPages`，不新建共享 arena（KV 方案第八节已否证）。`SlotPool` 改成执行镜像，只负责物理块分配、设备拷贝和 fence；统一 `block_size` / `bytes_per_block` 为同一报价单位。
 - **第一步只换所有者：** 预付语义不变，所以 13.x token 和状态逐位对照可判定。按需增长和块共享是后续的策略改变，见第 5 节。
 - **SPI：** 如需调整，只改现有 `kv_cache`、`state_page_growth`、reservation，不新增第二套容量接口。
 - **注意：** KV 只是显存的一部分；递推状态按序列保存，仍由 CUDA 物理实现，engine 只记其字节数。
 - **验收：** `kv_cache()` 的数据来自公共账本而非 CUDA 自算；CUDA 没有私有 free list 决策；取消和错误路径下页不泄漏、不提前释放。
-- **第一步完成（2026-11-10，#227）：** 分页 slot pool 的页存在 `infer-state` 的 `KvCacheManager`，每块字节用池报价单位；`kv_cache()` 对分页池直接取账本的 inspection，分配与释放计数从 slot 改为页。预付语义不变。
+- **第一步完成（2026-11-10，#227）：** 分页 slot pool 的页存在 `infer-state` 的 `KvPages`，每块字节用池报价单位；`kv_cache()` 对分页池直接取账本的 inspection，分配与释放计数从 slot 改为页。预付语义不变。
 - **按需增长与按页前缀（2026-11-11，#237）：**
   - slot 不再按准入容量预租页：已绑定序列每次回放前增长到本步写入的行，home 起始 1 页。
   - `state_page_growth` 报告实际持有的页，engine 每步只为新增页计费；CUDA 支持 recompute preemption，reset 会归还页。
@@ -307,7 +307,7 @@ Workload 边界目前是干净的：CUDA 和 runtime 中查不到 `WorkloadKind`
 
 **已落地（PR #130）：** M0 棘轮和 `WorkloadKind` 拦截；O1 设备时间上报；G1–G3 目标身份统一；M2 的 `pool_gemv` 模板；M4 的 attention 回退链；M7 探测和 `model-probe.py`；P1 测量；O2 的建池决策 `decide_pool`；O3 第一步（slot pool 用 `BlockPool`）；O4 的提议预算、提议条件和接受前缀；C1M 的池显存分项日志。M6 已完成（#184–#199）：host 不含 cuTile 类型，`--features cuda-aot` 无工具链构建并运行 CPU 侧测试。
 
-**2026-11-10 进度：** M2、M3、M4 完成（#209–#226、#232）；M5 的加载期检查补齐（#230）；M7 第二家族 `LlamaProvider`（#231）；O2 按块计价（#228）；O3 第一步换成 `KvCacheManager`（#227）；O4 的池策略归还 `DraftPooling`（#229）。
+**2026-11-10 进度：** M2、M3、M4 完成（#209–#226、#232）；M5 的加载期检查补齐（#230）；M7 第二家族 `LlamaProvider`（#231）；O2 按块计价（#228）；O3 第一步换成 `KvPages`（#227）；O4 的池策略归还 `DraftPooling`（#229）。
 
 **2026-11-11 进度：**
 
@@ -333,7 +333,7 @@ Workload 边界目前是干净的：CUDA 和 runtime 中查不到 `WorkloadKind`
 
 以下四项已于 2026-11-13 有结论（#240）：
 
-- **`SlotPool` 与 `KvCacheManager`：** 已经解决。分页 slot pool 的页由 `KvCacheManager` 持有（#227），按需增长和前缀共享页也走同一账本（#237），SPI 没有改动。Metal 布局不同，仍各自保留。
+- **`SlotPool` 与 `KvPages`：** 已经解决。分页 slot pool 的页由 `KvPages` 持有（#227），按需增长和前缀共享页也走同一账本（#237），SPI 没有改动。Metal 布局不同，仍各自保留。
 - **第二条 flight 的显存：** 需要第二份。flight 写入的 arena 和 commit staging 在 fence 之前不能复用，状态则由池共享。按 27B（20 槽）实测分项：
   - 至少要第二份最宽图 arena（0.09 GB）和回滚 staging（0.24 GB）；
   - 窄宽度图也要双份的话，再加约 0.45 GB；

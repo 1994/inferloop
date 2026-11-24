@@ -83,7 +83,7 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
             .transpose()?
             .flatten()
             .map(|assets| {
-                let mut media = infer_frontdoor::MediaService::new(assets, media_limits)
+                let mut media = infer_frontdoor::MediaIngest::new(assets, media_limits)
                     .with_image_decoder(match image_decoder {
                         super::ImageDecoder::Auto => infer_frontdoor::ImageDecoder::Auto,
                         super::ImageDecoder::Cpu => infer_frontdoor::ImageDecoder::Cpu,

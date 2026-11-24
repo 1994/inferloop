@@ -1,6 +1,6 @@
 use infer_core::*;
 use infer_ir::*;
-use infer_state::{SequenceStateManager, blocks::BlockPool, cache::PrefixCache};
+use infer_state::{SequenceStates, blocks::BlockPool, cache::PrefixCache};
 use std::iter::empty;
 use std::iter::once;
 
@@ -83,7 +83,7 @@ fn cache_pressure_never_recycles_pages_pinned_by_an_active_sequence() {
 }
 #[test]
 fn logical_pages_grow_on_demand_and_failed_growth_is_atomic() {
-    let mut s = SequenceStateManager::new(2, 2).unwrap();
+    let mut s = SequenceStates::new(2, 2).unwrap();
     let id = s
         .reserve_incremental(RequestId::new(1).unwrap(), StateKind::AttentionKv, 8)
         .unwrap();

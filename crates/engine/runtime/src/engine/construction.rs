@@ -15,7 +15,7 @@ use infer_kernel_api::KernelRegistry;
 use infer_quality::ProgressGuard;
 use infer_scheduler::{CalibratedCosts, CostAwarePolicy, ResourceAdmission};
 use infer_spi::{BackendProvider, SchedulingPolicy, WorkloadProvider};
-use infer_state::SequenceStateManager;
+use infer_state::SequenceStates;
 use infer_workloads::NativeWorkloads;
 use std::mem::replace;
 use std::time::Duration;
@@ -74,7 +74,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             config.workspace_bytes,
         )?;
         backend.validate_program(&model, &program)?;
-        let state = SequenceStateManager::with_capacity(
+        let state = SequenceStates::with_capacity(
             config.num_gpu_blocks,
             config.block_size,
             config.max_requests,

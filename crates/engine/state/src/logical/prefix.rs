@@ -1,8 +1,8 @@
 //! Prefix responsibilities.
-use super::{PrefixKey, SequenceStateManager};
+use super::{PrefixKey, SequenceStates};
 use infer_core::{Error, Result, StateId};
 
-impl SequenceStateManager {
+impl SequenceStates {
     /// Cache only fully committed pages; a mutable partial tail is never shared.
     ///
     /// # Errors

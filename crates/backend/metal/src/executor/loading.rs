@@ -14,7 +14,7 @@ use infer_models::{
     WeightStorage, WeightTarget, load_weights,
 };
 use infer_state::blocks::BlockLease;
-use infer_state::{kv::KvCacheConfig, kv::KvCacheManager};
+use infer_state::{kv::KvCacheConfig, kv::KvPages};
 use metal::Buffer;
 use objc::rc::autoreleasepool;
 use sha2::{Digest, Sha256};
@@ -246,7 +246,7 @@ impl MetalBackend {
                 last.insert(layer, node.id);
             }
         }
-        let kv_manager = KvCacheManager::new(KvCacheConfig {
+        let kv_manager = KvPages::new(KvCacheConfig {
             namespace: weights.identity.as_bytes().to_vec(),
             block_size: config.block_size,
             blocks: kv.blocks,

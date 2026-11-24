@@ -4,4 +4,4 @@ pub mod cache;
 pub mod kv;
 mod logical;
 pub mod physical;
-pub use logical::{PrefixKey, SequenceState, SequenceStateManager, StateSnapshot};
+pub use logical::{PrefixKey, SequenceState, SequenceStates, StateSnapshot};

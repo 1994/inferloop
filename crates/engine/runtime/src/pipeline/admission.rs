@@ -8,7 +8,7 @@ use crate::preparation::validate_plan;
 use crate::resource::PendingResource;
 use crate::resource::ResourcePhase;
 use crate::stages::prefill::retained_readout;
-use crate::{Engine, RequestRecord, TenantService};
+use crate::{Engine, RequestRecord, TenantShare};
 use infer_core::credits::CreditLease;
 use infer_core::{
     Error, ErrorCode, RequestId, RequestStage, RequestStatus, Result, StateId, event::EventKind,
@@ -574,7 +574,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         } else {
             self.tenants.insert(
                 name,
-                TenantService {
+                TenantShare {
                     owners: 1,
                     active: 1,
                     tokens: plan.reserved_tokens,

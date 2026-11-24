@@ -1,5 +1,5 @@
 use super::{
-    MediaRequest, MediaService, ResolvedMedia, SourcePolicy, TempPath, image_digest, load_image,
+    MediaIngest, MediaRequest, ResolvedMedia, SourcePolicy, TempPath, image_digest, load_image,
     load_image_with, load_video_with, parse_rate, read_url, run_bounded, source_digest,
 };
 use crate::cpu::{CpuConfig, CpuPool, cancelled_context};
@@ -52,9 +52,9 @@ async fn image_decoder_auto_retains_supported_jpeg_and_cpu_override_decodes_it()
     let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
     let inspections = Arc::new(AtomicUsize::new(0));
     let capability = Arc::new(TestJpegCapability(Arc::clone(&inspections)));
-    let automatic = MediaService::new(multimodal.clone(), MediaLimits::default())
+    let automatic = MediaIngest::new(multimodal.clone(), MediaLimits::default())
         .with_image_preprocessing(capability.clone());
-    let cpu = MediaService::new(multimodal, MediaLimits::default())
+    let cpu = MediaIngest::new(multimodal, MediaLimits::default())
         .with_image_preprocessing(capability)
         .with_image_decoder(super::ImageDecoder::Cpu);
     let fixture = encoded(noisy_image(96, 64), image::ImageFormat::Jpeg);
@@ -140,9 +140,9 @@ async fn image_preparation_follows_backend_capability() {
     let package = PathBuf::from(var("INFER_VISION_PACKAGE").unwrap());
     let assets = TextAssets::open(&package, 4096).unwrap();
     let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
-    let gpu = MediaService::new(multimodal.clone(), MediaLimits::default())
+    let gpu = MediaIngest::new(multimodal.clone(), MediaLimits::default())
         .with_image_preprocessing(Arc::new(TestImageCapability(true)));
-    let host = MediaService::new(multimodal, MediaLimits::default())
+    let host = MediaIngest::new(multimodal, MediaLimits::default())
         .with_image_preprocessing(Arc::new(TestImageCapability(false)));
     let request = MediaRequest {
         modality: Modality::Image,
@@ -193,7 +193,7 @@ async fn default_image_limit_accepts_multiple_images_in_one_prompt() {
     let package = PathBuf::from(var("INFER_VISION_PACKAGE").unwrap());
     let assets = TextAssets::open(&package, 8192).unwrap();
     let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
-    let service = MediaService::new(multimodal, MediaLimits::default())
+    let service = MediaIngest::new(multimodal, MediaLimits::default())
         .with_image_preprocessing(Arc::new(TestImageCapability(true)));
     let requests = (0..3)
         .map(|_| MediaRequest {
@@ -238,10 +238,10 @@ async fn image_options_match_between_deferred_and_host_processing() {
     let assets = TextAssets::open(&package, 8192).unwrap();
     let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
     let global = ImageProcessingOptions::parse(r#"{"min_pixels":1024,"max_pixels":1024}"#).unwrap();
-    let gpu = MediaService::new(multimodal.clone(), MediaLimits::default())
+    let gpu = MediaIngest::new(multimodal.clone(), MediaLimits::default())
         .with_image_options(global.clone())
         .with_image_preprocessing(Arc::new(TestImageCapability(true)));
-    let host = MediaService::new(multimodal, MediaLimits::default())
+    let host = MediaIngest::new(multimodal, MediaLimits::default())
         .with_image_options(global)
         .with_image_preprocessing(Arc::new(TestImageCapability(false)));
     let png = encoded(
@@ -444,7 +444,7 @@ async fn prepared_images_preserve_order_and_source_identity() {
     let assets = TextAssets::open(&package, 4096).unwrap();
     let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
     let processor = multimodal.images.clone();
-    let service = MediaService::new(multimodal, MediaLimits::default());
+    let service = MediaIngest::new(multimodal, MediaLimits::default());
     let pool = CpuPool::new(CpuConfig {
         workers: 1,
         max_jobs: 2,
@@ -555,7 +555,7 @@ async fn prepared_video_groups_match_the_complete_clip() {
     let package = PathBuf::from(var("INFER_VISION_PACKAGE").unwrap());
     let assets = TextAssets::open(&package, 4096).unwrap();
     let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
-    let service = MediaService::new(multimodal, MediaLimits::default());
+    let service = MediaIngest::new(multimodal, MediaLimits::default());
     let pool = CpuPool::new(CpuConfig {
         workers: 2,
         max_jobs: 4,

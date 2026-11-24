@@ -5,7 +5,7 @@ use crate::constants::MAX_REQUEST_BODY_BYTES;
 use crate::constants::TEXT_STAGING_EXPANSION;
 use crate::constants::TEXT_STAGING_OVERHEAD_BYTES;
 use crate::constants::TOKEN_STAGING_BYTES;
-use crate::media::MediaService;
+use crate::media::MediaIngest;
 use axum::extract::rejection::JsonRejection;
 use axum::{
     Json, Router, extract::DefaultBodyLimit, extract::State, http::HeaderMap, routing::post,
@@ -23,7 +23,7 @@ use tokio::sync::Semaphore;
 pub(super) struct TextState {
     pub(super) handle: RuntimeHandle,
     pub(super) assets: Arc<infer_models::TextAssets>,
-    pub(super) media: Option<Arc<MediaService>>,
+    pub(super) media: Option<Arc<MediaIngest>>,
     pub(super) delivery: cpu::CpuPool,
     pub(super) responses: ResponsesExtensions,
     pub(super) background_permits: Arc<Semaphore>,
@@ -50,7 +50,7 @@ pub fn router_with_text(handle: RuntimeHandle, assets: Arc<infer_models::TextAss
 pub fn router_with_text_and_media(
     handle: RuntimeHandle,
     assets: Arc<infer_models::TextAssets>,
-    media: Option<Arc<MediaService>>,
+    media: Option<Arc<MediaIngest>>,
 ) -> Router {
     router_with_text_media_and_responses(handle, assets, media, ResponsesExtensions::default())
 }
@@ -58,7 +58,7 @@ pub fn router_with_text_and_media(
 pub fn router_with_text_media_and_responses(
     handle: RuntimeHandle,
     assets: Arc<infer_models::TextAssets>,
-    media: Option<Arc<MediaService>>,
+    media: Option<Arc<MediaIngest>>,
     responses: ResponsesExtensions,
 ) -> Router {
     let state = TextState {

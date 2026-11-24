@@ -30,7 +30,7 @@ use infer_cuda_kernels::runtime::{Staging, Transfers};
 use infer_ir::KvCacheInspection;
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use infer_state::blocks::BlockLease;
-use infer_state::kv::{KvCacheConfig, KvCacheManager, KvPrefix};
+use infer_state::kv::{KvCacheConfig, KvPages, KvPrefix};
 #[cfg(test)]
 use std::cell::Cell;
 use std::iter::successors;
@@ -406,7 +406,7 @@ struct Paging {
     /// Allocations of the shared caches; each slot's entry in `SlotPool::fp8` views them.
     shared: NarrowCaches,
     /// The engine's page ledger; this pool only maps its leases to device rows.
-    pages: KvCacheManager<PagePrefix>,
+    pages: KvPages<PagePrefix>,
     /// Bytes one page occupies, the unit cached prefixes are charged in.
     page_bytes: u64,
     leases: Vec<Vec<BlockLease>>,
@@ -1228,7 +1228,7 @@ impl SlotPool {
         )?;
         let bytes_per_block = kv_block_bytes(graph, weights)?;
         // The ledger prices pages in the unit the pool quote uses.
-        let pages = KvCacheManager::new(KvCacheConfig {
+        let pages = KvPages::new(KvCacheConfig {
             namespace: LEDGER_NAMESPACE.to_vec(),
             block_size: block,
             blocks,

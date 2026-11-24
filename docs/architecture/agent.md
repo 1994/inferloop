@@ -16,7 +16,7 @@
 | AgentBackend | backend / kernel catalog、trace / probe 与 timing adapter |
 | graph / experiment | 源码关联、隔离 baseline / candidate 与验收 |
 
-新增工具调用使用 `AgentService::register`，新增设备实现实现 `AgentBackend`。snapshot 复用 Runtime checkpoint。
+新增工具调用使用 `AgentDispatcher::register`，新增设备实现实现 `AgentBackend`。snapshot 复用 Runtime checkpoint。
 
 ## 协议与限额
 

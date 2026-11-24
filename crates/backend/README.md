@@ -29,7 +29,7 @@ crate 名称（`infer-backend-cuda`、`infer-backend-metal`）不因目录组织
 
 共享 `PrefixCache<V, M>` 统一管理 prefix publication、匹配、预算、LRU 与复用统计；
 `PrefixPolicy` 可选择块指纹或快照扫描，`PrefixReuse<V>` 接入后端资源操作。
-`KvCacheManager` 在此之上管理页 ledger、COW/append/rollback 与 copy pin；Metal 获取共享 lease，
+`KvPages` 在此之上管理页 ledger、COW/append/rollback 与 copy pin；Metal 获取共享 lease，
 CUDA 使用同一缓存核心恢复其独占设备快照，实际设备复制与 fence 保留在 backend。
 
 ## 新增 backend

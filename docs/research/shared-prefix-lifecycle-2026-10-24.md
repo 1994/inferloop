@@ -1,7 +1,7 @@
 # 共享前缀生命周期：后端保留物理恢复策略
 
 工作分支先合入 main `62417eb`，候选实现 `3067284`。CUDA 原先在 executor 内维护另一套
-匹配、take/reinsert、预算、LRU 和计数；Metal 经 KvCacheManager 使用共享 PrefixCache。
+匹配、take/reinsert、预算、LRU 和计数；Metal 经 KvPages 使用共享 PrefixCache。
 本改动把发布、匹配边界、兼容性过滤、预算、淘汰、成功命中计数收回 engine/state。
 后端通过 PrefixReuse 定制页引用获取或 CUDA target/draft 恢复；通过 PrefixPolicy 选择索引。
 这在 Rust 中用组合与 trait 表达共享流程和扩展点，不需要模拟类继承。

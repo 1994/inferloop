@@ -17,7 +17,7 @@ pub use config::RuntimeConfig;
 pub use cpu::plans::StepPool as CpuStepPool;
 pub use cpu::{CpuRuntimeConfig, CpuRuntimeInspection, OwnerPlacement};
 pub use engine::{
-    CompletedRequest, Engine, EngineFault, EngineOutput, InFlight, RuntimeInspection, TenantService,
+    CompletedRequest, Engine, EngineFault, EngineOutput, InFlight, RuntimeInspection, TenantShare,
 };
 pub use lengths::{LengthLimitSources, LimitSource, ResolvedLengthLimits};
 pub use observation::ObservationSnapshot;
