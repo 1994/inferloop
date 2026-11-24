@@ -174,10 +174,25 @@ For lifetime changes, follow [request lifecycle](docs/architecture/request-lifec
 - Profile the actual bottleneck before changing a hot path. Reuse prepared buffers,
   reserve known capacity, batch work, and keep per-tick/per-token allocation, deep
   copies, formatting, serialization, and lock traffic out of steady-state execution.
+- Let hot-path APIs reuse caller-owned storage: the core form fills a buffer the caller
+  keeps (`*_into(&mut out)`, `clear()` and refill); an allocating form is only a
+  convenience wrapper. Size collections up front (`with_capacity`, or `collect` from a
+  sized iterator) instead of growing them in a push loop.
+- Keep telemetry off per-token, per-lane, and per-kernel loops: emit one event per batch
+  or step with the counts, and never allocate (`format!`, `to_string`) to build event
+  fields on a hot path.
+- Keep hot data close: avoid nested `Arc`/`Box` chains on structs read every step, and
+  lift the fields a hot loop reads next to it. Store long-lived immutable sequences as
+  `Box<[T]>` or `Arc<str>`, and `shrink_to_fit` large long-lived collections built by
+  growth, where host memory peaks matter.
+- Hot async functions (per request or per stream event) keep the state held across
+  `.await` small; box large state or move setup out of the future. Long-running async
+  loops yield between chunks instead of monopolizing a service thread.
 - Preserve device residency and graph replay where applicable. New host readbacks,
   stream synchronization, graph recapture, or allocation in decode need a demonstrated
   reason and measured whole-path cost. Do not mechanically change allocators, hashers,
-  container types, or cache policy.
+  container types, or cache policy. A fast non-cryptographic hasher fits trusted internal
+  keys on a profiled hot path; keys derived from request input keep the default hasher.
 - Resource quotes must cover the execution path actually selected, including temporary
   workspace, retention, host mirrors, and recapture. Reusing a cached shell does not
   make its retained memory free; verify peak and concurrent ownership, not just tensor size.

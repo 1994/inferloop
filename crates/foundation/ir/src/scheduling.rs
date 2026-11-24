@@ -147,8 +147,7 @@ pub struct ExecutionTiming {
 impl ExecutionTiming {
     #[must_use]
     pub const fn matches_backend(&self, backend: BackendKind) -> bool {
-        // The CPU test backends E1 deleted had their own `CpuWall` source; the device backends are
-        // the only ones left to match.
+        // Only device backends report execution timing, each from its own GPU clock.
         matches!(
             (backend, self.source),
             (BackendKind::Cuda, TimingSource::CudaGpu)

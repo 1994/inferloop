@@ -28,7 +28,7 @@ pub(crate) mod narrow_kv;
 pub(crate) mod nvfp4_gemm;
 pub(crate) mod prefill_burst;
 #[cfg(test)]
-pub(crate) mod prefill_demand;
+pub(crate) mod prefill_demand_tests;
 pub(crate) mod prefill_gemm;
 mod prefill_projection;
 mod profile;
@@ -104,7 +104,7 @@ pub(crate) use norm_maximum::{
 mod norm_fp4;
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-mod norm_fp4_kernel;
+mod norm_fp4_kernel_tests;
 
 #[cfg(test)]
 pub(crate) use norm_fp4::{
@@ -114,7 +114,7 @@ pub(crate) use norm_fp4::{
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-pub(crate) use norm_fp4_kernel::kernels::norm_fp4 as norm_fp4_kernel_entry;
+pub(crate) use norm_fp4_kernel_tests::kernels::norm_fp4 as norm_fp4_kernel_entry;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]

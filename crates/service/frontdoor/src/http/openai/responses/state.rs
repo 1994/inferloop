@@ -90,8 +90,10 @@ impl StoreSink {
                 ErrorCode::Backend,
                 format!("failed to persist a completed response: {error}"),
             );
-            if self.fail(&persist_error).await.is_err() {
-                let _ = self.store.delete(&self.id).await;
+            if self.fail(&persist_error).await.is_err()
+                && let Err(error) = self.store.delete(&self.id).await
+            {
+                tracing::warn!(target: "infer::openai", %error, "unpersisted response could not be removed");
             }
             return Err(error);
         }
@@ -144,7 +146,9 @@ impl StoreSink {
         {
             Ok(()) => Ok(()),
             Err(error) => {
-                let _ = self.store.delete(&self.id).await;
+                if let Err(error) = self.store.delete(&self.id).await {
+                    tracing::warn!(target: "infer::openai", %error, "unpersisted response could not be removed");
+                }
                 Err(error)
             }
         }

@@ -56,10 +56,9 @@ pub(super) struct Capture<'a> {
     pub fp8_states: &'a mut super::narrow_kv::NarrowCaches,
     pub states: &'a mut super::batch::States,
     pub metadata: Buffer<'a, i32>,
-    /// Logical-to-physical KV block ids for the sequence this capture belongs to. Step 1 of the
-    /// KV refactor keeps it an identity mapping over the sequence's own cache, so kernels resolve
-    /// a position through it while every byte stays where it is today; the allocator of step 2
-    /// will hand these blocks out across sequences.
+    /// Logical-to-physical KV block ids for the sequence this capture belongs to; kernels
+    /// resolve every KV position through it. A program that owns its cache maps it as the
+    /// identity, and a paged slot pool fills it with the shared blocks the slot holds.
     pub table: Buffer<'a, i32>,
     pub external: Buffer<'a, f32>,
     pub capacity: usize,

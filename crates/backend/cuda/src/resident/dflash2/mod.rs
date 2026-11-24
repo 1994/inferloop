@@ -12,7 +12,7 @@ pub mod budget;
 mod budget_tests;
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-mod kernels;
+mod kernels_tests;
 mod weights;
 use infer_cuda_kernels::contract::{
     Buffer, DRAFT_KEY_TILE as KEY_TILE, DRAFT_ROW_TILE as ROW_TILE, Draft, DraftAddNorm,

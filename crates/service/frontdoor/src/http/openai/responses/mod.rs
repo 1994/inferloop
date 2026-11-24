@@ -23,7 +23,7 @@ use axum::{
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
-use infer_core::{Error, ErrorCode};
+use infer_core::{Error, ErrorCode, RequestId};
 use infer_spi::{ResponseId, ResponseStatus, ResponseStore};
 use request::{PriorState, ResponsesRequest, StoreOptions};
 use state::{StoreLease, StoreSink};
@@ -74,7 +74,7 @@ pub(super) async fn create(
     if let Some(lease) = &mut lease
         && let Err(error) = lease.start().await
     {
-        let _ = state.handle.cancel(generation.request).await;
+        cancel_after_store_failure(&state, generation.request).await;
         return Err(error.into());
     }
     if is_stream {
@@ -127,7 +127,7 @@ async fn start_background(
     let initial = match lease.start().await {
         Ok(value) => value,
         Err(error) => {
-            let _ = state.handle.cancel(generation.request).await;
+            cancel_after_store_failure(&state, generation.request).await;
             return Err(error.into());
         }
     };
@@ -224,4 +224,11 @@ pub(super) async fn cancel(
         );
     }
     Ok(Json(state::retrieved(&updated)?))
+}
+
+/// Best effort: the store failure is what the caller reports, so a cancel failure is only logged.
+async fn cancel_after_store_failure(state: &TextState, request: RequestId) {
+    if let Err(error) = state.handle.cancel(request).await {
+        tracing::warn!(target: "infer::openai", %error, "generation cancel after a store failure failed");
+    }
 }

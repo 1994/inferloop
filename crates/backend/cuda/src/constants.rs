@@ -23,9 +23,8 @@ pub const MTP_FUSION_ROWS: u64 = 4;
 pub const SMALL_GEMV_MAX_ROWS: usize = 4;
 /// Vocabulary-like expansion ratio where narrow-batch GEMV remains useful.
 pub const GEMV_WIDE_OUTPUT_RATIO: usize = 4;
-/// Tokens per KV block. Step 1 of the KV refactor uses it only to resolve a position through
-/// the sequence's block table; a real allocator will later hand these blocks out across
-/// sequences. It matches the attention kernels' 32-token KV tile, so a block is one tile.
+/// Tokens per KV block, the unit a sequence's block table maps from logical to physical
+/// position. It matches the attention kernels' 32-token KV tile, so a block is one tile.
 pub const KV_BLOCK_TOKENS: usize = 32;
 /// Column block of a block-scaled FP8 GEMM: one scale covers this many input columns.
 pub const FP8_BLOCK_COLUMNS: usize = 128;

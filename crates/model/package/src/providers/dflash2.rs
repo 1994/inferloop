@@ -1,9 +1,8 @@
 //! `DFlash2` draft geometry and the compatibility contract a target has to satisfy.
 //!
-//! D1's first step: the geometry the official draft declares, the checks that decide whether it can
-//! be bound to a target at all, and the part of the resource quote that geometry alone determines.
-//! Nothing here touches a device - the draft graph, its CUDA module and the proposal SPI come
-//! later, and the SPI that carries proposals belongs to I1.
+//! The geometry the official draft declares, the checks that decide whether it can be bound to a
+//! target at all, and the part of the resource quote that geometry alone determines. Nothing here
+//! touches a device: the draft graph and its CUDA module live with the CUDA backend.
 pub mod gguf;
 
 use infer_core::{Error, Result};

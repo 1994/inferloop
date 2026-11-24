@@ -1,11 +1,10 @@
 //! Accepted-prefix reference for recurrent target state.
 //!
-//! R1 commits recurrent state by replaying the accepted prefix of a recorded window instead of
-//! snapshotting every candidate. Two steps carry that: the gated-delta update and the causal
-//! convolution window. Their numbers lived in the CPU test executor that E1 deletes, so they were
-//! preserved as goldens first (`examples/recurrent-delta`, `examples/recurrent-conv`); this module
-//! is the reference those goldens are compared against from inside the codebase, and the place a
-//! device kernel can be compared against as well.
+//! Speculative decoding commits recurrent state by replaying the accepted prefix of a recorded
+//! window instead of snapshotting every candidate. Two steps carry that: the gated-delta update and
+//! the causal convolution window. Their recorded numbers are the goldens in
+//! `examples/recurrent-delta` and `examples/recurrent-conv`; this module is the reference those
+//! goldens are compared against, and the one a device kernel can be compared against as well.
 //!
 //! The arithmetic keeps the reference's rounding points: the state is `f32`, the accumulation is
 //! `f64`, and a step rounds exactly where the recorded implementation rounded. The `expect`
@@ -122,7 +121,8 @@ impl DeltaGeometry {
         Ok(out)
     }
 
-    /// R1's commit: replay only the accepted steps of the recorded window from the base state.
+    /// The accepted-prefix commit: replay only the accepted steps of the recorded window from the
+    /// base state.
     ///
     /// # Errors
     /// Rejects an accepted count beyond what was recorded, or a step that does not fit the geometry.
@@ -209,7 +209,8 @@ impl ConvGeometry {
         Ok(out)
     }
 
-    /// R1's commit for the window: the trailing `kernel - 1` accepted inputs per channel.
+    /// The accepted-prefix commit for the window: the trailing `kernel - 1` accepted inputs per
+    /// channel.
     ///
     /// # Errors
     /// Rejects an accepted input whose width is not `channels`, or a base window of the wrong size.

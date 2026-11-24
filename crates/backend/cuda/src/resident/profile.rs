@@ -165,7 +165,7 @@ impl PrefillProfile {
             .sample(graph, tokens, position)
             .and_then(|line| append(&self.path, &line))
         {
-            eprintln!("prefill profile write failed: {error}");
+            tracing::warn!(target: "infer::profile", %error, "prefill profile write failed");
         }
     }
 }
@@ -201,7 +201,7 @@ impl SlotProfile {
             .sample(name, lanes, position)
             .and_then(|line| append(&self.path, &line))
         {
-            eprintln!("slot profile write failed: {error}");
+            tracing::warn!(target: "infer::profile", %error, "slot profile write failed");
         }
     }
 }

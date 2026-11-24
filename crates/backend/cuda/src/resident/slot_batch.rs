@@ -814,8 +814,8 @@ impl SlotPool {
             }
             fp8.push(slot_fp8);
         }
-        // Step 1 of the KV refactor: a per-slot identity mapping over that slot's own cache.
-        // A paged pool fills the table from its shared blocks when the slot is assigned.
+        // Each slot starts as an identity mapping over its own cache; a paged pool fills the
+        // table from its shared blocks when the slot is assigned.
         let memory = super::metadata::identity_tables(device, capacity, width)?;
         tables.extend(memory.rows(width)?);
         Ok((
@@ -1301,9 +1301,8 @@ impl SlotPool {
         if slot >= self.width() || rows > self.capacity {
             return Err(Error::invalid("slot bind index or prefix length"));
         }
-        // Step 1 of the KV refactor: the kernels resolve KV positions through this table, so it
-        // must cover the slot's whole capacity. Step 2 replaces the identity contents with the
-        // allocator's blocks and rewrites them here on every bind.
+        // The kernels resolve KV positions through this table, so it must cover the slot's
+        // whole capacity.
         let blocks = i32::try_from(self.capacity.div_ceil(KV_BLOCK_TOKENS))
             .map_err(|_| Error::invalid("slot block count"))?;
         if self
@@ -1919,7 +1918,7 @@ impl Drop for SlotPool {
         // Detached draft catch-up replays and verify restores may still be in flight on
         // the graph stream; the pool's states and arenas must not free beneath them.
         if let Err(error) = self.barrier() {
-            eprintln!("CUDA slot pool drop barrier failed: {error}");
+            tracing::error!(target: "infer::cuda", %error, "CUDA slot pool drop barrier failed");
         }
     }
 }
