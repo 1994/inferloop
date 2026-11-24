@@ -1,11 +1,17 @@
 //! Delivery responsibilities.
 use super::RuntimeActor;
-use infer_core::CancelSource;
+use infer_core::{CancelSource, RequestId};
 use infer_runtime::EngineOutput;
 use infer_spi::BackendProvider;
 use std::mem::take;
 
 impl<B: BackendProvider> RuntimeActor<B> {
+    /// Release a terminal request's retained result; a failure here is an ownership invariant.
+    fn drain_completed(&mut self, id: RequestId) {
+        if let Err(error) = self.engine.take_completed(id) {
+            tracing::error!(target: "infer::request", %error, request = id.get(), "completed request drain failed");
+        }
+    }
     pub(super) fn deliver(&mut self, generated: &mut Vec<EngineOutput>) {
         for event in generated.drain(..) {
             let (id, terminal) = match &event {
@@ -13,7 +19,7 @@ impl<B: BackendProvider> RuntimeActor<B> {
                 EngineOutput::Finished(done) => (done.request, true),
             };
             if terminal {
-                let _ = self.engine.take_completed(id);
+                self.drain_completed(id);
             }
             let Some(subscriber) = self.subscribers.get_mut(&id) else {
                 continue;
@@ -31,7 +37,7 @@ impl<B: BackendProvider> RuntimeActor<B> {
                         .find(|e| matches!(e, EngineOutput::Finished(_)))
                 {
                     subscriber.terminal = Some(Ok(done));
-                    let _ = self.engine.take_completed(id);
+                    self.drain_completed(id);
                 }
             }
         }
@@ -55,7 +61,7 @@ impl<B: BackendProvider> RuntimeActor<B> {
                 .map(|r| r.request.id),
         );
         for id in &scratch {
-            let _ = self.engine.take_completed(*id);
+            self.drain_completed(*id);
         }
         self.scratch = scratch;
     }

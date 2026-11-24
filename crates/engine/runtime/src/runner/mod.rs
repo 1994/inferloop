@@ -433,7 +433,9 @@ where
 impl Drop for RunnerTicket {
     fn drop(&mut self) {
         if !self.done {
-            let _ = self.owner.batches.abandon(self.batch);
+            if let Err(error) = self.owner.batches.abandon(self.batch) {
+                tracing::warn!(target: "infer::executor", %error, "batch abandon on ticket drop failed");
+            }
             self.owner.flight_abandoned.store(true, Ordering::Release);
             if let Some(thread) = self.owner.device_thread.get() {
                 thread.unpark();

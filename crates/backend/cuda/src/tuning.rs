@@ -366,7 +366,7 @@ impl From<StoredTilingTable> for TilingTable {
         if !stored.device.is_empty() {
             let entries = devices.entry(stored.device).or_default();
             for legacy in stored.entries {
-                // Explicit per-device entries win over a legacy duplicate during migration.
+                // Explicit per-device entries win over a duplicate from the single-device format.
                 if !entries.iter().any(|entry| {
                     entry.dtype == legacy.dtype
                         && entry.rows == legacy.rows

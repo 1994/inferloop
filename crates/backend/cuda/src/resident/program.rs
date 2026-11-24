@@ -384,7 +384,7 @@ type LaneFusion = (
 ///
 /// A fused program consumes one external hidden per lane. One contiguous owner makes a
 /// prompt chunk one host transfer; the captured graphs keep pointing at the same disjoint
-/// rows, so draft priming no longer uploads and rebinds one buffer per token. Each row
+/// rows, so draft priming does not upload and rebind one buffer per token. Each row
 /// holds the backing storage itself, so the owner handle is free to remain the upload target.
 fn allocate_lane_fusion(
     device: &CudaDevice,
@@ -841,7 +841,7 @@ impl DeviceProgram {
         let metadata = device.runtime().zeros(METADATA_FIELDS * 2)?;
         load_rotary(device.tile(), metadata.buffer())?;
         let external = Self::zero_row(device, hidden)?;
-        // Step 1 of the KV refactor: an identity mapping over this program's own cache.
+        // The program owns its cache, so its block table is the identity.
         let table = super::metadata::identity_table(device, capacity)?;
         Ok((metadata, external, table))
     }
@@ -2025,7 +2025,10 @@ fn warm_delegated(delegated: &mut Support, weights: &ProgramWeights, geometry: P
         };
         let [rows, columns] = dense.shape();
         for width in geometry.widths() {
-            let _ = delegated.warm(width, dense, rows, columns);
+            // A shape that fails to warm is planned again, and its error surfaces, at capture.
+            if let Err(error) = delegated.warm(width, dense, rows, columns) {
+                tracing::debug!(target: "infer::tuning", %error, width, "cuBLASLt warmup skipped");
+            }
         }
     }
 }

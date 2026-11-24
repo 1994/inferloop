@@ -303,7 +303,9 @@ impl Drop for Context {
         reason = "Audited teardown destroys the uniquely owned Lt handle after captured program use ends"
     )]
     fn drop(&mut self) {
-        let _ = self.device.tile().bind_to_thread();
+        if let Err(error) = self.device.tile().bind_to_thread() {
+            tracing::warn!(target: "infer::cuda", %error, "cuBLASLt teardown could not bind its context");
+        }
         // SAFETY: The SDK call uses live lifetime-owned handles and pointers with the declared header ABI.
         unsafe {
             (self.api.destroy)(self.handle);

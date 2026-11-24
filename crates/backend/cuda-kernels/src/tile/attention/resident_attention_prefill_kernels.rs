@@ -224,9 +224,8 @@ pub mod kernels {
             for lane in whole * BT..count {
                 let position = base + lane + offset;
                 if position >= 0 {
-                    // Logical block to physical block, then the row inside it. Step 1's table is the
-                    // identity, so this resolves to `position`; step 2's allocator is what makes the
-                    // physical placement differ from the logical one.
+                    // Logical block to physical block, then the row inside it. An identity table
+                    // resolves to `position`; a paged table places the block elsewhere.
                     let physical: i32 =
                         tile_to_scalar(blocks.load([position / BT]).reshape(shape![]));
                     let position = physical * BT + position % BT;

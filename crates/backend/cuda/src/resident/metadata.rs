@@ -11,8 +11,6 @@ mod check_tests;
 pub(super) use infer_cuda_kernels::ops::{update_metadata as update, update_rotary};
 
 /// Identity block table for one sequence's own KV cache: logical block `b` is physical block `b`.
-/// Step 1 of the KV refactor keeps the arena untouched, so this is the mapping the kernels consult
-/// while every byte stays where it is today; step 2 replaces it with a real allocator's output.
 /// One identity table per lane in a single `[lanes, blocks]` tensor.
 pub(super) fn identity_tables(
     device: &CudaDevice,

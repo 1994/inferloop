@@ -5,7 +5,7 @@ use crate::resident::DeviceProgram;
 use crate::tuning::table_path;
 use crate::{
     device::CudaDevice,
-    resident::prefill_demand::{StateDemand, with_state_prefill},
+    resident::prefill_demand_tests::{StateDemand, with_state_prefill},
 };
 use cutile::cutile_compiler::hints::CompileOptions;
 use infer_core::{Error, ModelId, Result};

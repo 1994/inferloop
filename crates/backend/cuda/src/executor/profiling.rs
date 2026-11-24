@@ -254,7 +254,7 @@ impl StepProfile {
             .open(self.path)
             .and_then(|mut file| writeln!(file, "{line}"));
         if let Err(error) = result {
-            eprintln!("CUDA execution profile write failed: {error}");
+            tracing::warn!(target: "infer::profile", %error, "CUDA execution profile write failed");
         }
     }
 }
@@ -271,7 +271,7 @@ pub(super) fn pool_failure(kind: &str, width: usize, capacity: usize, error: &in
         .open(path)
         .and_then(|mut file| writeln!(file, "{line}"))
     {
-        eprintln!("CUDA execution profile write failed: {error}");
+        tracing::warn!(target: "infer::profile", %error, "CUDA execution profile write failed");
     }
 }
 
@@ -292,7 +292,7 @@ fn append_allocation_record(path: &Path, line: &serde_json::Value) {
         .open(path)
         .and_then(|mut file| writeln!(file, "{line}"))
     {
-        eprintln!("CUDA allocation profile write failed: {error}");
+        tracing::warn!(target: "infer::profile", %error, "CUDA allocation profile write failed");
     }
 }
 

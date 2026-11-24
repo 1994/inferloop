@@ -545,7 +545,9 @@ impl CudaExecutor {
         self.homes.clear();
         self.drafter.detach();
         drop(self.slots.take());
-        let _ = self.loaded.reclaim_idle_prompt_scratch();
+        if let Err(error) = self.loaded.reclaim_idle_prompt_scratch() {
+            tracing::warn!(target: "infer::executor", %error, "idle prompt scratch reclaim failed");
+        }
     }
 
     pub(super) const fn draft_pooling(&self) -> DraftPooling {
@@ -916,11 +918,10 @@ impl CudaExecutor {
     /// Idle programs and cached prefixes must not permanently disable active batching.
     /// Drain deferred frees before retrying the constructor's physical-memory admission.
     ///
-    /// A driver out-of-memory is admitted here too. Only `Capacity` used to reclaim, so a
-    /// width-4 OOM left the prefix cache in place and the width-3 and width-2 retries then
-    /// failed on numbers that never reflected anything being freed — three refusals in a row
-    /// and the pool was off for the life of the process, with the checkpoint snapshots as the
-    /// only consumer that scales with the verification width.
+    /// A driver out-of-memory (`Backend`) reclaims as well as `Capacity`: otherwise the narrower
+    /// retries would fail on numbers that never reflect anything being freed, and the pool would
+    /// stay off for the life of the process while the checkpoint snapshots, the only consumer
+    /// that scales with the verification width, kept their memory.
     fn reclaim_cached_for_pool(&mut self, error: &Error) -> bool {
         matches!(error.code, ErrorCode::Capacity | ErrorCode::Backend)
             && (self.pool.evict() || self.prefix.evict_oldest().is_some())

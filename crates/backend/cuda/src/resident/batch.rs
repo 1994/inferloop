@@ -859,7 +859,7 @@ impl BatchBuilder<'_> {
             prompt_row,
         )?;
         #[cfg(test)]
-        let state_prefill = if super::prefill_demand::enabled() {
+        let state_prefill = if super::prefill_demand_tests::enabled() {
             Some(self.capture32(
                 arena,
                 metadata,
@@ -1391,7 +1391,7 @@ impl BatchBuilder<'_> {
         let last = readout == PromptReadout::Logits;
         #[cfg(test)]
         let demand = (readout == PromptReadout::StateOnly)
-            .then(|| super::prefill_demand::StateDemand::new(self.graph));
+            .then(|| super::prefill_demand_tests::StateDemand::new(self.graph));
         let quant_plan = super::nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
         let dense = DensePlan::new(self.graph, prompt_row.and(self.graph.logits));
         let mlp = super::prefill_projection::MlpPlan::new(
@@ -2142,7 +2142,7 @@ impl BatchGraph {
         match readout {
             Some(false) => {
                 #[cfg(test)]
-                if !read_hidden && super::prefill_demand::enabled() {
+                if !read_hidden && super::prefill_demand_tests::enabled() {
                     let state = selected.map_or(state, |graphs| graphs.state_prefill.as_ref());
                     return Ok(state.unwrap_or(prefill));
                 }
