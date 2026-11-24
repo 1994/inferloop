@@ -1,4 +1,5 @@
 //! One reusable 16-bit staging allocation per program, shared across layers and widths.
+use super::f16 as mma_f16;
 use super::{Arithmetic, Support, catalog};
 use crate::{AttentionProfile, device::CudaDevice};
 use infer_core::Result;
@@ -153,7 +154,7 @@ pub fn node_eligible(
         AttentionProfile::Canonical => false,
         AttentionProfile::Bf16 => fp8,
         AttentionProfile::Fp16 => {
-            fp8 && super::f16::supported(
+            fp8 && mma_f16::supported(
                 architecture,
                 query_heads,
                 kv_heads,

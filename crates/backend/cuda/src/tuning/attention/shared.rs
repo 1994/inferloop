@@ -1,4 +1,5 @@
 //! Lossless shared KV is selected automatically after exact output and history-aware cost gates.
+use super::exact;
 use super::{
     Choice, Key, Shape,
     capture::Captured,
@@ -79,7 +80,7 @@ fn memo() -> &'static Memo {
     MEMO.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 fn key(device: &CudaDevice, shape: Shape) -> Result<Key> {
-    let mut key = super::exact::key(device, shape)?;
+    let mut key = exact::key(device, shape)?;
     key.fingerprint = lower_hex(&Sha256::digest(format!(
         "{}:{}",
         key.fingerprint,

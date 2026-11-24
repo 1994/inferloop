@@ -37,8 +37,14 @@ const HISTORY_CASES: usize = 3;
 const HISTORY_DIVISOR: usize = 4;
 const CAPACITY: usize = 32768;
 const MAX_SHORT_REGRESSION: f32 = 1.05;
+use super::exact;
+use super::mma_f32;
+use super::shared;
+use super::vector;
+use super::vector_combined;
 /// A timed history length; stored records name it `history`, which the shared case reads.
 pub use crate::tuning::qualify::Case;
+use attention_mma::f16;
 /// Each timed history beat the baseline by the confirmation margin cold and warm. The empty
 /// history only has to stay within the short-prompt regression bound.
 pub(super) fn accepted(case: &Case) -> bool {
@@ -165,38 +171,37 @@ pub(crate) fn prepare(
         target: "infer::tuning",
         attention_profile = weights.attention_profile.name(),
         draft = weights.fusion.is_some(),
-        schema = if target_f16 { attention_mma::f16::SCHEMA } else { SCHEMA },
+        schema = if target_f16 { f16::SCHEMA } else { SCHEMA },
         "attention numerical profile"
     );
     // Shape order prepares narrow graphs first, matching resident capture order.
     for (shape, fp8, mma_eligible, f16_eligible) in prepared_shapes(device, graph, weights)? {
         if !fp8 && weights.fusion.is_some() {
-            super::mma_f32::select(device, shape, weights.autotune, &weights.resident_tuning);
+            mma_f32::select(device, shape, weights.autotune, &weights.resident_tuning);
         }
         if !fp8 {
             continue;
         }
-        let baseline =
-            super::exact::select(device, shape, weights.autotune, &weights.resident_tuning);
-        let baseline = super::shared::select(
+        let baseline = exact::select(device, shape, weights.autotune, &weights.resident_tuning);
+        let baseline = shared::select(
             device,
             shape,
             weights.autotune,
             &weights.resident_tuning,
             baseline,
         );
-        let baseline = super::vector::select(
+        let baseline = vector::select(
             device,
             shape,
             weights.autotune,
             &weights.resident_tuning,
             baseline,
         );
-        let baseline = super::vector_combined::select(device, shape, baseline);
+        let baseline = vector_combined::select(device, shape, baseline);
         // Exact target tuning must finish before proposal search starts the shared
         // wall-clock allowance. Only the shared eligibility decision may narrow precision.
         if f16_eligible {
-            if let Err(error) = attention_mma::f16::select(device, shape) {
+            if let Err(error) = f16::select(device, shape) {
                 tracing::warn!(target:"infer::tuning",?shape,%error,"FP16 target attention unavailable: canonical fallback");
             }
         } else if mma_eligible {
@@ -246,7 +251,7 @@ fn prepared_shapes(
                 let fp8 = node.states.first().is_some_and(|id| weights.fp8_kv(id));
                 let f16_eligible = target_f16
                     && fp8
-                    && attention_mma::f16::supported(
+                    && f16::supported(
                         architecture,
                         query_heads,
                         kv_heads,
@@ -305,7 +310,7 @@ fn resolve(
     ) {
         return Ok(baseline);
     }
-    let mut key = super::exact::key(device, shape)?;
+    let mut key = exact::key(device, shape)?;
     key.schema = SCHEMA.into();
     key.fingerprint = lower_hex(&Sha256::digest(format!(
         "{}:{}:{}:{}:{}",

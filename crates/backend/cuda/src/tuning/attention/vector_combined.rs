@@ -4,6 +4,7 @@
 //! this layer only after a GPU gate has proven the candidate bit-exact and measured it against
 //! the qualified vector kernel. With no such entry the selection path returns the incoming
 //! baseline unchanged, so adding this layer cannot alter existing behaviour.
+use super::exact;
 use super::{Choice, Key, Shape, reference};
 use crate::device::CudaDevice;
 use crate::resident::attention_oxide::Support;
@@ -85,7 +86,7 @@ fn fingerprint(base: &str) -> String {
     )))
 }
 fn key(device: &CudaDevice, shape: Shape) -> Result<Key> {
-    let mut key = super::exact::key(device, shape)?;
+    let mut key = exact::key(device, shape)?;
     key.fingerprint = fingerprint(&key.fingerprint);
     key.schema = SCHEMA.into();
     Ok(key)

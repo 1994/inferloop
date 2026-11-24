@@ -30,6 +30,11 @@ use std::mem::swap;
 #[cfg(test)]
 pub mod taps_tests;
 
+use super::super::attention_mma;
+use super::super::attention_mma::catalog;
+use super::super::attention_mma::f16;
+use super::super::attention_oxide;
+use super::pooled;
 pub use infer_cuda_kernels::contract::VERIFY_LANES;
 pub(super) use infer_cuda_kernels::contract::{STACKED_LANE_ROWS, STACKED_ROWS};
 
@@ -54,16 +59,16 @@ struct Partials {
 
 pub struct Workspace {
     oxide_available: bool,
-    mma: Option<super::super::attention_mma::Workspace>,
-    mma_f16: Option<super::super::attention_mma::Workspace>,
-    pub(in crate::resident) oxide: Option<super::super::attention_oxide::Support>,
-    pub(in crate::resident) shared: Option<super::super::attention_oxide::Support>,
-    vector: Option<super::super::attention_oxide::Support>,
-    combined: Option<super::super::attention_oxide::Support>,
+    mma: Option<attention_mma::Workspace>,
+    mma_f16: Option<attention_mma::Workspace>,
+    pub(in crate::resident) oxide: Option<attention_oxide::Support>,
+    pub(in crate::resident) shared: Option<attention_oxide::Support>,
+    vector: Option<attention_oxide::Support>,
+    combined: Option<attention_oxide::Support>,
     #[cfg(test)]
     pub taps: taps_tests::Taps,
     buffers: BTreeMap<(usize, usize), Buffers>,
-    pub(super) pooled: Option<super::pooled::Workspace>,
+    pub(super) pooled: Option<pooled::Workspace>,
     prefill: BTreeMap<(TensorId, usize), Choice>,
     precise_prefill: BTreeMap<(TensorId, usize), Choice>,
     precise_active: bool,
@@ -133,7 +138,7 @@ impl Workspace {
         Ok(Self {
             #[cfg(test)]
             taps: taps_tests::Taps::default(),
-            oxide_available: super::super::attention_oxide::Support::eligible(device, graph),
+            oxide_available: attention_oxide::Support::eligible(device, graph),
             mma: None,
             mma_f16: None,
             oxide: None,
@@ -157,7 +162,7 @@ impl Workspace {
         lanes: usize,
     ) -> Result<()> {
         #[cfg(test)]
-        if super::super::attention_oxide::disabled() {
+        if attention_oxide::disabled() {
             return Ok(());
         }
         self.mma = None;
@@ -183,7 +188,7 @@ impl Workspace {
                     return false;
                 };
                 node.states.first().is_some_and(|id| weights.fp8_kv(id))
-                    && super::super::attention_mma::f16::supported(
+                    && f16::supported(
                         &architecture,
                         query_heads,
                         kv_heads,
@@ -193,21 +198,20 @@ impl Workspace {
                     )
             });
         if any_f16 {
-            match super::super::attention_mma::Workspace::new(
+            match attention_mma::Workspace::new(
                 device,
                 graph,
                 weights,
                 capacity,
                 lanes,
-                super::super::attention_mma::Arithmetic::F16,
+                attention_mma::Arithmetic::F16,
             )
             .and_then(|workspace| {
                 workspace
                     .map(|mut workspace| {
-                        workspace.support.prepare_variant(
-                            device,
-                            super::super::attention_mma::catalog::Variant::Sm120,
-                        )?;
+                        workspace
+                            .support
+                            .prepare_variant(device, catalog::Variant::Sm120)?;
                         Ok(workspace)
                     })
                     .transpose()
@@ -220,13 +224,13 @@ impl Workspace {
             }
         }
         if !any_f16 {
-            self.mma = super::super::attention_mma::Workspace::new(
+            self.mma = attention_mma::Workspace::new(
                 device,
                 graph,
                 weights,
                 capacity,
                 lanes,
-                super::super::attention_mma::Arithmetic::Bf16,
+                attention_mma::Arithmetic::Bf16,
             )?;
         }
         Ok(())
@@ -270,7 +274,7 @@ impl Workspace {
                 && weights.attention_profile.is_fp16()
                 && fp8
                 && self.mma_f16.is_some()
-                && super::super::attention_mma::f16::supported(
+                && f16::supported(
                     &architecture,
                     query_heads,
                     kv_heads,
@@ -405,7 +409,7 @@ impl Workspace {
 
     fn prepare_oxide_module(&mut self, device: &CudaDevice) {
         if self.oxide.is_none() && self.prefill.values().any(|choice| choice.uses_oxide()) {
-            match super::super::attention_oxide::Support::load(device) {
+            match attention_oxide::Support::load(device) {
                 Ok(Some(module)) => self.oxide = Some(module),
                 result => {
                     tracing::warn!(target:"infer::tuning",error=?result.err(),"Rust attention module unavailable: cuTile fallback");
@@ -429,7 +433,7 @@ impl Workspace {
                 )
             })
         {
-            match super::super::attention_oxide::Support::load_shared(device) {
+            match attention_oxide::Support::load_shared(device) {
                 Ok(Some(module)) => self.shared = Some(module),
                 result => {
                     tracing::warn!(target:"infer::tuning",error=?result.err(),"shared KV module unavailable: exact fallback");
@@ -452,7 +456,7 @@ impl Workspace {
                 )
             })
         {
-            match super::super::attention_oxide::Support::load_vector(device) {
+            match attention_oxide::Support::load_vector(device) {
                 Ok(Some(module)) => self.vector = Some(module),
                 result => {
                     tracing::warn!(target:"infer::tuning",error=?result.err(),"vector shared module unavailable: qualified shared fallback");
@@ -478,7 +482,7 @@ impl Workspace {
                 .values()
                 .any(|choice| *choice == Choice::VectorSharedKvCombined)
         {
-            match super::super::attention_oxide::Support::load_combined(device) {
+            match attention_oxide::Support::load_combined(device) {
                 Ok(Some(module)) => self.combined = Some(module),
                 result => {
                     tracing::warn!(target:"infer::tuning",error=?result.err(),"vector combined module unavailable: qualified vector fallback");
@@ -503,16 +507,10 @@ impl Workspace {
         &mut self,
         output: TensorId,
         lanes: usize,
-    ) -> Option<(
-        &mut super::super::attention_mma::Support,
-        super::super::attention_mma::catalog::Variant,
-    )> {
+    ) -> Option<(&mut attention_mma::Support, catalog::Variant)> {
         match *self.prefill_choice(output, lanes)? {
             Choice::Mma { variant } => Some((&mut self.mma.as_mut()?.support, variant)),
-            Choice::MmaF16 => Some((
-                &mut self.mma_f16.as_mut()?.support,
-                super::super::attention_mma::catalog::Variant::Sm120,
-            )),
+            Choice::MmaF16 => Some((&mut self.mma_f16.as_mut()?.support, catalog::Variant::Sm120)),
             _ => None,
         }
     }
@@ -521,7 +519,7 @@ impl Workspace {
         &self,
         output: TensorId,
         lanes: usize,
-    ) -> Option<&super::super::attention_oxide::Support> {
+    ) -> Option<&attention_oxide::Support> {
         match self.prefill_choice(output, lanes) {
             Some(Choice::RustSimt) => self.oxide.as_ref(),
             Some(Choice::SharedKv) => self.shared.as_ref(),

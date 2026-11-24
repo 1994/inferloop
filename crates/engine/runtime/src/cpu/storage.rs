@@ -1,4 +1,6 @@
 //! Scheduler-owned preallocated CPU storage; no backend-specific implementation belongs here.
+use super::history;
+use super::plans;
 use crate::persistence::checkpoint::CheckpointFlight;
 use crate::pipeline::dispatch::PreparedDispatch;
 use crate::stages::output::OutputJob;
@@ -15,10 +17,10 @@ use infer_ir::{BackendKind, CostEstimate, CostQuery, ExecutionRole};
 pub struct HostStorage {
     pub placement: PlacementReport,
     pub preemption: infer_scheduler::PreemptionWorkspace,
-    pub history: super::history::HistoryStorage,
+    pub history: history::HistoryStorage,
     pub decisions: infer_spi::DecisionStorage,
-    pub steps: super::plans::StepPool,
-    pub queries: super::plans::QueryPool,
+    pub steps: plans::StepPool,
+    pub queries: plans::QueryPool,
     pub ready_buffer: Option<ReadyWindow>,
     pub ready_index: ReadyIndex,
     pub cost_epoch: u64,
@@ -80,15 +82,15 @@ impl HostStorage {
         Ok(Self {
             placement: config.cpu.placement.scheduler.report()?,
             preemption: infer_scheduler::PreemptionWorkspace::new(candidates)?,
-            history: super::history::HistoryStorage::new(
+            history: history::HistoryStorage::new(
                 config.history_capacity,
                 candidates,
                 config.max_num_seqs,
                 program,
             )?,
             decisions: infer_spi::DecisionStorage::new(candidates, config.max_num_seqs)?,
-            steps: super::plans::StepPool::new(config.max_num_seqs, program)?,
-            queries: super::plans::QueryPool::new(config.history_capacity, config.max_num_seqs)?,
+            steps: plans::StepPool::new(config.max_num_seqs, program)?,
+            queries: plans::QueryPool::new(config.history_capacity, config.max_num_seqs)?,
             ready_buffer: Some(ReadyWindow::new(candidates, query)?),
             ready_index: ReadyIndex::new(config.max_requests, candidates, query)?,
             cost_epoch: 0,

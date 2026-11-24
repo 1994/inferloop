@@ -5,6 +5,7 @@
 use super::super::TextState;
 use super::super::execution::{Prepared as Generation, parse_reply};
 use super::output::{self, ResponseBody, Snapshot, Usage};
+use super::request;
 use crate::constants::TOKEN_STAGING_BYTES;
 use infer_core::{Error, ErrorCode};
 use infer_ir::WorkloadOutput;
@@ -19,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub(super) async fn generate_prepared(
     state: &TextState,
     mut prepared: Generation,
-    spec: &super::request::Spec,
+    spec: &request::Spec,
 ) -> infer_core::Result<ResponseBody> {
     while let Some(event) = prepared.receiver.recv().await {
         if let EngineOutput::Finished(result) = event? {
@@ -36,7 +37,7 @@ async fn respond(
     state: &TextState,
     result: CompletedRequest,
     prepared: &Generation,
-    spec: &super::request::Spec,
+    spec: &request::Spec,
 ) -> infer_core::Result<ResponseBody> {
     let Some(WorkloadOutput::Tokens(tokens)) = result.output else {
         return Err(Error::invariant("generation completed without tokens"));

@@ -511,6 +511,53 @@ def check_production_unwraps(root=ROOT):
     print("Production: no unwrap outside test sources")
 
 
+EMBEDDED_PATH = re.compile(
+    r"(?<![\w:$])((?:(?:crate|super|self|[a-z_][a-z0-9_]*)::){2,})([A-Za-z_]\w*)"
+)
+# Spans whose paths are not expressions or signatures: comments, literals, `use` items,
+# attributes, and macro definitions (which must spell `$crate::...` paths out).
+EMBEDDED_PATH_SKIPPED = (
+    re.compile(r"(?s)/\*.*?\*/"),
+    re.compile(r"//[^\n]*"),
+    re.compile(r'(?s)r#*"(?:[^"\\]|\\.)*"#*'),
+    re.compile(r'(?s)"(?:\\.|[^"\\])*"'),
+    re.compile(r"'(?:\\.|[^'\\])'"),
+    re.compile(r"(?ms)^\s*(?:pub(?:\([^)]*\))?\s+)?use\s[^;]*;"),
+    re.compile(r"(?m)^\s*#!?\[[^\n]*\]\s*$"),
+    re.compile(r"(?ms)macro_rules!\s*\w+\s*\{.*?^\}"),
+    re.compile(r"\$crate[\w:]*"),
+)
+
+
+def masked_code(text):
+    """`text` with everything but expression and signature code blanked, positions kept."""
+    for pattern in EMBEDDED_PATH_SKIPPED:
+        text = pattern.sub(lambda match: re.sub(r"[^\n]", " ", match[0]), text)
+    return text
+
+
+def embedded_paths(text):
+    """Yield `(line, path)` for paths of three or more segments written inside code."""
+    code = masked_code(text)
+    for match in EMBEDDED_PATH.finditer(code):
+        module = match[1][:-2].rsplit("::", 1)[1]
+        if module not in ("crate", "super", "self"):
+            yield code.count("\n", 0, match.start()) + 1, match[0]
+
+
+def check_embedded_paths(root=ROOT):
+    """Production code imports item paths; three-segment paths stay out of expressions."""
+    for path in sorted((root / "crates").glob("*/*/src/**/*.rs")):
+        if is_test_source(path, root):
+            continue
+        for lineno, found in embedded_paths(path.read_text()):
+            raise SystemExit(
+                f"{path.relative_to(root)}:{lineno}: import the module instead of writing "
+                f"`{found}` inline (AGENTS.md: paths of three or more segments)"
+            )
+    print("Paths: no three-segment path embedded in production expressions or signatures")
+
+
 def check_typed_api_json():
     """API responses are typed; dynamic JSON is limited to annotated wire inputs.
 
@@ -573,6 +620,7 @@ if __name__ == "__main__":
     check_strategy_neutrality()
     check_algorithm_neutrality()
     check_production_unwraps()
+    check_embedded_paths()
     check_typed_api_json()
     check_production_dependencies()
     print(

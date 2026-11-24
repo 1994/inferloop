@@ -1,3 +1,4 @@
+use super::index;
 use crate::{Engine, RequestRecord};
 use infer_core::event::CpuStage;
 use infer_core::{Error, RequestId, Result};
@@ -16,7 +17,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         self.host.requests.restore_dirty(dirty);
         result
     }
-    pub(crate) fn ready_work_into(&mut self, ready: &mut super::index::ReadyWindow) -> Result<()> {
+    pub(crate) fn ready_work_into(&mut self, ready: &mut index::ReadyWindow) -> Result<()> {
         let start = Instant::now();
         self.sync_ready_deltas()?;
         self.fill_candidate_ids()?;

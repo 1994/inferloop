@@ -1,4 +1,5 @@
 //! Contiguous pool state families with the same per-slot views used by homes and fallback graphs.
+use super::program;
 use super::shaped::StateTensor;
 use super::slot_recurrent::{LANES, ValueDevice, covers, fused_block, value_split};
 use super::{ActivationArena, buffers::buffer, capture::error};
@@ -44,10 +45,10 @@ impl SlotStates {
         budget: u64,
     ) -> Result<Self> {
         let (width, capacity) = geometry;
-        let plan = super::program::state_shapes(graph, capacity, weights)?;
+        let plan = program::state_shapes(graph, capacity, weights)?;
         let mut bytes = 0_u64;
         for (id, shapes) in &plan {
-            let element = super::program::state_profile(graph, *id, weights).element_bytes();
+            let element = program::state_profile(graph, *id, weights).element_bytes();
             for shape in shapes {
                 let elements = shape
                     .iter()
@@ -74,7 +75,7 @@ impl SlotStates {
             families: BTreeMap::new(),
         };
         for (id, shapes) in plan {
-            let profile = super::program::state_profile(graph, id, weights);
+            let profile = program::state_profile(graph, id, weights);
             let mut owners = Vec::new();
             let mut families = Vec::new();
             for shape in shapes {

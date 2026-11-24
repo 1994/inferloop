@@ -1,4 +1,5 @@
 //! AOT launch code owns TMA descriptors and cluster launches; serving never imports Python.
+use super::catalog;
 use super::catalog::Variant;
 use crate::device::device_error;
 use infer_core::digest::lower_hex;
@@ -157,7 +158,7 @@ impl Api {
     )]
     pub fn launch(
         &self,
-        pointers: [u64; super::catalog::OPERANDS],
+        pointers: [u64; catalog::OPERANDS],
         lanes: usize,
         capacity: usize,
         stream: CUstream,

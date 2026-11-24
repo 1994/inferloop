@@ -1,4 +1,5 @@
 //! Bounded groups of paged verification slots, retaining the original arithmetic.
+use super::workspace;
 use super::workspace::{STACKED_LANE_ROWS, STACKED_ROWS, VERIFY_LANES};
 use crate::constants::{F32_BYTES, KV_BLOCK_TOKENS, METADATA_FIELDS};
 use crate::device::{CudaDevice, DeviceProfile, device_error};
@@ -422,7 +423,7 @@ impl Workspace {
     }
 }
 
-impl super::workspace::Workspace {
+impl workspace::Workspace {
     pub(crate) fn pooled_bytes(
         graph: &DataflowGraph,
         weights: &ProgramWeights,

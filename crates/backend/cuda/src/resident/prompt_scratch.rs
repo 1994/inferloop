@@ -6,6 +6,8 @@
 //! the device stream and read nothing from this scratch after their own replay, so one
 //! allocation per prompt width serves every admitted sequence instead of one per sequence.
 use super::ActivationArena;
+use super::fusion_batch;
+use super::recurrent_prefill;
 use crate::constants::PREFILL_SPLIT_K;
 use crate::device::CudaDevice;
 use infer_core::{Error, Result};
@@ -78,8 +80,8 @@ pub(super) struct PromptScratch {
     /// supports it.
     pub(super) row: Option<Allocation<f32>>,
     pub(super) partials: Partials,
-    pub(super) recurrent: super::recurrent_prefill::Workspace,
-    pub(super) fusion: Option<super::fusion_batch::Workspace>,
+    pub(super) recurrent: recurrent_prefill::Workspace,
+    pub(super) fusion: Option<fusion_batch::Workspace>,
     /// The wider scratch whose storage this one's arena, partials and fusion rows view; kept
     /// alive with them and declared last so the views drop first.
     _wider: Option<Arc<Mutex<Self>>>,
@@ -90,8 +92,8 @@ impl PromptScratch {
         arena: ActivationArena,
         row: Option<Allocation<f32>>,
         partials: Partials,
-        recurrent: super::recurrent_prefill::Workspace,
-        fusion: Option<super::fusion_batch::Workspace>,
+        recurrent: recurrent_prefill::Workspace,
+        fusion: Option<fusion_batch::Workspace>,
     ) -> Self {
         Self {
             arena,
@@ -107,8 +109,8 @@ impl PromptScratch {
     /// storage; holding `wider` keeps that storage alive for as long as the views exist.
     pub(super) fn viewing(
         (arena, row, partials): (ActivationArena, Option<Allocation<f32>>, Partials),
-        recurrent: super::recurrent_prefill::Workspace,
-        fusion: Option<super::fusion_batch::Workspace>,
+        recurrent: recurrent_prefill::Workspace,
+        fusion: Option<fusion_batch::Workspace>,
         wider: Arc<Mutex<Self>>,
     ) -> Self {
         Self {

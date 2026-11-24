@@ -1,4 +1,7 @@
 //! Shared head-major scratch for token-chunk recurrent prefill.
+use super::super::batch;
+use super::super::capture_state;
+use super::super::conv_prefill;
 use super::super::recurrent_lowering::{
     Block, Chunk, Delta, Lowering, Mode, Pinned, Recurrence, lower,
 };
@@ -72,11 +75,8 @@ impl Workspace {
                     let shape = [key_heads, value_heads, key_dim, lanes];
                     let selected = if key_dim == ORDERED_DIM && ORDERED_WIDTHS.contains(&lanes) {
                         Some(ORDERED_BLOCK)
-                    } else if super::super::capture_state::value_split_override() {
-                        Some(
-                            super::super::capture_state::value_block(value_dim)
-                                .map_err(device_error)?,
-                        )
+                    } else if capture_state::value_split_override() {
+                        Some(capture_state::value_block(value_dim).map_err(device_error)?)
                     } else {
                         select(device, shape, weights.autotune, &weights.resident_tuning)
                     };
@@ -162,13 +162,13 @@ impl Workspace {
         node: &TensorNode,
         arena: &ActivationArena,
         weights: &ProgramWeights,
-        states: &mut super::super::batch::States,
+        states: &mut batch::States,
         metadata: &Allocation<i32>,
         (recurrence, lowering): (Recurrence, Lowering),
     ) -> Result<()> {
         let (delta, block, wy) = match (recurrence, lowering) {
             (Recurrence::Conv { channels }, Lowering::ConvPrefill) => {
-                return super::super::conv_prefill::record(
+                return conv_prefill::record(
                     scope,
                     node,
                     arena,
@@ -205,7 +205,7 @@ impl Workspace {
             .map_err(error)?;
         let block = match block {
             Block::Fixed(block) => block,
-            Block::Split => super::super::capture_state::value_block(value_dim)
+            Block::Split => capture_state::value_block(value_dim)
                 .map_err(|_| error("chunk delta value split"))?,
         };
         record_delta(

@@ -1,5 +1,6 @@
 //! Execute compatible vision towers without staging each block on the host.
 use super::launches::{Launches, capture};
+use super::program;
 use super::program::{
     ATTENTION_CONFIG_FIELDS, AttentionMode, COLUMN_TILE, activation, attention_scale,
     attention_tiles, frame_token_count, mlp_width, projection_output, rope_tables,
@@ -236,7 +237,7 @@ impl Buffers {
             })?;
         }
         launches.dense(
-            super::program::dense_plan(
+            program::dense_plan(
                 geometry.width,
                 AttentionMode::Online,
                 geometry.tiles,

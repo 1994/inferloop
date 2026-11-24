@@ -1,4 +1,5 @@
 use super::ProgramWeights;
+use super::moe;
 use super::recurrent_lowering::Recurrence;
 use crate::constants::MAX_HIDDEN_SIZE;
 use infer_core::{Error, Result};
@@ -95,7 +96,7 @@ pub(super) fn validate(graph: &DataflowGraph, weights: &ProgramWeights) -> Resul
         }
         let output = specs[&node.outputs[0]].elements()?;
         let input = specs[&node.inputs[0]].elements()?;
-        super::moe::validate_node(node, &specs, weights, input, output)?;
+        moe::validate_node(node, &specs, weights, input, output)?;
         if node.op == TensorOp::Linear {
             weights
                 .projections

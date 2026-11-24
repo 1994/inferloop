@@ -1,11 +1,27 @@
 //! Node-major verification: consecutive projections reuse weights in cache.
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
+use super::attention_decode;
+use super::attention_lanes;
 use super::attention_lowering::{Lowering, Mode, lower};
+use super::batch_projection;
 use super::buffers::buffer;
+use super::capture_checkpoint;
+use super::fusion_batch;
+use super::metadata;
+use super::nvfp4_gemm;
+use super::prefill_burst;
+#[cfg(test)]
+use super::prefill_demand_tests;
+use super::prefill_projection;
 use super::prefill_projection::{DensePlan, record_fused_norm, record_narrow};
+use super::program;
+use super::prompt_logits;
 use super::recurrent_lowering::Lowering as RecurrentLowering;
+use super::recurrent_prefill;
 use super::shaped::StateTensor;
+use super::slot_rope;
+use super::token_readout;
 use super::{
     ActivationArena, ProgramWeights,
     buffers::RowMajor,
@@ -114,7 +130,7 @@ pub(super) struct ProgramCaptures {
 pub(super) struct BatchGraph {
     graph: Option<Graph>,
     readbacks: Readbacks,
-    token_readout: Option<super::token_readout::TokenReadout>,
+    token_readout: Option<token_readout::TokenReadout>,
     prefill: Graph,
     prefill_last: Graph,
     precise: Option<PromptGraphs>,
@@ -125,14 +141,14 @@ pub(super) struct BatchGraph {
     /// contract buffers without holding them, so these outlive both.
     _checkpoints: Vec<States>,
     /// Pack and unpack matrices the verification graphs address; none on other paths.
-    _projections: Option<super::batch_projection::Workspace>,
+    _projections: Option<batch_projection::Workspace>,
     /// Split-K partial windows the captured fp4 prompt GEMMs accumulate into;
     /// declared after the graphs so their executables drop first.
     _partials: Partials,
     /// Final prompt row the one-row logits projection reads; captured by the prompt graphs.
     prompt_row: Option<Allocation<f32>>,
-    _recurrent: super::recurrent_prefill::Workspace,
-    _fusion: Option<super::fusion_batch::Workspace>,
+    _recurrent: recurrent_prefill::Workspace,
+    _fusion: Option<fusion_batch::Workspace>,
     /// Shared prompt scratch the prompt graphs captured against.
     _prompt_scratch: Option<Arc<Mutex<PromptScratch>>>,
     metadata: Vec<Allocation<i32>>,
@@ -169,9 +185,9 @@ pub(super) struct BatchBuilder<'a> {
     pub device: &'a CudaDevice,
     pub graph: &'a DataflowGraph,
     pub weights: &'a ProgramWeights,
-    pub nvfp4: &'a mut super::nvfp4_gemm::Workspace,
+    pub nvfp4: &'a mut nvfp4_gemm::Workspace,
     pub delegated: Option<&'a mut Support>,
-    pub attention: &'a mut super::attention_decode::Workspace,
+    pub attention: &'a mut attention_decode::Workspace,
     pub states: &'a mut States,
     pub fp8_states: &'a mut NarrowCaches,
     pub external: &'a Allocation<f32>,
@@ -181,7 +197,7 @@ pub(super) struct BatchBuilder<'a> {
     /// Media feature rows of the prompt lanes, `[feature][lane][hidden]` over the widest prompt
     /// graph; absent where no prompt carries media.
     pub media_features: Option<&'a Allocation<f32>>,
-    pub lane_fusion: &'a mut Vec<Option<super::program::FusionWorkspace>>,
+    pub lane_fusion: &'a mut Vec<Option<program::FusionWorkspace>>,
     /// One block table per lane, indexed exactly like `lane_external`; batched and prefill
     /// captures use entry 0 because their operators do not resolve KV positions.
     pub tables: &'a [Allocation<i32>],
@@ -190,9 +206,9 @@ pub(super) struct BatchBuilder<'a> {
     /// Every lane's block table in one tensor, set while capturing the full-width decode graph.
     pub table_root: Option<RowMajor<'a, i32>>,
     /// Scratch of that graph's lane-batched attention.
-    pub lanes_attention: Option<&'a mut super::attention_lanes::Workspace>,
+    pub lanes_attention: Option<&'a mut attention_lanes::Workspace>,
     /// Set while capturing a multi-sequence prompt graph.
-    pub burst: Option<super::prefill_burst::Binding<'a>>,
+    pub burst: Option<prefill_burst::Binding<'a>>,
 }
 
 /// Decode-only slot graph: lane `i` reads and writes the slot pool's `i`-th state set,
@@ -204,7 +220,7 @@ pub(super) struct SlotDecodeGraph {
     graph: Graph,
     state_only: Option<Graph>,
     readbacks: Readbacks,
-    token_readout: Option<super::token_readout::TokenReadout>,
+    token_readout: Option<token_readout::TokenReadout>,
     metadata_owner: Allocation<i32>,
     metadata_upload: Vec<i32>,
     metadata_staging: PinnedUpload<i32>,
@@ -220,7 +236,7 @@ pub(super) struct SlotDecodeGraph {
     profile: Option<profile::SlotProfile>,
     // The shared batched arena anchors the graph's activations; declared last so the
     // graph drops first.
-    _fusion: Option<super::fusion_batch::Workspace>,
+    _fusion: Option<fusion_batch::Workspace>,
     _arena: ActivationArena,
 }
 
@@ -235,7 +251,7 @@ impl BatchBuilder<'_> {
     /// Pool-bound geometry omits the wide prompt arena when a narrow prompt graph is available.
     pub fn build_pair(
         &mut self,
-        geometry: super::program::ProgramGeometry,
+        geometry: program::ProgramGeometry,
     ) -> Result<(Option<BatchGraph>, Vec<BatchGraph>)> {
         if self.weights.batch_width > MAX_VERIFICATION_WIDTH {
             return Err(Error::invalid("verification width exceeds 9"));
@@ -297,8 +313,7 @@ impl BatchBuilder<'_> {
         let mut arena = slot_arena(self.device, self.graph, width)?;
         let (metadata_owner, metadata) = batched_metadata(self.device, width)?;
         let mut profile = profile::SlotProfile::from_env(self.device);
-        let mut fusion =
-            super::fusion_batch::Workspace::allocate(self.device, self.weights, width)?;
+        let mut fusion = fusion_batch::Workspace::allocate(self.device, self.weights, width)?;
         let graph = self.capture_slots(
             &mut arena,
             (&metadata, &metadata_owner, &mut fusion),
@@ -319,12 +334,8 @@ impl BatchBuilder<'_> {
         };
         let hidden = take_result(&arena, self.graph.hidden)?;
         let logits = take_result(&arena, self.graph.logits)?;
-        let token_readout = super::token_readout::TokenReadout::contiguous(
-            self.device,
-            &logits,
-            width,
-            self.weights,
-        )?;
+        let token_readout =
+            token_readout::TokenReadout::contiguous(self.device, &logits, width, self.weights)?;
         Ok(SlotDecodeGraph {
             token_readout,
             graph,
@@ -357,7 +368,7 @@ impl BatchBuilder<'_> {
             return Ok(true);
         }
         if self.table_root.is_some()
-            && super::slot_rope::record(scope, node, arena, self.weights, metadata)?
+            && slot_rope::record(scope, node, arena, self.weights, metadata)?
         {
             return Ok(true);
         }
@@ -410,7 +421,7 @@ impl BatchBuilder<'_> {
         metadata: (
             &[Allocation<i32>],
             &Allocation<i32>,
-            &mut Option<super::fusion_batch::Workspace>,
+            &mut Option<fusion_batch::Workspace>,
         ),
         states: (&mut [States], &mut [NarrowCaches]),
         profile: &mut Option<profile::SlotProfile>,
@@ -419,7 +430,7 @@ impl BatchBuilder<'_> {
         let (metadata, metadata_owner, fusion) = metadata;
         let (lane_states, lane_fp8) = states;
         let width = lane_states.len();
-        let quant_plan = super::nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
+        let quant_plan = nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
         self.nvfp4.begin_quant_capture();
         let result = self.device.tile().capture(|scope| {
             let mut no_fusion = None;
@@ -433,7 +444,7 @@ impl BatchBuilder<'_> {
                     profile.graph().boundary(scope, index, node)?;
                 }
                 if let Some(workspace) = fusion.as_mut()
-                    && super::fusion_batch::record(
+                    && fusion_batch::record(
                         self,
                         scope,
                         node,
@@ -446,7 +457,7 @@ impl BatchBuilder<'_> {
                     continue;
                 }
                 if node.op == TensorOp::Linear {
-                    super::batch_projection::record_slots(
+                    batch_projection::record_slots(
                         scope,
                         node,
                         arena,
@@ -510,10 +521,10 @@ impl BatchBuilder<'_> {
 
     pub(super) fn build_program(
         &mut self,
-        geometry: super::program::ProgramGeometry,
+        geometry: program::ProgramGeometry,
         arena: &mut ActivationArena,
         metadata: &Allocation<i32>,
-        fusion: &mut Option<super::program::FusionWorkspace>,
+        fusion: &mut Option<program::FusionWorkspace>,
         forward_captured: bool,
     ) -> Result<ProgramCaptures> {
         let (batch, prompts) = self.build_pair(geometry)?;
@@ -539,7 +550,7 @@ impl BatchBuilder<'_> {
         &mut self,
         arena: &mut ActivationArena,
         metadata: &Allocation<i32>,
-        fusion: &mut Option<super::program::FusionWorkspace>,
+        fusion: &mut Option<program::FusionWorkspace>,
         skip_logits: bool,
     ) -> Result<Graph> {
         self.device.tile().capture(|scope| {
@@ -590,7 +601,7 @@ impl BatchBuilder<'_> {
             usize::try_from(self.device.profile()?.arena_budget_bytes()).map_err(device_error)?,
         )?);
         let mut lanes = self.allocate_lanes(width, shared.as_ref())?;
-        let projections = super::batch_projection::allocate(self.device, self.graph, width)?;
+        let projections = batch_projection::allocate(self.device, self.graph, width)?;
         let graph = Some(self.capture(&mut lanes, &projections, None, shared.as_mut())?);
         let prefill = self.capture(&mut lanes, &projections, Some(false), None)?;
         let prefill_last = self.capture(&mut lanes, &projections, Some(true), None)?;
@@ -619,7 +630,7 @@ impl BatchBuilder<'_> {
             metadata.push(lane.metadata);
             checkpoints.push(lane.checkpoints);
         }
-        let token_readout = super::token_readout::TokenReadout::new(
+        let token_readout = token_readout::TokenReadout::new(
             self.device,
             &logits,
             width,
@@ -640,7 +651,7 @@ impl BatchBuilder<'_> {
             _checkpoints: checkpoints,
             _partials: Partials::default(),
             prompt_row: None,
-            _recurrent: super::recurrent_prefill::Workspace::default(),
+            _recurrent: recurrent_prefill::Workspace::default(),
             _fusion: None,
             _prompt_scratch: None,
             prefill_info: None,
@@ -668,7 +679,7 @@ impl BatchBuilder<'_> {
     fn prompt_arena(&self) -> Result<(ActivationArena, Option<Allocation<f32>>)> {
         let budget =
             usize::try_from(self.device.profile()?.arena_budget_bytes()).map_err(device_error)?;
-        if !super::prompt_logits::supported(self.graph, self.weights) {
+        if !prompt_logits::supported(self.graph, self.weights) {
             let arena = ActivationArena::new_batched(self.device, self.graph, self.width, budget)?;
             return Ok((arena, None));
         }
@@ -683,7 +694,7 @@ impl BatchBuilder<'_> {
     fn narrowed_scratch(
         &self,
         wider: &Arc<Mutex<PromptScratch>>,
-        recurrent: super::recurrent_prefill::Workspace,
+        recurrent: recurrent_prefill::Workspace,
     ) -> Result<PromptScratch> {
         let row = self.prompt_row()?;
         let owner = wider
@@ -715,7 +726,7 @@ impl BatchBuilder<'_> {
 
     /// The one row the final prompt chunk projects onto the vocabulary, when supported.
     fn prompt_row(&self) -> Result<Option<Allocation<f32>>> {
-        if !super::prompt_logits::supported(self.graph, self.weights) {
+        if !prompt_logits::supported(self.graph, self.weights) {
             return Ok(None);
         }
         self.device.runtime().zeros(self.external.len()).map(Some)
@@ -785,7 +796,7 @@ impl BatchBuilder<'_> {
             _projections: None,
             _partials: Partials::default(),
             prompt_row,
-            _recurrent: super::recurrent_prefill::Workspace::default(),
+            _recurrent: recurrent_prefill::Workspace::default(),
             _fusion: None,
             _prompt_scratch: Some(Arc::clone(&scratch)),
             prefill_info: Some(prefill_info),
@@ -859,7 +870,7 @@ impl BatchBuilder<'_> {
             prompt_row,
         )?;
         #[cfg(test)]
-        let state_prefill = if super::prefill_demand_tests::enabled() {
+        let state_prefill = if prefill_demand_tests::enabled() {
             Some(self.capture32(
                 arena,
                 metadata,
@@ -904,12 +915,8 @@ impl BatchBuilder<'_> {
         &self,
         wider: Option<&Arc<Mutex<PromptScratch>>>,
     ) -> Result<PromptScratch> {
-        let recurrent = super::recurrent_prefill::Workspace::new(
-            self.device,
-            self.graph,
-            self.weights,
-            self.width,
-        )?;
+        let recurrent =
+            recurrent_prefill::Workspace::new(self.device, self.graph, self.weights, self.width)?;
         // A ladder rung views the widest scratch, captured first, rather than allocating.
         if let Some(wider) = wider {
             return self.narrowed_scratch(wider, recurrent);
@@ -920,7 +927,7 @@ impl BatchBuilder<'_> {
             row,
             self.allocate_prompt_partials()?,
             recurrent,
-            super::fusion_batch::Workspace::allocate(self.device, self.weights, self.width)?,
+            fusion_batch::Workspace::allocate(self.device, self.weights, self.width)?,
         ))
     }
 
@@ -961,14 +968,7 @@ impl BatchBuilder<'_> {
     ) -> Result<bool> {
         match dispatch32(node, self.weights) {
             Dispatch32::Linear if !self.weights.constants.contains_key(&node.inputs[0]) => {
-                super::batch_projection::record_slots(
-                    scope,
-                    node,
-                    arena,
-                    self.weights,
-                    self.nvfp4,
-                    None,
-                )?;
+                batch_projection::record_slots(scope, node, arena, self.weights, self.nvfp4, None)?;
             }
             Dispatch32::Batched => {
                 let mut no_fusion = None;
@@ -1098,7 +1098,7 @@ impl BatchBuilder<'_> {
     fn capture(
         &mut self,
         lanes: &mut [Lane],
-        projections: &super::batch_projection::Workspace,
+        projections: &batch_projection::Workspace,
         prefill: Option<bool>,
         mut shared: Option<&mut ActivationArena>,
     ) -> Result<Graph> {
@@ -1117,7 +1117,7 @@ impl BatchBuilder<'_> {
                     continue;
                 }
                 if width > 1 && node.op == TensorOp::Linear && !(logits && prefill.is_some()) {
-                    super::batch_projection::record(
+                    batch_projection::record(
                         scope,
                         node,
                         lanes,
@@ -1157,7 +1157,7 @@ impl BatchBuilder<'_> {
                         .flatten()
                         .and_then(|id| lane.checkpoints.get_mut(id));
                     if let Some(snapshot) = snapshot {
-                        if super::capture_checkpoint::flat_checkpoint_enabled() {
+                        if capture_checkpoint::flat_checkpoint_enabled() {
                             capture.record_flat_checkpoint(node, snapshot)?;
                         } else {
                             capture.record(node)?;
@@ -1189,7 +1189,7 @@ impl BatchBuilder<'_> {
         arena: &ActivationArena,
     ) -> Result<bool> {
         let profile = self.device.profile().map_err(error)?;
-        super::prefill_projection::record_pair(scope, first, second, arena, (self.weights, profile))
+        prefill_projection::record_pair(scope, first, second, arena, (self.weights, profile))
     }
 
     fn record_prompt_narrow(
@@ -1273,7 +1273,7 @@ impl BatchBuilder<'_> {
         if self.burst.is_some() {
             return self.record_burst_logits(scope, node, arena);
         }
-        super::prompt_logits::record(
+        prompt_logits::record(
             scope,
             node,
             arena,
@@ -1325,7 +1325,7 @@ impl BatchBuilder<'_> {
             .operand()
             .slice(0..segments * columns)
             .map_err(error)?;
-        super::batch_projection::record_rows(
+        batch_projection::record_rows(
             (&self.weights.kernels, scope),
             self.nvfp4,
             weight,
@@ -1349,7 +1349,7 @@ impl BatchBuilder<'_> {
         prompt_row: &Allocation<f32>,
         profile: &mut Option<profile::PrefillProfile>,
     ) -> Result<Graph> {
-        let mut recurrent = super::recurrent_prefill::Workspace::default();
+        let mut recurrent = recurrent_prefill::Workspace::default();
         let mut fusion = None;
         self.capture32(
             arena,
@@ -1381,8 +1381,8 @@ impl BatchBuilder<'_> {
         profile: Option<&mut profile::PrefillProfile>,
         workspaces: (
             &Partials,
-            &mut super::recurrent_prefill::Workspace,
-            &mut Option<super::fusion_batch::Workspace>,
+            &mut recurrent_prefill::Workspace,
+            &mut Option<fusion_batch::Workspace>,
         ),
         prompt_row: Option<&Allocation<f32>>,
     ) -> Result<Graph> {
@@ -1391,10 +1391,10 @@ impl BatchBuilder<'_> {
         let last = readout == PromptReadout::Logits;
         #[cfg(test)]
         let demand = (readout == PromptReadout::StateOnly)
-            .then(|| super::prefill_demand_tests::StateDemand::new(self.graph));
-        let quant_plan = super::nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
+            .then(|| prefill_demand_tests::StateDemand::new(self.graph));
+        let quant_plan = nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
         let dense = DensePlan::new(self.graph, prompt_row.and(self.graph.logits));
-        let mlp = super::prefill_projection::MlpPlan::new(
+        let mlp = prefill_projection::MlpPlan::new(
             self.graph,
             self.weights,
             (arena.lanes(), &*self.nvfp4),
@@ -1581,8 +1581,8 @@ impl BatchBuilder<'_> {
         metadata: PromptMetadata<'_>,
         workspaces: (
             &Partials,
-            &mut super::recurrent_prefill::Workspace,
-            &mut Option<super::fusion_batch::Workspace>,
+            &mut recurrent_prefill::Workspace,
+            &mut Option<fusion_batch::Workspace>,
         ),
     ) -> Result<()> {
         let (metadata, metadata_batch, prefill_info, prefill_rotary) = metadata;
@@ -1596,7 +1596,7 @@ impl BatchBuilder<'_> {
             return Ok(());
         }
         if let Some(workspace) = fusion.as_mut()
-            && super::fusion_batch::record(
+            && fusion_batch::record(
                 self,
                 scope,
                 node,
@@ -1639,7 +1639,7 @@ impl BatchBuilder<'_> {
         let mut no_fusion = None;
         match dispatch32(node, self.weights) {
             Dispatch32::Linear => {
-                super::prefill_projection::record(
+                prefill_projection::record(
                     scope,
                     node,
                     arena,
@@ -1761,12 +1761,7 @@ impl BatchBuilder<'_> {
         .record(node)
     }
 
-    fn skip_quant(
-        &mut self,
-        plan: &super::nvfp4_gemm::QuantPairPlan,
-        index: usize,
-        skip: bool,
-    ) -> bool {
+    fn skip_quant(&mut self, plan: &nvfp4_gemm::QuantPairPlan, index: usize, skip: bool) -> bool {
         self.nvfp4
             .enter_quant_node(index, (!skip).then(|| plan.role(index)).flatten());
         skip
@@ -1942,7 +1937,7 @@ impl BatchGraph {
             // A verification-only graph has no sidecar: it reads the per-lane metadata above.
             Self::validate_prefill_state(tokens.len(), position, self.state_offset, self.capacity)?;
             if let Some(info) = self.prefill_info.as_ref() {
-                super::metadata::update(
+                metadata::update(
                     graph,
                     info.buffer(),
                     [
@@ -2077,7 +2072,7 @@ impl BatchGraph {
     ) -> Result<()> {
         let rows = Self::metadata_rows(width, capacity, tokens, position, state_offset, overrides)?;
         for (metadata, values) in metadata.iter_mut().take(width).zip(rows) {
-            super::metadata::update(graph, metadata.buffer(), values)?;
+            metadata::update(graph, metadata.buffer(), values)?;
         }
         Ok(())
     }
@@ -2142,7 +2137,7 @@ impl BatchGraph {
         match readout {
             Some(false) => {
                 #[cfg(test)]
-                if !read_hidden && super::prefill_demand_tests::enabled() {
+                if !read_hidden && prefill_demand_tests::enabled() {
                     let state = selected.map_or(state, |graphs| graphs.state_prefill.as_ref());
                     return Ok(state.unwrap_or(prefill));
                 }
@@ -2200,7 +2195,7 @@ impl BatchGraph {
                 overrides,
             )?;
         }
-        super::metadata::update(
+        metadata::update(
             graph,
             self.prefill_info
                 .as_ref()
@@ -2332,14 +2327,14 @@ impl BatchGraph {
                 scratch
                     .fusion
                     .as_ref()
-                    .map_or(0, super::fusion_batch::Workspace::bytes)
+                    .map_or(0, fusion_batch::Workspace::bytes)
             })
         });
         scratch
             + self
                 ._fusion
                 .as_ref()
-                .map_or(0, super::fusion_batch::Workspace::bytes)
+                .map_or(0, fusion_batch::Workspace::bytes)
     }
 
     /// Passive readback of the most recent prompt replay; never launches a graph.

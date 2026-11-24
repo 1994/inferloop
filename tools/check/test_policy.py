@@ -76,5 +76,24 @@ class ProductionUnwrapTest(unittest.TestCase):
         policy.check_production_unwraps()
 
 
+class EmbeddedPathTest(unittest.TestCase):
+    def test_a_three_segment_call_is_reported(self):
+        found = list(policy.embedded_paths("fn f() {\n    super::batch::run();\n}\n"))
+        self.assertEqual(found, [(2, "super::batch::run")])
+
+    def test_imports_strings_comments_and_macros_are_not_code(self):
+        text = (
+            "use super::batch::run;\n"
+            "// super::batch::run\n"
+            'const A: &str = "super::batch::run \\\n continued";\n'
+            "macro_rules! m { () => { $crate::a::b::c() } }\n"
+            "fn f() { batch::run() }\n"
+        )
+        self.assertEqual(list(policy.embedded_paths(text)), [])
+
+    def test_the_tree_has_no_embedded_path(self):
+        policy.check_embedded_paths()
+
+
 if __name__ == "__main__":
     unittest.main()

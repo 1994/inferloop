@@ -11,6 +11,8 @@ use infer_backend_cuda::{
 use infer_core::{Error, Result};
 use std::path::Path;
 
+use super::defaults;
+use super::speculation;
 use crate::support::human_bytes;
 use std::time::Instant;
 
@@ -399,7 +401,7 @@ fn preflight(
     let fast_supported = selection.draft_model.is_none()
         && native_fp4
         && package.kv_cache_dtype == Some(infer_models::TensorDtype::F8E4m3)
-        && super::speculation::resolve(
+        && speculation::resolve(
             super::SpeculativeTokens::Auto,
             selection.max_num_batched_tokens,
             &package,
@@ -409,7 +411,7 @@ fn preflight(
             &package.graph,
             selection.max_num_batched_tokens.unwrap_or(0),
         );
-    let (requested_depth, attention_profile) = super::defaults::resolve(
+    let (requested_depth, attention_profile) = defaults::resolve(
         selection.num_speculative_tokens,
         selection.attention_profile,
         fast_supported,
@@ -426,7 +428,7 @@ fn preflight(
         mtp_depth: if selection.draft_model.is_some() {
             0
         } else {
-            super::speculation::resolve(requested_depth, selection.max_num_batched_tokens, &package)
+            speculation::resolve(requested_depth, selection.max_num_batched_tokens, &package)
         },
         attention_profile,
         payload_bytes: minimum,

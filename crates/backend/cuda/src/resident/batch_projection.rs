@@ -1,7 +1,12 @@
 use super::buffers::RowMajor;
 #[cfg(test)]
 use super::buffers::buffer;
+use super::nvfp4_gemm;
+use super::pool_gemv;
+use super::program;
 use super::projection_lowering::{Format, Lowering, Mode, lower};
+#[cfg(test)]
+use super::small_gemm;
 use super::{ProgramWeights, batch::Lane, capture::error};
 #[cfg(test)]
 use crate::constants::CB_DECODE_SLOTS;
@@ -84,7 +89,7 @@ pub(super) fn record(
     lanes: &[Lane],
     weights: &ProgramWeights,
     buffers: &Workspace,
-    nvfp4: &mut super::nvfp4_gemm::Workspace,
+    nvfp4: &mut nvfp4_gemm::Workspace,
 ) -> Result<()> {
     let key = buffers
         .nodes
@@ -178,7 +183,7 @@ pub(super) fn record_slots(
     node: &TensorNode,
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
-    nvfp4: &mut super::nvfp4_gemm::Workspace,
+    nvfp4: &mut nvfp4_gemm::Workspace,
     arithmetic_rows: Option<usize>,
 ) -> Result<()> {
     if weights.constants.contains_key(&node.inputs[0]) {
@@ -223,7 +228,7 @@ pub(super) fn record_slots(
     };
     match lower(Format::of(weight), activation, mode, shape)? {
         Lowering::PoolDense(choice) => {
-            super::pool_gemv::record(
+            pool_gemv::record(
                 (&weights.kernels, scope),
                 weight,
                 input.buffer,
@@ -234,7 +239,7 @@ pub(super) fn record_slots(
             )?;
             nvfp4.clear_quant_reuse();
         }
-        Lowering::Quantized(quantized) => super::nvfp4_gemm::record_certified(
+        Lowering::Quantized(quantized) => nvfp4_gemm::record_certified(
             (&weights.kernels, scope),
             nvfp4,
             weight,
@@ -260,9 +265,9 @@ pub(super) fn record_slots(
 /// the row count the kernel choice prices.
 pub(super) fn record_rows(
     (kernels, scope): (&Kernels, &Recording<'_>),
-    nvfp4: &mut super::nvfp4_gemm::Workspace,
+    nvfp4: &mut nvfp4_gemm::Workspace,
     weight: &ProjectionWeight,
-    input_scale: Option<super::program::ActivationQuantization>,
+    input_scale: Option<program::ActivationQuantization>,
     input: RowMajor<'_, f32>,
     output: RowMajor<'_, f32>,
     arithmetic_rows: usize,
@@ -277,7 +282,7 @@ pub(super) fn record_rows(
     )?;
     let kernel = match lowering {
         Lowering::Quantized(quantized) => {
-            return super::nvfp4_gemm::record(
+            return nvfp4_gemm::record(
                 (kernels, scope),
                 nvfp4,
                 weight,
@@ -356,7 +361,7 @@ fn record_pool_small_f32(
 ) -> Result<bool> {
     let rows = input.len() / columns.max(1);
     if rows != CB_DECODE_SLOTS
-        || !super::small_gemm::pool_f32_enabled()
+        || !small_gemm::pool_f32_enabled()
         || weights.activation_quantization(node.inputs[1]).is_some()
         || columns == 0
         || output.len() / rows > columns.saturating_mul(GEMV_WIDE_OUTPUT_RATIO)
@@ -389,6 +394,6 @@ fn record_pool_small_f32(
         )
         .map_err(error)?;
     #[cfg(test)]
-    super::small_gemm::note_pool_record();
+    small_gemm::note_pool_record();
     Ok(true)
 }

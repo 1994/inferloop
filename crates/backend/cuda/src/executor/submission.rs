@@ -1,4 +1,5 @@
 //! One owned coroutine spans prefill, draft, verification and final device fencing.
+use super::profiling;
 use super::{
     CudaExecutor,
     profiling::{PhaseScope, StepProfile, TimerBinding},
@@ -36,7 +37,7 @@ pub(super) struct Completed {
 pub(super) struct Submission {
     future: Pin<Box<dyn Future<Output = Completed> + Send>>,
     device: CudaDevice,
-    phases: Option<super::profiling::PhaseRecords>,
+    phases: Option<profiling::PhaseRecords>,
     timer: TimerBinding,
 }
 

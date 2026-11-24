@@ -1,5 +1,6 @@
 //! Engine CLI support.
 use super::read_json;
+use super::serving;
 use crate::backend;
 use crate::backend::SelectedBackend;
 use infer_core::{Error, Result};
@@ -64,7 +65,7 @@ pub fn configured_engine(
         let ir = backend.model_ir().clone();
         let registry = backend.registry()?;
         if automatic {
-            super::serving::derive_config(&mut config, &backend, &ir, &registry)?;
+            serving::derive_config(&mut config, &backend, &ir, &registry)?;
         }
         let mut engine = Engine::new(backend, ir, PrecisionPlan::f32(), &registry, config)?;
         if let Some(provider) = infer_workloads::ProjectionWorkloads::open_optional(

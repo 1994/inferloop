@@ -1,4 +1,5 @@
 //! Pre-capture upper bound for shared recurrent scratch, shared by admission and capture.
+use super::prepared;
 use crate::constants::F32_BYTES;
 use crate::constants::GDN_PROJECTED_INPUTS;
 use crate::resident::ProgramWeights;
@@ -83,6 +84,6 @@ pub fn required_bytes(
         }
     }
     bytes
-        .checked_add(super::prepared::required_bytes(graph, weights, lanes)?)
+        .checked_add(prepared::required_bytes(graph, weights, lanes)?)
         .ok_or_else(|| Error::invalid("CUDA recurrent scratch size overflow"))
 }

@@ -1,4 +1,5 @@
 //! RMS normalization primes only the immediately following fused NVFP4 gate/up pass.
+use super::norm_lowering;
 use crate::constants::NVFP4_QUANT_CODES_TILE;
 #[cfg(test)]
 use std::cell::Cell;
@@ -11,7 +12,7 @@ const QUANT_COLUMNS: usize = NVFP4_QUANT_CODES_TILE[1] * 2;
 const MAX_PADDED_COLUMNS: usize = 8192;
 
 pub const fn eligible_columns(columns: usize) -> bool {
-    columns > super::norm_lowering::NORM_ROWS_MAX_DIMENSION
+    columns > norm_lowering::NORM_ROWS_MAX_DIMENSION
         && columns <= MAX_PADDED_COLUMNS
         && columns.is_multiple_of(QUANT_COLUMNS)
 }

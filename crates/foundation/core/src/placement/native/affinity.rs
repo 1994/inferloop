@@ -1,3 +1,4 @@
+use super::linux;
 use super::mask::Mask;
 use crate::constants::MAX_TOPOLOGY_CPUS;
 use crate::{Error, Result};
@@ -27,7 +28,7 @@ pub(super) fn set(mask: &Mask) -> Result<()> {
     if unsafe { libc::sched_setaffinity(0, mask.bytes(), mask.pointer().cast()) } == 0 {
         Ok(())
     } else {
-        Err(super::linux::os_error("set CPU affinity"))
+        Err(linux::os_error("set CPU affinity"))
     }
 }
 pub(in crate::placement) fn allowed() -> Result<Vec<usize>> {

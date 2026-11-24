@@ -1,6 +1,7 @@
 //! Persistence glue between the Responses routes and an installed [`infer_spi::ResponseStore`].
 use super::super::execution::Prepared as GenerationPrepared;
 use super::super::request::OpaqueJson;
+use super::output;
 use super::output::{
     IncompleteDetails, ResponseBody, ResponseErrorBody, ResponseUsageBody, Snapshot,
 };
@@ -314,12 +315,12 @@ fn response_usage(usage: &ResponseUsageBody) -> ResponseUsage {
 fn response_usage_body(usage: ResponseUsage) -> ResponseUsageBody {
     ResponseUsageBody {
         input_tokens: usize::try_from(usage.input_tokens).unwrap_or(usize::MAX),
-        input_tokens_details: super::output::InputTokensDetails {
+        input_tokens_details: output::InputTokensDetails {
             cached_tokens: usize::try_from(usage.cached_tokens).unwrap_or(usize::MAX),
             cache_write_tokens: usize::try_from(usage.cache_write_tokens).unwrap_or(usize::MAX),
         },
         output_tokens: usize::try_from(usage.output_tokens).unwrap_or(usize::MAX),
-        output_tokens_details: super::output::OutputTokensDetails {
+        output_tokens_details: output::OutputTokensDetails {
             reasoning_tokens: usize::try_from(usage.reasoning_tokens).unwrap_or(usize::MAX),
         },
         total_tokens: usage

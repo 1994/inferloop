@@ -4,9 +4,16 @@
 //! `segments * SEGMENT_ROWS` rows. Sequential nodes (convolution, gated delta, attention, `RoPE`)
 //! record once per segment, against that segment's rows and the resident slot's own state, so no
 //! state moves through a worker. A segment with a zero token count writes nothing.
+use super::attention_decode;
+use super::batch;
 use super::batch::{BatchBuilder, States};
+use super::metadata;
 use super::narrow_kv::NarrowCaches;
+use super::nvfp4_gemm;
+use super::profile;
+use super::program;
 use super::prompt_scratch::{Partials, PromptScratch};
+use super::recurrent_prefill;
 use super::{ActivationArena, ProgramWeights};
 use crate::constants::METADATA_FIELDS;
 use crate::device::{CudaDevice, PinnedUpload, ReadbackSource, Readbacks, device_error};
@@ -51,7 +58,7 @@ pub fn required_bytes(
     (hidden, vocabulary): (usize, usize),
 ) -> Result<u64> {
     let overflow = || Error::invalid("prompt burst size overflow");
-    let mut bytes = super::recurrent_prefill::required_bytes(graph, weights, SEGMENT_ROWS)?
+    let mut bytes = recurrent_prefill::required_bytes(graph, weights, SEGMENT_ROWS)?
         .checked_mul(u64::try_from(rungs(width).len()).map_err(device_error)?)
         .ok_or_else(overflow)?;
     for segments in rungs(width) {
@@ -78,7 +85,7 @@ pub fn required_bytes(
 /// What a graph borrows at capture instead of owning: everything replays on one stream.
 pub struct Shared<'a> {
     /// The worker's projection workspace, holding its quantization rows.
-    pub nvfp4: &'a mut super::nvfp4_gemm::Workspace,
+    pub nvfp4: &'a mut nvfp4_gemm::Workspace,
     /// The widest rung, whose rows and logits narrower rungs view.
     pub wider: Option<&'a PromptBurst>,
     /// The worker's external hidden rows.
@@ -99,7 +106,7 @@ pub(super) struct Segment<'a> {
 /// Everything a multi-sequence capture records beyond an ordinary prompt graph.
 pub(super) struct Binding<'a> {
     pub segments: Vec<Segment<'a>>,
-    pub recurrent: super::recurrent_prefill::Workspace,
+    pub recurrent: recurrent_prefill::Workspace,
     pub info_batch: &'a Allocation<i32>,
     pub last_rows: &'a Allocation<f32>,
     pub logits: &'a Allocation<f32>,
@@ -116,7 +123,7 @@ pub struct Lane<'a> {
 /// A captured multi-sequence prompt graph, retaining everything the graph addresses.
 pub struct PromptBurst {
     graph: Graph,
-    profile: Option<super::profile::PrefillProfile>,
+    profile: Option<profile::PrefillProfile>,
     segments: usize,
     capacity: usize,
     vocabulary: usize,
@@ -142,8 +149,8 @@ pub struct PromptBurst {
 struct Retained {
     _segments: Vec<ActivationArena>,
     _partials: Partials,
-    _recurrent: super::recurrent_prefill::Workspace,
-    _attention: super::attention_decode::Workspace,
+    _recurrent: recurrent_prefill::Workspace,
+    _attention: attention_decode::Workspace,
     _placeholder_states: States,
     _placeholder_fp8: NarrowCaches,
 }
@@ -158,7 +165,7 @@ struct Keep {
     _external_row: Allocation<f32>,
     _external: Allocation<f32>,
     _lane_external: Vec<Allocation<f32>>,
-    _lane_fusion: Vec<Option<super::program::FusionWorkspace>>,
+    _lane_fusion: Vec<Option<program::FusionWorkspace>>,
     _last_rows: Allocation<f32>,
     /// Declared last so the views above drop first.
     _scratch: Option<Arc<Mutex<PromptScratch>>>,
@@ -180,7 +187,7 @@ struct Storage {
     external_row: Allocation<f32>,
     external: Allocation<f32>,
     lane_external: Vec<Allocation<f32>>,
-    lane_fusion: Vec<Option<super::program::FusionWorkspace>>,
+    lane_fusion: Vec<Option<program::FusionWorkspace>>,
     /// Split rows viewing the prompt worker's, when its scratch covers these rows.
     scratch_partials: Option<Partials>,
     /// Retains the storage the views alias.
@@ -189,7 +196,7 @@ struct Storage {
 
 /// Pair each resident program with its rows and metadata.
 fn bind_segments<'a>(
-    programs: &'a mut [&mut super::program::DeviceProgram],
+    programs: &'a mut [&mut program::DeviceProgram],
     views: Vec<ActivationArena>,
     (info_rows, rotary_rows): (&'a [Allocation<i32>], &'a [Allocation<i32>]),
 ) -> Vec<Segment<'a>> {
@@ -234,14 +241,11 @@ fn workspaces(
     graph: &DataflowGraph,
     weights: &ProgramWeights,
     (capacity, reach): (usize, usize),
-) -> Result<(
-    super::attention_decode::Workspace,
-    super::recurrent_prefill::Workspace,
-)> {
-    let mut attention = super::attention_decode::Workspace::new(device, graph, capacity)?;
+) -> Result<(attention_decode::Workspace, recurrent_prefill::Workspace)> {
+    let mut attention = attention_decode::Workspace::new(device, graph, capacity)?;
     attention.prepare_mma(device, graph, weights, reach, SEGMENT_ROWS)?;
     attention.prepare_prefill(device, graph, weights, SEGMENT_ROWS);
-    let recurrent = super::recurrent_prefill::Workspace::new(device, graph, weights, SEGMENT_ROWS)?;
+    let recurrent = recurrent_prefill::Workspace::new(device, graph, weights, SEGMENT_ROWS)?;
     Ok((attention, recurrent))
 }
 
@@ -279,8 +283,8 @@ impl Storage {
         } else {
             ActivationArena::new_prompt(device, graph, rows, budget)?
         };
-        let (metadata, metadata_rows) = super::batch::batched_metadata(device, rows)?;
-        let (info, info_rows) = super::batch::batched_metadata(device, segments)?;
+        let (metadata, metadata_rows) = batch::batched_metadata(device, rows)?;
+        let (info, info_rows) = batch::batched_metadata(device, segments)?;
         let (rotary, rotary_rows) = if weights.mrope {
             let memory = memory::<i32>(device, rows * ROTARY_AXES)?;
             let rows = memory.rows(segments)?;
@@ -355,7 +359,7 @@ impl PromptBurst {
         graph: &DataflowGraph,
         weights: &ProgramWeights,
         (capacity, hidden, vocabulary): (usize, usize, usize),
-        programs: &mut [&mut super::program::DeviceProgram],
+        programs: &mut [&mut program::DeviceProgram],
         shared: Shared<'_>,
     ) -> Result<Self> {
         let Shared {
@@ -379,7 +383,7 @@ impl PromptBurst {
         nvfp4.prepare_prompt_rows(device, graph, weights, rows)?;
         let reach = programs
             .iter()
-            .map(|program| super::program::reach(capacity, program.fp8_states()))
+            .map(|program| program::reach(capacity, program.fp8_states()))
             .min()
             .unwrap_or(capacity);
         let (mut attention, recurrent) = workspaces(device, graph, weights, (capacity, reach))?;
@@ -387,7 +391,7 @@ impl PromptBurst {
         let bound = bind_segments(programs, views, (&storage.info_rows, &storage.rotary_rows));
         let mut placeholder_states = States::new();
         let mut placeholder_fp8 = NarrowCaches::new();
-        let tables = [super::metadata::identity_table(device, capacity)?];
+        let tables = [metadata::identity_table(device, capacity)?];
         let binding = Binding {
             segments: bound,
             recurrent,
@@ -466,7 +470,7 @@ impl PromptBurst {
         device: &CudaDevice,
         storage: Storage,
         graph: Graph,
-        profile: Option<super::profile::PrefillProfile>,
+        profile: Option<profile::PrefillProfile>,
         (segments, rows, capacity, vocabulary): (usize, usize, usize, usize),
         state_offset: i32,
         retained: Retained,

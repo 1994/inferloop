@@ -1,5 +1,9 @@
 //! A prompt RMS norm fused into the low-precision quantizer of the projection it feeds.
+#[cfg(test)]
+use super::super::norm_fp4;
 use super::super::norm_lowering::{Consumer, Fusion, Norm, fusion};
+#[cfg(test)]
+use super::super::norm_maximum;
 use super::super::projection_lowering::Format;
 use super::super::{ActivationArena, ProgramWeights, capture::error, nvfp4_gemm::Workspace};
 use super::MlpPlan;
@@ -132,7 +136,7 @@ pub(in crate::resident) fn record(
                 (norm.epsilon, norm.offset, scale),
             )?;
             #[cfg(test)]
-            super::super::norm_fp4::record_capture();
+            norm_fp4::record_capture();
         }
         Fusion::Maximum => {
             workspace.record_norm_maximum(
@@ -144,7 +148,7 @@ pub(in crate::resident) fn record(
                 (norm.epsilon, norm.offset),
             )?;
             #[cfg(test)]
-            super::super::norm_maximum::record_capture();
+            norm_maximum::record_capture();
         }
     }
     Ok(())
@@ -154,8 +158,8 @@ pub(in crate::resident) fn record(
 #[cfg(test)]
 fn separate(fusion: Fusion) -> bool {
     match fusion {
-        Fusion::Fp4(_) => super::super::norm_fp4::separate(),
-        Fusion::Maximum => super::super::norm_maximum::separate(),
+        Fusion::Fp4(_) => norm_fp4::separate(),
+        Fusion::Maximum => norm_maximum::separate(),
     }
 }
 #[cfg(not(test))]

@@ -2,6 +2,8 @@
 /// Fresh AB search followed by separately recaptured BA confirmation.
 pub(super) const SEARCH_TRIALS: usize = 2;
 use super::Shape;
+#[cfg(all(test, feature = "cuda"))]
+use super::tests;
 use crate::device::CudaDevice;
 use crate::device::device_error;
 use crate::tuning::nvfp4_lt::Trial;
@@ -79,7 +81,7 @@ fn one(
         "vendor FP4 paired confirmation");
     #[cfg(test)]
     #[cfg(feature = "cuda")]
-    super::tests::evidence(
+    tests::evidence(
         &serde_json::json!({"phase":"vendor_fp4_confirm","m":shape.m,
         "n":shape.n,"k":shape.k,"clear_l2":clear_l2,"reverse":reverse,
         "baseline_ms":times.baseline_median_ms,"candidate_ms":times.candidate_median_ms,

@@ -1,4 +1,5 @@
 //! Immutable observation ownership handed to exporters outside the engine owner.
+use super::collector;
 use crate::EngineFault;
 use infer_core::Result;
 use infer_observe::export::prometheus_retention;
@@ -15,12 +16,12 @@ use std::collections::BTreeMap;
 /// A consistent logical-clock snapshot. Rendering does not borrow or lock the live engine.
 pub(super) enum WindowSource {
     Ready(ObservationWindow),
-    Pending(super::collector::CollectionTicket),
+    Pending(collector::CollectionTicket),
 }
 impl WindowSource {
-    fn resolve(self) -> Result<super::collector::CollectedSnapshot> {
+    fn resolve(self) -> Result<collector::CollectedSnapshot> {
         match self {
-            Self::Ready(window) => Ok(super::collector::CollectedSnapshot {
+            Self::Ready(window) => Ok(collector::CollectedSnapshot {
                 window,
                 parents: BTreeMap::new(),
                 dropped_metadata: 0,

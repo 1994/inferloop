@@ -36,7 +36,7 @@ fn tensor_readback_poll_does_not_wait_for_prior_stream_work() -> Result<()> {
         }
     })?;
     let mut future = pin!(device.read_allocation(&source, &mut readbacks));
-    let first = super::super::asynchronous::block_on(poll_fn(|context| {
+    let first = asynchronous::block_on(poll_fn(|context| {
         Poll::Ready(future.as_mut().poll(context))
     }));
     released.store(true, Ordering::Release);
@@ -45,7 +45,7 @@ fn tensor_readback_poll_does_not_wait_for_prior_stream_work() -> Result<()> {
         "readback poll waited for GPU"
     );
     assert!(first.is_pending());
-    let result = super::super::asynchronous::block_on(future)?;
+    let result = asynchronous::block_on(future)?;
     assert_eq!(result, vec![1.0, 2.0]);
     Ok(())
 }

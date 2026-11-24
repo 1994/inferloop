@@ -17,6 +17,20 @@ use std::future::Future;
 use std::slice::from_ref;
 mod geometry;
 mod greedy;
+use super::attention_decode;
+#[cfg(all(test, feature = "cuda"))]
+use super::attention_decode::taps_tests;
+use super::batch;
+use super::capacity;
+use super::fusion_batch;
+use super::metadata;
+use super::moe;
+use super::narrow_kv;
+use super::nvfp4_gemm;
+use super::prompt_scratch;
+use super::reset;
+use super::token_readout;
+use super::validation;
 use crate::{
     constants::{
         CONV_KERNEL_SIZE, CONV_STATE_TENSORS, KV_CACHE_RANK, MAX_HIDDEN_SIZE, METADATA_FIELDS, MIB,
@@ -37,16 +51,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-type SlotState = (
-    super::batch::States,
-    super::narrow_kv::NarrowCaches,
-    Allocation<i32>,
-);
+type SlotState = (batch::States, narrow_kv::NarrowCaches, Allocation<i32>);
 
 /// Positions a program over `kv` can reach: its capacity, or fewer when the caches are a paged
 /// pool's shared pages, which no sequence outgrows ([`super::slot_batch::SlotPool::admits`]).
 /// Staging sized past them would be paid for and never written.
-pub(super) fn reach(capacity: usize, kv: &super::narrow_kv::NarrowCaches) -> usize {
+pub(super) fn reach(capacity: usize, kv: &narrow_kv::NarrowCaches) -> usize {
     kv.values()
         .map(|cache| cache.layout().rows)
         .min()
@@ -54,8 +64,8 @@ pub(super) fn reach(capacity: usize, kv: &super::narrow_kv::NarrowCaches) -> usi
 }
 
 type InitialState = (
-    super::batch::States,
-    super::narrow_kv::NarrowCaches,
+    batch::States,
+    narrow_kv::NarrowCaches,
     Option<Allocation<i32>>,
 );
 
@@ -122,7 +132,7 @@ pub struct ProgramWeights {
     pub narrow_prefill_width: usize,
     pub kv_scales: BTreeMap<TensorId, [f32; 2]>,
     /// What every state with [`Self::kv_scales`] stores.
-    pub kv_element: super::narrow_kv::NarrowElement,
+    pub kv_element: narrow_kv::NarrowElement,
     pub tiling: BTreeMap<TensorId, LinearTiling>,
     pub fusion: Option<FusionWeights>,
     /// Target prefill attention numerical profile, resolved once at load. The draft proposal
@@ -135,7 +145,7 @@ pub struct ProgramWeights {
     pub fp8_inputs: BTreeSet<TensorId>,
     /// Capture the chunked gated-delta prompt kernel rather than the per-token one.
     pub chunked_recurrent: bool,
-    pub expert_banks: BTreeMap<TensorId, super::moe::ExpertBank>,
+    pub expert_banks: BTreeMap<TensorId, moe::ExpertBank>,
     pub constants: BTreeMap<TensorId, Allocation<f32>>,
     pub embeddings: BTreeMap<TensorId, Allocation<bf16>>,
     pub rope_axes: BTreeMap<infer_core::OpId, Allocation<i32>>,
@@ -143,7 +153,7 @@ pub struct ProgramWeights {
     /// Whether the model's `RoPE` carries three-axis (`t`, `h`, `w`) positions.
     pub mrope: bool,
     /// Prompt-graph scratch shared by every sequence of this program.
-    pub prompt_scratch: super::prompt_scratch::Registry,
+    pub prompt_scratch: prompt_scratch::Registry,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -156,8 +166,7 @@ impl ProgramWeights {
     /// kernels read.
     #[must_use]
     pub fn fp8_kv(&self, state: &TensorId) -> bool {
-        self.kv_element == super::narrow_kv::NarrowElement::Fp8
-            && self.kv_scales.contains_key(state)
+        self.kv_element == narrow_kv::NarrowElement::Fp8 && self.kv_scales.contains_key(state)
     }
 
     /// What a captured graph reads by device pointer. A program or pool holds these, so they outlive
@@ -237,30 +246,30 @@ pub struct DeviceProgram {
     _weights: Vec<Owner>,
     /// Slot target handles own state views and reset only; their forward runs in the pool.
     forward_captured: bool,
-    batch: Option<super::batch::BatchGraph>,
+    batch: Option<batch::BatchGraph>,
     /// Discarded on the submission path, freed at the next control point.
-    retired_verification: Option<super::batch::BatchGraph>,
+    retired_verification: Option<batch::BatchGraph>,
     last_batch: Option<(usize, usize)>,
     /// Prompt graphs, narrowest first; a chunk replays on the narrowest that holds it.
-    prompts: Vec<super::batch::BatchGraph>,
+    prompts: Vec<batch::BatchGraph>,
     graph: Graph,
     greedy: Option<greedy::DeviceGreedy>,
-    token_readout: Option<super::token_readout::TokenReadout>,
+    token_readout: Option<token_readout::TokenReadout>,
     readbacks: Readbacks,
     prefill: Graph,
     metadata: Allocation<i32>,
     /// Identity block table over this program's own KV cache; see `capture::Capture::table`.
     table: Allocation<i32>,
-    nvfp4: super::nvfp4_gemm::Workspace,
+    nvfp4: nvfp4_gemm::Workspace,
     delegated: Support,
-    attention: super::attention_decode::Workspace,
+    attention: attention_decode::Workspace,
     external: Allocation<f32>,
     uploads: ProgramUploads,
     // Declared after the graphs: the state tensors outlive every capture that references them,
     // and prefix caching reads them back for snapshots.
-    states: super::batch::States,
+    states: batch::States,
     kv_states: BTreeSet<TensorId>,
-    fp8_states: super::narrow_kv::NarrowCaches,
+    fp8_states: narrow_kv::NarrowCaches,
     lane_external: Vec<Allocation<f32>>,
     // The allocation the external rows view, which a prompt burst views too.
     lane_external_memory: Allocation<f32>,
@@ -339,8 +348,8 @@ impl ExternalInput<'_> {
 /// shares are not retained either.
 fn retained_tensor_bytes(
     graph: &DataflowGraph,
-    states: &super::batch::States,
-    fp8: &super::narrow_kv::NarrowCaches,
+    states: &batch::States,
+    fp8: &narrow_kv::NarrowCaches,
     activation_bytes: usize,
     verify: usize,
     prompt: usize,
@@ -352,7 +361,7 @@ fn retained_tensor_bytes(
         .flatten()
         .map(StateTensor::bytes)
         .sum::<u64>();
-    let packed_bytes = super::narrow_kv::bytes(fp8);
+    let packed_bytes = narrow_kv::bytes(fp8);
     let recurrent = graph
         .tensors
         .iter()
@@ -502,7 +511,7 @@ impl MediaFeatureStore {
 pub fn fused_lanes(device: &CudaDevice, weights: &ProgramWeights) -> Result<usize> {
     let width = weights.prefill_width.max(weights.batch_width).max(1);
     Ok(
-        if super::fusion_batch::batched(weights, weights.prefill_width, device.profile()?) {
+        if fusion_batch::batched(weights, weights.prefill_width, device.profile()?) {
             weights.batch_width.max(1)
         } else {
             width
@@ -564,7 +573,7 @@ fn program_capacity(
     if let Some(fusion) = &weights.fusion {
         fusion.validate(hidden)?;
     }
-    super::capacity::padded(capacity)
+    capacity::padded(capacity)
 }
 
 impl DeviceProgram {
@@ -591,7 +600,7 @@ impl DeviceProgram {
             .flatten()
             .map(StateTensor::bytes)
             .sum::<u64>();
-        let packed_bytes = super::narrow_kv::bytes(&self.fp8_states);
+        let packed_bytes = narrow_kv::bytes(&self.fp8_states);
         let prompt = retained_prompt_lanes(&self.prompts);
         self.reclaimable_bytes =
             state_bytes + packed_bytes + self.activation_bytes as u64 * (1 + prompt) as u64;
@@ -627,7 +636,7 @@ impl DeviceProgram {
             .ensure_width(&self.device, graph, weights, weights.batch_width)?;
         self.nvfp4
             .prepare_pool_dense(&self.device, graph, weights, weights.batch_width)?;
-        let mut builder = super::batch::BatchBuilder {
+        let mut builder = batch::BatchBuilder {
             device: &self.device,
             graph,
             weights,
@@ -717,18 +726,18 @@ impl DeviceProgram {
         graph: &DataflowGraph,
         weights: &ProgramWeights,
         geometry: (usize, usize, usize),
-        kv: Option<super::narrow_kv::NarrowCaches>,
+        kv: Option<narrow_kv::NarrowCaches>,
         prompt_width: usize,
     ) -> Result<Self> {
         // A paged pool's worker reads and writes the shared KV blocks of whichever sequence it
         // runs, through a table it copies from that sequence; its recurrent state is its own.
         let slot = match kv {
             Some(kv) => {
-                let capacity = super::capacity::padded(geometry.0)?;
+                let capacity = capacity::padded(geometry.0)?;
                 Some((
                     allocate_states(device, graph, capacity, weights)?,
                     kv,
-                    super::metadata::identity_table(device, capacity)?,
+                    metadata::identity_table(device, capacity)?,
                 ))
             }
             None => None,
@@ -842,17 +851,17 @@ impl DeviceProgram {
         load_rotary(device.tile(), metadata.buffer())?;
         let external = Self::zero_row(device, hidden)?;
         // The program owns its cache, so its block table is the identity.
-        let table = super::metadata::identity_table(device, capacity)?;
+        let table = metadata::identity_table(device, capacity)?;
         Ok((metadata, external, table))
     }
 
     /// Retained bytes priced from the graphs this program actually captured.
     fn program_retained_bytes(
         graph: &DataflowGraph,
-        states: &super::batch::States,
-        fp8: &super::narrow_kv::NarrowCaches,
+        states: &batch::States,
+        fp8: &narrow_kv::NarrowCaches,
         activation_bytes: usize,
-        captures: &super::batch::ProgramCaptures,
+        captures: &batch::ProgramCaptures,
     ) -> u64 {
         retained_tensor_bytes(
             graph,
@@ -871,15 +880,10 @@ impl DeviceProgram {
         geometry: ProgramGeometry,
         (capacity, reach): (usize, usize),
         forward_captured: bool,
-    ) -> Result<(
-        super::nvfp4_gemm::Workspace,
-        Support,
-        super::attention_decode::Workspace,
-    )> {
+    ) -> Result<(nvfp4_gemm::Workspace, Support, attention_decode::Workspace)> {
         let empty = DataflowGraph::default();
         let captured_graph = if forward_captured { graph } else { &empty };
-        let mut attention =
-            super::attention_decode::Workspace::new(device, captured_graph, capacity)?;
+        let mut attention = attention_decode::Workspace::new(device, captured_graph, capacity)?;
         let (nvfp4, delegated) = if forward_captured {
             attention.prepare_mma(
                 device,
@@ -889,13 +893,13 @@ impl DeviceProgram {
                 geometry.prompts.into_iter().max().unwrap_or(0),
             )?;
             prepare(device, graph, weights, &geometry.prompt_widths());
-            let nvfp4 = super::nvfp4_gemm::Workspace::program(device, graph, weights, geometry)?;
+            let nvfp4 = nvfp4_gemm::Workspace::program(device, graph, weights, geometry)?;
             let mut delegated = Support::new(device);
             warm_delegated(&mut delegated, weights, geometry);
             (nvfp4, delegated)
         } else {
             (
-                super::nvfp4_gemm::Workspace::new(device, &empty, weights, &[])?,
+                nvfp4_gemm::Workspace::new(device, &empty, weights, &[])?,
                 Support::new(device),
             )
         };
@@ -934,7 +938,7 @@ impl DeviceProgram {
         slot: Option<SlotState>,
     ) -> Result<Self> {
         let forward_captured = needs_forward(slot.is_some(), weights, geometry);
-        super::validation::validate(graph, weights)?;
+        validation::validate(graph, weights)?;
         let capacity = program_capacity(graph, weights, capacity, hidden, vocabulary)?;
         let mut arena = ActivationArena::new(device, graph, arena_budget(device)?)?;
         let activation_bytes = arena.bytes();
@@ -954,7 +958,7 @@ impl DeviceProgram {
         let (lane_external_memory, mut lane_external, mut lane_fusion) =
             allocate_lane_fusion(device, hidden, weights, geometry)?;
         let media = MediaFeatureStore::allocate(device, graph, hidden, geometry)?;
-        let mut builder = super::batch::BatchBuilder {
+        let mut builder = batch::BatchBuilder {
             device,
             graph,
             weights,
@@ -983,7 +987,7 @@ impl DeviceProgram {
             forward_captured,
         )?;
         // Forward captures finalize the resident state bindings before reset records them.
-        let reset_graph = super::reset::capture(device, &states)?;
+        let reset_graph = reset::capture(device, &states)?;
         let reclaimable_bytes =
             Self::program_retained_bytes(graph, &states, &fp8_states, activation_bytes, &captures);
         let readouts =
@@ -1088,7 +1092,7 @@ impl DeviceProgram {
         token: u32,
         position: usize,
         read_hidden: bool,
-    ) -> Result<super::batch::BatchReadout> {
+    ) -> Result<batch::BatchReadout> {
         block_on(self.step_selected_async(token, position, read_hidden))
     }
 
@@ -1097,12 +1101,12 @@ impl DeviceProgram {
         token: u32,
         position: usize,
         read_hidden: bool,
-    ) -> Result<super::batch::BatchReadout> {
+    ) -> Result<batch::BatchReadout> {
         if self.token_readout.is_none() {
             return self
                 .step_readout_async(token, position, position, None, true, read_hidden)
                 .await
-                .map(|row| super::batch::BatchReadout::host(vec![row]));
+                .map(|row| batch::BatchReadout::host(vec![row]));
         }
         self.prepare_step_async(token, [position; ROTARY_AXES], position, None, true)
             .await?;
@@ -1121,7 +1125,7 @@ impl DeviceProgram {
             .await?;
         self.last_batch = None;
         self.next_position = position + 1;
-        Ok(super::batch::BatchReadout {
+        Ok(batch::BatchReadout {
             rows,
             tokens: Some(tokens.into_iter().map(Some).collect()),
         })
@@ -1244,7 +1248,7 @@ impl DeviceProgram {
         } else {
             &self.prefill
         };
-        super::metadata::update_rotary(graph, self.metadata.buffer(), metadata, position)?;
+        metadata::update_rotary(graph, self.metadata.buffer(), metadata, position)?;
         if let Some(external) = external {
             external.update(&self.device, &self.external, self.uploads.external.as_mut())?;
         }
@@ -1281,7 +1285,7 @@ impl DeviceProgram {
         tokens: &[u32],
         position: usize,
         plain_greedy: bool,
-    ) -> Result<super::batch::BatchReadout> {
+    ) -> Result<batch::BatchReadout> {
         block_on(self.step_batch_readout_async(tokens, position, plain_greedy))
     }
 
@@ -1290,7 +1294,7 @@ impl DeviceProgram {
         tokens: &[u32],
         position: usize,
         plain_greedy: bool,
-    ) -> Result<super::batch::BatchReadout> {
+    ) -> Result<batch::BatchReadout> {
         let width = self.batch_width();
         if tokens.is_empty()
             || tokens.len() > width
@@ -1335,17 +1339,15 @@ impl DeviceProgram {
     pub(super) const fn burst_binding(
         &mut self,
     ) -> (
-        &mut super::batch::States,
-        &mut super::narrow_kv::NarrowCaches,
+        &mut batch::States,
+        &mut narrow_kv::NarrowCaches,
         &Allocation<i32>,
     ) {
         (&mut self.states, &mut self.fp8_states, &self.table)
     }
 
     /// The projection workspace multi-sequence prompt graphs share with this worker.
-    pub(crate) const fn burst_shared(
-        &mut self,
-    ) -> (&mut super::nvfp4_gemm::Workspace, &Allocation<f32>) {
+    pub(crate) const fn burst_shared(&mut self) -> (&mut nvfp4_gemm::Workspace, &Allocation<f32>) {
         (&mut self.nvfp4, &self.lane_external_memory)
     }
 
@@ -1356,25 +1358,25 @@ impl DeviceProgram {
     }
 
     #[must_use]
-    pub const fn states(&self) -> &super::batch::States {
+    pub const fn states(&self) -> &batch::States {
         &self.states
     }
 
     /// Mutable resident state tensors, for prefix restore.
     #[must_use]
-    pub const fn states_mut(&mut self) -> &mut super::batch::States {
+    pub const fn states_mut(&mut self) -> &mut batch::States {
         &mut self.states
     }
 
     /// FP8 scale side tables paired with the resident state tensors.
     #[must_use]
-    pub const fn fp8_states(&self) -> &super::narrow_kv::NarrowCaches {
+    pub const fn fp8_states(&self) -> &narrow_kv::NarrowCaches {
         &self.fp8_states
     }
 
     /// Mutable quantized KV storage for a prefix restore.
     #[must_use]
-    pub const fn fp8_states_mut(&mut self) -> &mut super::narrow_kv::NarrowCaches {
+    pub const fn fp8_states_mut(&mut self) -> &mut narrow_kv::NarrowCaches {
         &mut self.fp8_states
     }
 
@@ -1395,7 +1397,7 @@ impl DeviceProgram {
 
     #[cfg(test)]
     #[cfg(feature = "cuda")]
-    pub(crate) const fn attention_taps(&self) -> &super::attention_decode::taps_tests::Taps {
+    pub(crate) const fn attention_taps(&self) -> &taps_tests::Taps {
         &self.attention.taps
     }
 
@@ -1416,7 +1418,7 @@ impl DeviceProgram {
         self.batch
             .iter()
             .chain(&self.prompts)
-            .map(super::batch::BatchGraph::test_fusion_scratch_bytes)
+            .map(batch::BatchGraph::test_fusion_scratch_bytes)
             .sum()
     }
 
@@ -1456,7 +1458,7 @@ impl DeviceProgram {
             .or_else(|| self.prompts.len().checked_sub(1))
     }
 
-    fn prompt_for(&self, lanes: usize) -> Option<&super::batch::BatchGraph> {
+    fn prompt_for(&self, lanes: usize) -> Option<&batch::BatchGraph> {
         self.prompts.get(self.prompt_index(lanes)?)
     }
 
@@ -1466,7 +1468,7 @@ impl DeviceProgram {
             .prompts
             .last()
             .or(self.batch.as_ref())
-            .map_or(0, super::batch::BatchGraph::state_offset);
+            .map_or(0, batch::BatchGraph::state_offset);
         usize::try_from(offset.unsigned_abs()).map_err(device_error)
     }
 
@@ -1474,12 +1476,11 @@ impl DeviceProgram {
     /// Device draft features of the prompt graph a `lanes`-row chunk replays.
     pub(crate) fn prompt_features(&self, lanes: usize) -> Option<Allocation<f32>> {
         self.prompt_for(lanes)
-            .and_then(super::batch::BatchGraph::feature_rows)
+            .and_then(batch::BatchGraph::feature_rows)
     }
 
     pub(crate) fn prompt_hidden(&self, lanes: usize) -> Option<Allocation<f32>> {
-        self.prompt_for(lanes)
-            .map(super::batch::BatchGraph::hidden_rows)
+        self.prompt_for(lanes).map(batch::BatchGraph::hidden_rows)
     }
 
     /// Prime a fused draft from a target chunk's device hidden rows, without a host round trip.
@@ -1785,7 +1786,7 @@ impl DeviceProgram {
                 tokens,
                 position,
                 read_logits,
-                super::batch::PromptOverrides {
+                batch::PromptOverrides {
                     lanes: &overrides,
                     rotary,
                 },
@@ -1922,7 +1923,7 @@ pub fn allocate_states(
     graph: &DataflowGraph,
     capacity: usize,
     weights: &ProgramWeights,
-) -> Result<super::batch::States> {
+) -> Result<batch::States> {
     let plan = state_shapes(graph, capacity, weights)?;
     let mut total = 0u64;
     let budget = device
@@ -2055,7 +2056,7 @@ fn initial_state(
         Some((states, fp8, table)) => Ok((states, fp8, Some(table))),
         None => Ok((
             allocate_states(device, graph, capacity, weights)?,
-            super::narrow_kv::allocate(
+            narrow_kv::allocate(
                 device,
                 graph,
                 capacity,
@@ -2105,7 +2106,7 @@ pub fn attention_states(graph: &DataflowGraph) -> BTreeSet<TensorId> {
 
 /// Prompt rows a program's captures retain for admission: the widest graph and the narrow one.
 /// Ladder rungs in between view the widest graph's scratch and retain nothing of their own.
-const fn retained_prompt_lanes(prompts: &[super::batch::BatchGraph]) -> usize {
+const fn retained_prompt_lanes(prompts: &[batch::BatchGraph]) -> usize {
     match prompts {
         [] => 0,
         [only] => only.width,

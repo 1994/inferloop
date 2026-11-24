@@ -63,12 +63,9 @@ fn bf16_profile_has_its_own_tuning_identity() {
     assert!(ATTENTION_SCHEMA.contains("prefill-fp8-kv"));
     assert!(catalog::PROFILE.contains("fa4-bf16-qkv"));
     // FP16 has its own schema and artifact identity; a BF16 entry can never satisfy it.
-    assert_ne!(attention_mma::f16::SCHEMA, SCHEMA);
-    assert!(attention_mma::f16::SCHEMA.contains("fa4-f16"));
-    assert_ne!(
-        attention_mma::f16::artifact_identity(),
-        attention_mma::artifact_identity()
-    );
+    assert_ne!(f16::SCHEMA, SCHEMA);
+    assert!(f16::SCHEMA.contains("fa4-f16"));
+    assert_ne!(f16::artifact_identity(), attention_mma::artifact_identity());
     let mut entry = entry();
     entry.key.schema = ATTENTION_SCHEMA.into();
     assert!(!entry.valid());

@@ -1,5 +1,14 @@
+use super::attention_decode;
+use super::batch;
+#[cfg(all(test, feature = "cuda"))]
+use super::gated_norm_discovery_tests;
+use super::narrow_kv;
 use super::norm_lowering::layout;
+use super::nvfp4_gemm;
+use super::program;
 use super::projection_lowering::{Format, Lowering, Mode, lower};
+#[cfg(test)]
+use super::small_gemm;
 use super::{
     ActivationArena, ProgramWeights,
     arena::SlotMemory,
@@ -51,10 +60,10 @@ pub(super) struct Capture<'a> {
     pub scope: &'a Recording<'a>,
     pub arena: &'a mut ActivationArena,
     pub weights: &'a ProgramWeights,
-    pub nvfp4: &'a mut super::nvfp4_gemm::Workspace,
-    pub attention: &'a mut super::attention_decode::Workspace,
-    pub fp8_states: &'a mut super::narrow_kv::NarrowCaches,
-    pub states: &'a mut super::batch::States,
+    pub nvfp4: &'a mut nvfp4_gemm::Workspace,
+    pub attention: &'a mut attention_decode::Workspace,
+    pub fp8_states: &'a mut narrow_kv::NarrowCaches,
+    pub states: &'a mut batch::States,
     pub metadata: Buffer<'a, i32>,
     /// Logical-to-physical KV block ids for the sequence this capture belongs to; kernels
     /// resolve every KV position through it. A program that owns its cache maps it as the
@@ -62,7 +71,7 @@ pub(super) struct Capture<'a> {
     pub table: Buffer<'a, i32>,
     pub external: Buffer<'a, f32>,
     pub capacity: usize,
-    pub fusion: &'a mut Option<super::program::FusionWorkspace>,
+    pub fusion: &'a mut Option<program::FusionWorkspace>,
     pub mode: CaptureMode,
 }
 
@@ -184,7 +193,7 @@ impl Capture<'_> {
     /// node (a prefill graph leaves the logits readout to its `_last` twin).
     pub fn record_program(&mut self, graph: &DataflowGraph, skip_logits: bool) -> Result<()> {
         let quant_plan = (self.mode == CaptureMode::Flat)
-            .then(|| super::nvfp4_gemm::QuantPairPlan::new(graph, self.weights));
+            .then(|| nvfp4_gemm::QuantPairPlan::new(graph, self.weights));
         self.nvfp4.begin_quant_capture();
         let mut record = || {
             for (index, node) in graph.nodes.iter().enumerate() {
@@ -346,7 +355,7 @@ impl Capture<'_> {
         if let Lowering::Quantized(quantized) =
             lower(Format::of(weights), activation, Mode::Single, shape)?
         {
-            return super::nvfp4_gemm::record_certified(
+            return nvfp4_gemm::record_certified(
                 (&self.weights.kernels, self.scope),
                 self.nvfp4,
                 weights,
@@ -358,7 +367,7 @@ impl Capture<'_> {
         }
         #[cfg(test)]
         if self.mode == CaptureMode::Flat
-            && super::small_gemm::precise_dense_enabled()
+            && small_gemm::precise_dense_enabled()
             && output.len() <= input.len().saturating_mul(GEMV_WIDE_OUTPUT_RATIO)
             && let Some(weight) = weights.dense()
         {
@@ -515,8 +524,7 @@ impl Capture<'_> {
         };
         #[cfg(test)]
         #[cfg(feature = "cuda")]
-        let options =
-            super::gated_norm_discovery_tests::model_options(dimension, gated, heads, options);
+        let options = gated_norm_discovery_tests::model_options(dimension, gated, heads, options);
         // Physical funding must not change the automatic target's arithmetic.
         // Match the established full serving pool even when fewer slots fit.
         let normalization_heads = self.normalization_heads(heads)?;

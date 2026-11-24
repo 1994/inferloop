@@ -147,12 +147,9 @@ fn hardware_wide_shared_search_and_cache_reuse() -> Result<()> {
     for lanes in [1024, 2048] {
         let shape = Shape { lanes, ..shape() };
         let session = ResidentTuningSession::for_hardware_validation();
-        let baseline = super::super::exact::validate_and_cache(&device, shape, &session)?;
+        let baseline = exact::validate_and_cache(&device, shape, &session)?;
         assert_eq!(baseline, Choice::RustSimt);
-        assert_eq!(
-            super::super::exact::select(&device, shape, false, &session),
-            baseline
-        );
+        assert_eq!(exact::select(&device, shape, false, &session), baseline);
         let key = key(&device, shape)?;
         let entry = tune(&device, key.clone(), &session)?
             .ok_or_else(|| Error::invalid("wide shared KV offline proof budget expired"))?;

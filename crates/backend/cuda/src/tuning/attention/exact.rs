@@ -1,4 +1,5 @@
 //! Exact Rust SIMT alternatives use the same device-scoped pre-capture tuning contract.
+use super::capture;
 use super::{
     Choice, Key, Shape,
     capture::Captured,
@@ -66,7 +67,7 @@ pub(super) fn key(device: &CudaDevice, shape: Shape) -> Result<Key> {
         hardware: serde_json::to_string(device.profile()?).map_err(device_error)?,
         driver_api: CudaDevice::driver_version()?,
         driver_build,
-        fingerprint: super::capture::native_fingerprint(device, shape)?,
+        fingerprint: capture::native_fingerprint(device, shape)?,
         schema: SCHEMA.into(),
         shape,
     })

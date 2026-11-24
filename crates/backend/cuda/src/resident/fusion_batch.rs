@@ -1,5 +1,6 @@
 //! Exact prompt fusion: original row normalization, then shared-weight F32 projection.
 use super::buffers::buffer;
+use super::program;
 use super::{
     ActivationArena, ProgramWeights,
     batch::BatchBuilder,
@@ -237,7 +238,7 @@ pub(super) fn record(
     if metadata.len() < rows || builder.lane_fusion.len() < rows {
         return Err(error("fusion batch lanes"));
     }
-    let Some(super::program::FusionWeights {
+    let Some(program::FusionWeights {
         projection: ProjectionWeight::Dense(weight),
         ..
     }) = &builder.weights.fusion
@@ -318,7 +319,7 @@ fn record_wide(
         return Err(error("fusion batch external rows"));
     }
     // The owner holds the widest prompt's rows; a narrower rung's grid reads its leading lanes.
-    let Some(super::program::FusionWeights {
+    let Some(program::FusionWeights {
         projection: ProjectionWeight::Dense(weight),
         norms,
         epsilon,

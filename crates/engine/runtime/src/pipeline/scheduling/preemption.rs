@@ -1,13 +1,11 @@
+use super::index;
 use crate::Engine;
 use infer_core::{Error, Result, event::EventKind, event::ObjectKind};
 use infer_spi::{BackendProvider, SchedulingPolicy};
 use std::mem::take;
 
 impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
-    pub(crate) fn preempt_for_progress(
-        &mut self,
-        ready: &mut super::index::ReadyWindow,
-    ) -> Result<()> {
+    pub(crate) fn preempt_for_progress(&mut self, ready: &mut index::ReadyWindow) -> Result<()> {
         if self.preemption_focus.is_some_and(|id| {
             self.host
                 .requests
@@ -52,7 +50,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         &mut self,
         focus: infer_core::RequestId,
         victims: &[infer_core::RequestId],
-        ready: &mut super::index::ReadyWindow,
+        ready: &mut index::ReadyWindow,
     ) -> Result<()> {
         for &victim in victims {
             let r = self

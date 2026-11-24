@@ -4,6 +4,7 @@
 //! [`super::ActivationArena::new_prompt`]) instead of `lanes x vocabulary`, which is most of a
 //! wide prompt arena (2 GB at 2048 lanes for a 248K vocabulary).
 use super::buffers::{RowMajor, buffer};
+use super::nvfp4_gemm;
 use super::projection_lowering::{Format, Lowering, Mode, lower};
 use super::{ActivationArena, ProgramWeights, capture::error};
 use infer_core::Result;
@@ -57,7 +58,7 @@ pub(super) fn record(
     node: &TensorNode,
     arena: &ActivationArena,
     weights: &ProgramWeights,
-    nvfp4: &mut super::nvfp4_gemm::Workspace,
+    nvfp4: &mut nvfp4_gemm::Workspace,
     (row, metadata): (&Allocation<f32>, &Allocation<i32>),
 ) -> Result<()> {
     let quantization = weights
@@ -95,7 +96,7 @@ pub(super) fn record(
     else {
         return Err(error("prompt logits quantized projection"));
     };
-    super::nvfp4_gemm::record_certified(
+    nvfp4_gemm::record_certified(
         (&weights.kernels, scope),
         nvfp4,
         weight,

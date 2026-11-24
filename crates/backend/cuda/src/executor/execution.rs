@@ -1,5 +1,6 @@
 use super::drafter::{Drafter, Verified};
 use super::prefix_state::{DraftSnapshot, ProgramSnapshot};
+use super::profiling;
 use super::profiling::ExecutionPhase;
 use super::{CachedMedia, CudaExecutor, ModelOutput, Sequence, SlotLease, Speculation, prefix};
 use crate::constants::KV_BLOCK_TOKENS;
@@ -388,7 +389,7 @@ impl CudaExecutor {
             if let Ok(allocated_bytes) = allocated
                 && allocated_bytes <= envelope
             {
-                super::profiling::capture_outcome(
+                profiling::capture_outcome(
                     attempt,
                     "accepted",
                     quoted_bytes,
@@ -454,7 +455,7 @@ impl CudaExecutor {
         self.clear_unbound_pool();
         if let Err(error) = self.loaded.device().reclaim_barrier() {
             let message = error.to_string();
-            super::profiling::capture_outcome(
+            profiling::capture_outcome(
                 attempt,
                 "rejected",
                 quoted_bytes,
@@ -470,7 +471,7 @@ impl CudaExecutor {
             tracing::warn!(target: "infer::executor", attempt,
                 reason = self.pool_failure_reason.as_deref().unwrap_or("unknown"),
                 "pooled CUDA capture failed; decoding serially");
-            super::profiling::capture_outcome(
+            profiling::capture_outcome(
                 attempt,
                 "rejected",
                 quoted_bytes,
@@ -483,7 +484,7 @@ impl CudaExecutor {
         };
         let next = pool_retry_budget(funding, quoted_bytes, allocated_bytes, self.kv_block_bytes)
             .min(self.physical_available().unwrap_or(0));
-        super::profiling::capture_outcome(
+        profiling::capture_outcome(
             attempt,
             "rejected",
             quoted_bytes,
@@ -508,24 +509,24 @@ impl CudaExecutor {
         let prompt_width = quote.prompt_width;
         let kv_tokens = quote.kv_tokens;
         let quoted_bytes = quote.total_bytes;
-        super::profiling::plan(attempt, envelope, &quote);
+        profiling::plan(attempt, envelope, &quote);
         tracing::info!(target: "infer::executor", planned_width, prompt_width, quoted_bytes,
             capacity, kv_tokens, "planned pooled CUDA serving storage");
-        super::profiling::memory(attempt, "before_pool", planned_width, self.loaded.device());
+        profiling::memory(attempt, "before_pool", planned_width, self.loaded.device());
         let pool = self.create_slot_pool(capacity, planned_width, kv_tokens)?;
         let width = pool.width();
-        super::profiling::memory(attempt, "target_pool", width, self.loaded.device());
+        profiling::memory(attempt, "target_pool", width, self.loaded.device());
         let head = if self.drafter.wants_pool() {
             self.prepare_draft_pool(width, capacity, Some(kv_tokens))
         } else {
             None
         };
-        super::profiling::memory(attempt, "draft_pool", width, self.loaded.device());
+        profiling::memory(attempt, "draft_pool", width, self.loaded.device());
         let pool = self.slots.insert(pool);
         self.drafter.attach(self.loaded.device(), pool, head)?;
         self.build_homes(attempt, prompt_width);
         self.build_burst(baseline, envelope);
-        super::profiling::memory(attempt, "homes", width, self.loaded.device());
+        profiling::memory(attempt, "homes", width, self.loaded.device());
         if self.worker.is_none()
             || !self.drafter.attached()
             || self.homes.iter().any(Option::is_none)
@@ -655,7 +656,7 @@ impl CudaExecutor {
                 "wide prompt worker unavailable; slot-resident prompts use the narrow graph"
             ),
         }
-        super::profiling::memory(attempt, "worker", pool.width(), self.loaded.device());
+        profiling::memory(attempt, "worker", pool.width(), self.loaded.device());
         for slot in 0..pool.width() {
             // SAFETY: see the expectation above.
             let built = unsafe { self.loaded.slot_programs(pool, self.drafter.pool(), slot) };
@@ -811,7 +812,7 @@ impl CudaExecutor {
             .as_mut()
             .and_then(|worker| worker.bursts.get_mut(rung))
             .ok_or_else(|| Error::invariant("prompt burst"))?;
-        let logits = super::profiling::phase_async(
+        let logits = profiling::phase_async(
             ExecutionPhase::PrefillBurst,
             burst.run_async(device, &lanes),
         )
@@ -868,7 +869,7 @@ impl CudaExecutor {
                 match self.loaded.slot_pool(width, capacity, Some(kv_tokens)) {
                     Ok(pool) => return Ok(pool),
                     Err(error) => {
-                        super::profiling::pool_failure("target", width, capacity, &error);
+                        profiling::pool_failure("target", width, capacity, &error);
                         tracing::debug!(
                             target: "infer::executor",
                             width,
@@ -905,7 +906,7 @@ impl CudaExecutor {
             match self.loaded.draft_slot_pool(width, capacity, kv_tokens) {
                 Ok(pool) => return pool,
                 Err(error) => {
-                    super::profiling::pool_failure("draft", width, capacity, &error);
+                    profiling::pool_failure("draft", width, capacity, &error);
                     self.pool_failure_reason = Some(format!("draft width {width}: {error}"));
                     if !self.reclaim_cached_for_pool(&error) {
                         return None;
@@ -1014,7 +1015,7 @@ impl CudaExecutor {
         newly.extend_from_slice(&homed);
         participants.extend_from_slice(&newly);
         participants.sort_unstable_by_key(|&(index, _)| index);
-        if let Err(error) = super::profiling::phase_async(
+        if let Err(error) = profiling::phase_async(
             ExecutionPhase::SlotDecode,
             slot_replay(
                 (pool, &mut self.drafter),
@@ -1210,7 +1211,7 @@ async fn run_on_worker(
     loaded: &LoadedModel,
     draft: Option<&mut Engine>,
 ) -> Result<ModelOutput> {
-    super::profiling::phase(ExecutionPhase::WorkerLoad, || -> Result<()> {
+    profiling::phase(ExecutionPhase::WorkerLoad, || -> Result<()> {
         worker
             .program
             .copy_state_from(&state.program, state.program.position())?;
@@ -1223,7 +1224,7 @@ async fn run_on_worker(
     let output = state.run(task, loaded, draft).await;
     swap_worker(state, worker);
     let output = output?;
-    super::profiling::phase(ExecutionPhase::WorkerStore, || -> Result<()> {
+    profiling::phase(ExecutionPhase::WorkerStore, || -> Result<()> {
         state
             .program
             .copy_state_from(&worker.program, worker.program.position())?;
@@ -1354,7 +1355,7 @@ async fn slot_speculate(
     outputs: &mut [Option<TaskOutput>],
     width: usize,
 ) -> Result<()> {
-    let proposal = super::profiling::phase_async(
+    let proposal = profiling::phase_async(
         ExecutionPhase::DraftPropose,
         drafter.propose(states, device, tasks, participants, width),
     )
@@ -1378,7 +1379,7 @@ async fn slot_speculate(
     let plain_greedy = participants
         .iter()
         .all(|&(index, _)| tasks[index].plain_greedy);
-    let mut readout = super::profiling::phase_async(ExecutionPhase::Verify, async {
+    let mut readout = profiling::phase_async(ExecutionPhase::Verify, async {
         pool.run_verify_readout_async(device, &lanes, plain_greedy)
             .await
     })
@@ -1743,7 +1744,7 @@ impl Sequence {
             let device_prime = speculate && self.primes_on_device(count);
             let read_hidden = self.readout == OutputReadout::Full || (speculate && !device_prime);
             let results = if count > 1 || ingest {
-                super::profiling::phase_async(ExecutionPhase::PrefillChunk, async {
+                profiling::phase_async(ExecutionPhase::PrefillChunk, async {
                     self.program
                         .prefill_batch_readout_async(
                             &tokens[offset..offset + count],
@@ -1766,7 +1767,7 @@ impl Sequence {
                 next_token = token;
                 rows
             } else {
-                super::profiling::phase_async(ExecutionPhase::PrefillStep, async {
+                profiling::phase_async(ExecutionPhase::PrefillStep, async {
                     self.decode_step(tokens[offset], position, read_logits, read_hidden)
                         .await
                 })
@@ -1797,7 +1798,7 @@ impl Sequence {
             offset += count;
         }
         if device_primed && let Some(spec) = self.speculation.as_mut() {
-            spec.last_hidden = super::profiling::phase_async(
+            spec.last_hidden = profiling::phase_async(
                 ExecutionPhase::PrimeReadback,
                 spec.program.primed_hidden_async(),
             )
@@ -1830,7 +1831,7 @@ impl Sequence {
             draft.stale = true;
             return Ok(());
         }
-        super::profiling::phase_async(
+        profiling::phase_async(
             ExecutionPhase::DraftIngest,
             engine.ingest_prompt(device, &features, count, &mut draft.cursor, position),
         )
@@ -2016,7 +2017,7 @@ impl Sequence {
         position: usize,
         read_hidden: bool,
     ) -> Result<(Vec<(Vec<f32>, Vec<f32>)>, Option<u32>)> {
-        let selected = super::profiling::phase_async(ExecutionPhase::SelectedStep, async {
+        let selected = profiling::phase_async(ExecutionPhase::SelectedStep, async {
             self.program
                 .step_selected_async(token, position, read_hidden)
                 .await
@@ -2108,7 +2109,7 @@ impl Sequence {
         // A host-held row (from decode or a previous host-primed chunk) seeds the draft once;
         // afterwards the draft keeps the previous row on the device.
         let previous = take(&mut spec.last_hidden);
-        super::profiling::phase_async(ExecutionPhase::PrimeDraft, async {
+        profiling::phase_async(ExecutionPhase::PrimeDraft, async {
             spec.program
                 .prime_from_target_async(
                     tokens,

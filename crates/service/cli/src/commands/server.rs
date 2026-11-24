@@ -1,4 +1,6 @@
 //! Server commands.
+#[cfg(cuda_backend)]
+use super::tuning_worker;
 use super::{ServeOptions, axum_serve, backend};
 #[cfg(cuda_backend)]
 use crate::support::flush_logs;
@@ -12,7 +14,7 @@ use tokio::runtime::Runtime;
 
 pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Result<()> {
     #[cfg(cuda_backend)]
-    let (mut backend_choice, tuning_worker) = super::tuning_worker::prepare(backend_choice)?;
+    let (mut backend_choice, tuning_worker) = tuning_worker::prepare(backend_choice)?;
     #[cfg(not(cuda_backend))]
     let mut backend_choice = backend_choice;
     // The server pays the capture before it listens rather than inside its first concurrent
@@ -51,7 +53,7 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
     )?;
     #[cfg(cuda_backend)]
     if tuning_worker {
-        super::tuning_worker::record_prepared(
+        tuning_worker::record_prepared(
             device,
             engine
                 .backend()

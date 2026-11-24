@@ -1,11 +1,15 @@
 #[cfg(target_os = "linux")]
 use super::NumaPolicy;
 use super::ThreadPlacement;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use super::native;
 use crate::constants::MAX_TOPOLOGY_CPUS;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
 use std::fs::read_to_string;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+use std::{num::NonZeroUsize, thread};
 
 /// Byte length of a canonical PCI address (`domain:bus:slot.function`).
 const PCI_ADDRESS_LEN: usize = 12;
@@ -74,11 +78,10 @@ impl CpuTopology {
     /// Returns unavailable affinity/cpuset or malformed OS topology data.
     pub fn discover() -> Result<Self> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let allowed_cpus = super::native::allowed_cpus()?;
+        let allowed_cpus = native::allowed_cpus()?;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let allowed_cpus = (0..std::thread::available_parallelism()
-            .map_or(1, std::num::NonZeroUsize::get))
-            .collect();
+        let allowed_cpus =
+            (0..thread::available_parallelism().map_or(1, NonZeroUsize::get)).collect();
         #[cfg(target_os = "linux")]
         let (physical_cores, allowed_nodes) = (physical_cores(&allowed_cpus)?, allowed_nodes()?);
         #[cfg(not(target_os = "linux"))]

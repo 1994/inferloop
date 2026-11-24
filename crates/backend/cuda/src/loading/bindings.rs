@@ -1,4 +1,6 @@
+use super::experts;
 use super::head_padding::{HeadPadding, rotary_frequencies};
+use super::kv_scales;
 use super::{Draft, LoadOptions, floats, phase};
 use crate::constants::FUSED_VERIFY_LANES;
 use crate::constants::GIB;
@@ -74,7 +76,7 @@ pub(super) fn load(
     match options.kv_cache {
         Some(KvCacheEncoding::Fp8E4m3) => {
             let kv_phase = phase::Phase::start("kv_scales", "uploading KV scales");
-            weights.kv_scales = super::kv_scales::load(package).map_err(|e| kv_phase.fail(&e))?;
+            weights.kv_scales = kv_scales::load(package).map_err(|e| kv_phase.fail(&e))?;
             kv_phase.finish();
         }
         Some(KvCacheEncoding::F16) => {
@@ -148,7 +150,7 @@ fn bind_tensors(
     weights: &mut ProgramWeights,
     padding: &HeadPadding,
 ) -> Result<()> {
-    let (banks, bank_ids) = super::experts::load(device, package)?;
+    let (banks, bank_ids) = experts::load(device, package)?;
     weights.expert_banks = banks;
     let projections: BTreeSet<_> = package
         .graph
