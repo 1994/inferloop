@@ -114,8 +114,4 @@ impl PhysicalTensor {
     }
 }
 #[cfg(test)]
-#[path = "../tests/unit/recurrent_reference.rs"]
-mod recurrent_reference;
-#[cfg(test)]
-#[path = "../tests/unit/physical.rs"]
 mod tests;

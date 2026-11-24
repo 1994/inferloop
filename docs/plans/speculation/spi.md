@@ -149,7 +149,7 @@ ReplaySSM 的具体分层、两阶段范围和持久状态边界由 [Recurrent �
 
 现在它是 `AcceptancePolicy` 枚举 ✓：`Greedy`（只有与验证器 argmax 一致才接受 ✓）与 `Residual`（分歧从残差
 重采样 ✓ —— 正是 capability 里 `greedy_only` 那条注释所依赖的区分 ✓），serde 以 `snake_case` 记录 ✓，
-`Default = Greedy` ✓。三个用例（挂载在 `tests/unit/workload_speculation.rs` ✓，测试体仍在 `src/` 之外 ✓）
+`Default = Greedy` ✓。三个用例（在 `crates/foundation/ir/src/workload/tests.rs` ✓）
 覆盖：按名字往返 ✓、**未知策略被拒绝而不是被带下去** ✓、默认值 ✓。
 
 **这一步的边界要说清楚**：执行 IR 的 `SpeculationPlan` 目前**没有生产者** ✗（方案已把它列为步骤③"provider

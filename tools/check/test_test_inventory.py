@@ -243,10 +243,23 @@ class RoleTest(unittest.TestCase):
 
 
 class RatchetTest(unittest.TestCase):
-    def test_growth_in_src_is_refused(self):
+    def test_inline_growth_in_src_is_refused(self):
         recorded = inventory(src=10)
         problems = module.regressions(inventory(src=11), recorded)
-        self.assertTrue(any("test bodies in src grew" in problem for problem in problems))
+        self.assertTrue(any("inline test entries in src grew" in problem for problem in problems))
+
+    def test_moving_a_mounted_body_next_to_its_module_is_progress(self):
+        recorded = inventory(src=10)
+        recorded["path_mounts"] = [{"crate": "crate-a", "file": "src/a.rs", "mount": "x.rs"}]
+        moved = inventory(src=10)
+        self.assertEqual(module.regressions(moved, recorded), [])
+
+    def test_a_new_path_mount_is_refused(self):
+        recorded = inventory()
+        grown = inventory()
+        grown["path_mounts"] = [{"crate": "crate-a", "file": "src/a.rs", "mount": "x.rs"}]
+        problems = module.regressions(grown, recorded, root=Path("/nonexistent"))
+        self.assertTrue(any("#[path] test mounts grew" in problem for problem in problems))
 
     def test_moving_tests_out_of_src_is_progress(self):
         recorded = inventory(src=10, tests=4)

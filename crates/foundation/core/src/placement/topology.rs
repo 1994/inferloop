@@ -193,5 +193,4 @@ fn physical_cores(cpus: &[usize]) -> Result<Vec<usize>> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/placement_topology.rs"]
 mod tests;

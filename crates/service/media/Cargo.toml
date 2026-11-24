@@ -5,8 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-autotests = false
-
 [[test]]
 name = "source"
 path = "tests/source.rs"

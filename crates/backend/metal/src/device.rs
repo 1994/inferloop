@@ -434,5 +434,4 @@ impl MetalDevice {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/device.rs"]
 mod tests;

@@ -252,9 +252,7 @@ impl WorkloadOutput {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/workload_speculation.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "../tests/unit/workload_decision.rs"]
 mod decision_tests;

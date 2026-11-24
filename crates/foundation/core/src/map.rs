@@ -212,5 +212,4 @@ impl<'de, K: Eq + Hash + Deserialize<'de>, V: Deserialize<'de>> Deserialize<'de>
     }
 }
 #[cfg(test)]
-#[path = "../tests/unit/map.rs"]
 mod tests;

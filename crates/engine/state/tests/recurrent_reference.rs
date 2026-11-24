@@ -6,6 +6,11 @@
 //! reads: they check the recorded geometry, that every recorded value is finite, and that the
 //! recorded replay actually reproduces the last state.
 
+#![expect(
+    clippy::unwrap_used,
+    reason = "the golden-reading helpers run only inside these test cases"
+)]
+
 use serde_json::Value;
 use std::fs::read;
 use std::path::Path;

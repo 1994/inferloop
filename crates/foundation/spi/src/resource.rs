@@ -239,7 +239,4 @@ pub fn execute_resource<B: BackendProvider + ?Sized>(
 }
 
 #[cfg(test)]
-// The case bodies live under `tests/`; the module stays a child of this one so the tests keep
-// access to its private items without opening a product API.
-#[path = "../tests/unit/resource.rs"]
 mod tests;

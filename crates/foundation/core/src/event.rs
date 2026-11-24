@@ -165,5 +165,4 @@ impl EventWriter {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/event.rs"]
 mod tests;

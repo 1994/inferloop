@@ -139,5 +139,4 @@ impl AttentionDescriptor {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/attention_tests.rs"]
 mod tests;

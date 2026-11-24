@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Inventory the Rust test corpus and hold the migration ratchet.
 
-The test-organization plan migrates test bodies out of `src/` into each crate's `tests/`, one host
-integration target per crate, and then removes the two CPU test executors. Before that migration
-the plan requires recording what exists: where each case lives, what it is gated on, and which
-files consume the executors.
+The test-layout plan (`docs/plans/engineering/test-layout.md`) retires the `#[path]` mounts that
+hung private unit tests from `tests/unit/`: a private unit test lives next to the module it tests
+(`src/<module>/tests.rs` or `src/<module>/<name>_tests.rs`, declared with a plain
+`#[cfg(test)] mod ...;`), and a test that needs only the public API is an integration target under
+`tests/`.
 
-This tool records that inventory in `tools/check/test-inventory.json` and enforces the invariants
-that must hold while the migration proceeds:
+This tool records the corpus in `tools/check/test-inventory.json` and enforces the invariants that
+must hold while the migration proceeds:
 
-* no new test entry may appear in `src/` - the recorded count is a ceiling that only moves down;
-* every `#[path = ...]` test mount must resolve and be mounted exactly once;
+* the `#[path = ...]` mounts only shrink, per crate and in total, until none are left;
+* no new inline test entry may appear in a production file under `src/`;
+* every remaining `#[path]` mount must resolve and be mounted exactly once;
 * no new consumer of the CPU test executors or the `test-backends` feature may appear;
 * a change in the collected total must be recorded with `--record`, so a migration that loses
   assertions cannot be mistaken for progress.
@@ -352,21 +354,44 @@ def check_targets(root=REPO_ROOT):
     return problems
 
 
+def mount_growth(inventory, recorded):
+    """`#[path]` test mounts only shrink: the layout plan ends with none."""
+
+    def counts(mounts):
+        per_crate = {}
+        for mount in mounts:
+            per_crate[mount["crate"]] = per_crate.get(mount["crate"], 0) + 1
+        return per_crate
+
+    before, after = counts(recorded["path_mounts"]), counts(inventory["path_mounts"])
+    problems = [
+        f"{crate}: #[path] test mounts grew to {count} from {before.get(crate, 0)}; declare the "
+        "module with a plain `mod` next to the code it tests instead"
+        for crate, count in sorted(after.items())
+        if count > before.get(crate, 0)
+    ]
+    if len(inventory["path_mounts"]) > len(recorded["path_mounts"]):
+        problems.append(
+            f"#[path] test mounts grew to {len(inventory['path_mounts'])} from "
+            f"{len(recorded['path_mounts'])}"
+        )
+    return problems
+
+
 def regressions(inventory, recorded, root=REPO_ROOT):
     """The ratchet: what may not get worse while the migration proceeds."""
     problems = check_mounts(inventory, root) + check_targets(root) + check_orphans(root)
-    if inventory["totals"]["src"] > recorded["totals"]["src"]:
+    if inventory["totals"]["src_inline"] > recorded["totals"]["src_inline"]:
         problems.append(
-            "test bodies in src grew to "
-            f"{inventory['totals']['src']} from {recorded['totals']['src']}; the plan moves them "
-            "into tests/, it does not add more"
+            "inline test entries in src grew to "
+            f"{inventory['totals']['src_inline']} from {recorded['totals']['src_inline']}; put "
+            "cases in the module's `tests.rs` or an integration target instead"
         )
     for crate, entries in inventory["crates"].items():
         before = recorded["crates"].get(crate, {})
-        if entries["src_inline"] + entries["src_near"] > before.get("src_inline", 0) + before.get(
-            "src_near", 0
-        ):
-            problems.append(f"{crate}: test bodies in src grew")
+        if entries["src_inline"] > before.get("src_inline", 0):
+            problems.append(f"{crate}: inline test entries in src grew")
+    problems.extend(mount_growth(inventory, recorded))
     if inventory["totals"]["all"] < recorded["totals"]["all"]:
         problems.append(
             f"collected test entries fell to {inventory['totals']['all']} from "

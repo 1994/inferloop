@@ -5,10 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Unit case bodies live under `tests/`, mounted from the module they test, so they must not
-# be auto-discovered as their own integration targets.
-autotests = false
-
 [lints]
 workspace = true
 

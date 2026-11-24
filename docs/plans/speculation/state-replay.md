@@ -24,7 +24,7 @@ CUDA gated-delta 的 ReplaySSM 物理策略（缓存修正值 u 与 k、检查�
   3 步，记录几何、公式、确定性输入、基点状态、每步状态与输出、容差与理由；重复运行逐字节一致。
 - 同时记录 R1 成立的前提：**从基点重放记录输入能复现最后状态**（`replay_property.holds = true`），
   这正是"提交接受前缀时可以不物化每个候选快照"的依据。
-- `crates/engine/state/tests/unit/recurrent_reference.rs` 把制品绑回代码：几何必须与记录的状态长度
+- `crates/engine/state/tests/recurrent_reference.rs` 把制品绑回代码：几何必须与记录的状态长度
   一致、基点必须为空、每步状态与输出必须有限、最后状态不得等于基点、重放性质必须为真。
 
 CUDA 的 delta 算子接进来后直接对照这份 golden 即可，不必再依赖已删除的执行器。
@@ -35,7 +35,7 @@ CUDA 的 delta 算子接进来后直接对照这份 golden 即可，不必再依
 `infer-workloads`，正是方案表格里"通用接受规则与**独立正确性参考**"所指的位置，也符合刚落地的分层
 门禁（该 crate 的生产依赖只有 core/ir/spi/models）。算术刻意保留原参考的舍入点：状态 f32、累加 f64，
 卷积用**分开的乘加**而非 FMA（否则数值会偏离已记录的 golden，因此带理由的 lint expectation 说明了
-这一点）。`tests/unit/recurrent_reference.rs` 的 6 条用例逐位对比两份 golden（1e-6 以内）并覆盖
+这一点）。`crates/engine/workloads/src/recurrent_reference_tests.rs` 的 6 条用例逐位对比两份 golden（1e-6 以内）并覆盖
 `fold` 的正例与"接受前缀超出记录窗口"的反例。
 
 **Causal conv 的窗口同样已固化**（方案表格里"记录输入，提交时从基点历史与接受输入选取末尾
@@ -51,7 +51,7 @@ R1 的验收要求覆盖"**零提交、首候选拒绝、部分/全接受、padd
 多轮状态传播**"✓。其中**设备/verifier 才有的部分**（拒绝尾部改写、串行/池化、取消、重复完成 ✓）留给
 D2/设备窗口 ✓；**参考层就能证明的部分现在补齐** ✓：
 
-- `crates/engine/workloads/tests/unit/recurrent_reference.rs` 原有"复现记录步"与"全接受 = 记录末态" ✓，
+- `crates/engine/workloads/src/recurrent_reference_tests.rs` 原有"复现记录步"与"全接受 = 记录末态" ✓，
   但**零提交**与**多轮传播**没有覆盖 ✗，而"部分接受"只是 `assert_ne!` ✗（只能说明"不一样" ✗）。
 - 现在对 **Delta 与 Conv 各自**逐一核：`accepted = 0..=n` **每一个前缀**都必须落在该记录点上的状态/窗口 ✓
   （零提交回到 base ✓，全接受回到末态 ✓，中间每个 k 都对齐 ✓）；并核**多轮状态传播** ✓ ——

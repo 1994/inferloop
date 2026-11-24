@@ -171,5 +171,4 @@ impl Debug for CreditLease {
     }
 }
 #[cfg(test)]
-#[path = "../tests/unit/credits.rs"]
 mod tests;

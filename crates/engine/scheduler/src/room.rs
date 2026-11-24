@@ -68,5 +68,4 @@ pub fn next_room_step(facts: &RoomFacts) -> RoomStep {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/room.rs"]
 mod tests;

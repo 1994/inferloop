@@ -20,5 +20,4 @@ pub fn lower_hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/digest.rs"]
 mod tests;

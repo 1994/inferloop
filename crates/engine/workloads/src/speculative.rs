@@ -182,5 +182,4 @@ impl DraftPooling {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/speculative.rs"]
 mod tests;

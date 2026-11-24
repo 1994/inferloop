@@ -57,5 +57,4 @@ impl<K: Eq + Hash + Ord + Clone> BoundedSet<K> {
     }
 }
 #[cfg(test)]
-#[path = "../tests/unit/set.rs"]
 mod tests;
