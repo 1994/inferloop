@@ -53,7 +53,7 @@ kernel 体已经搬到 `infer-cuda-kernels`，host 只保留一个测试专用�
 | `kernels/` | AOT 制品、manifest、编译/重建/校验脚本 | 10 组制品 | artifact | 新增或重建 AOT kernel |
 | `baselines/tuning.json` | 按设备身份缓存的实测配置 | — | artifact | 新增设备或新配置实测 |
 | `examples/` | 16 个设备/模型/诊断入口 | 38 个文件 | 验证 | 新增探针或验收入口 |
-| `tests/` | 单元与支持模块，按 `#[path]` 挂载 | 142 个文件 | 验证 | 新增回归 |
+| `tests/` | 单元与支持模块，按 `#[path]` 挂载（迁移中，见 [测试布局](../plans/engineering/test-layout.md)） | 142 个文件 | 验证 | 新增回归 |
 
 ## 3. 一次 launch 的路径
 

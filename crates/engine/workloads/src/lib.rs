@@ -13,10 +13,8 @@ mod math;
 mod native;
 mod outputs;
 #[cfg(test)]
-#[path = "../tests/unit/recurrent_reference.rs"]
-mod recurrent_reference;
+mod recurrent_reference_tests;
 #[cfg(test)]
-#[path = "../tests/unit/cases.rs"]
 mod tests;
 pub use math::{pool, softmax};
 pub use native::NativeWorkloads;

@@ -75,9 +75,14 @@ For changes across layers, check [code layout](docs/architecture/layout.md) and
 - Resolve borrow conflicts by shortening borrows, splitting fields, or moving values
   with `mem::take`, `mem::replace`, or `Option::take`. Clone only for an intentional
   copy, snapshot, or shared lifetime; keep `Arc` and locks tied to real sharing needs.
-- Keep visibility minimal and exports explicit. Prefer concrete types; introduce
-  generics or `dyn Trait` for actual substitution or heterogeneous storage. Do not add
-  public APIs or product features solely to reach private code from tests.
+- Keep visibility minimal and exports explicit. A public item has one public path: either
+  `pub mod` or a facade `pub use`, not both. Do not re-export another crate's items; callers
+  import them from their own crate. Prefer concrete types; introduce generics or `dyn Trait`
+  for actual substitution or heterogeneous storage. Do not add public APIs or product
+  features solely to reach private code from tests.
+- Name types for what they hold or do (`Bookings`, `PrefixCache`, `RequestDispatcher`), not
+  with filler such as `Manager`, `Service`, `Factory`, `Helper`, or `Util`; lifetimes are
+  governed by ownership and `Drop`, not by a manager object.
 - Derive common traits when their semantics fit. Equality, ordering, and hashing must
   agree; float ordering and tie-breaking must be explicit and deterministic. Keep
   secrets out of `Debug`, `Display`, and logs.
@@ -97,11 +102,21 @@ For changes across layers, check [code layout](docs/architecture/layout.md) and
   and `Cargo.lock`. Follow the numeric-literal policy: non-exempt values become named,
   documented constants. Keep function length at most 100 and cognitive complexity at
   most 25; fix the design instead of raising thresholds or broadly suppressing lints.
+  Override a lint locally with `#[expect(lint, reason = "...")]`, which fails once stale;
+  `#[allow]` is only for generated or macro-expanded code that may or may not trigger it.
+- Cargo features are additive: enabling any combination must not remove or change a public
+  item or depend on another feature being enabled by hand.
+- Avoid `static` and thread-local state whose value affects correctness; pass owned state
+  explicitly. Statics are acceptable only for process-wide caches and counters whose
+  duplication or reset cannot change results.
 - Document public contracts: ownership, preconditions, errors, side effects, and safety
-  obligations. Rustdoc examples should run and propagate errors with `?`. Comments
+  obligations. Start with a one-line summary sentence, then use the canonical `# Errors`,
+  `# Panics`, and `# Safety` sections where they apply, with parameters explained in prose
+  rather than tables. Rustdoc examples should run and propagate errors with `?`. Comments
   explain non-obvious reasons; source files are not design journals or progress logs.
-- Use existing structured `tracing` events for operational logs. Preserve CLI and
-  protocol stdout; do not replace structured diagnostics with `println!` or `dbg!`.
+- Use existing structured `tracing` events for operational logs: values go in named
+  fields, not interpolated into the message string. Preserve CLI and protocol stdout; do
+  not replace structured diagnostics with `println!` or `dbg!`.
 
 ## Resource and request safety
 
@@ -142,8 +157,11 @@ For lifetime changes, follow [request lifecycle](docs/architecture/request-lifec
   spinning need a budget. Callbacks should publish reserved state and wake the owner,
   not allocate or run scheduling logic.
 - `unsafe_code` is denied by default. Keep necessary platform/device FFI in approved,
-  minimal boundaries behind safe APIs. Each unsafe block/impl needs a concrete `SAFETY:`
-  argument covering bounds, initialization, aliasing, lifetime, and synchronization.
+  minimal boundaries behind safe APIs; a safe function must not be able to cause undefined
+  behavior for any input. Mark a function or trait `unsafe` only when misuse can cause
+  undefined behavior, not merely because it is dangerous, and document its `# Safety`
+  obligations. Each unsafe block/impl needs a concrete `SAFETY:` argument covering bounds,
+  initialization, aliasing, lifetime, and synchronization.
 - Check FFI ABI, alignment, nullability, allocation/free ownership, and thread/stream
   affinity. Do not bypass lifetimes with `transmute`, add `unsafe impl Send` to silence
   an error, or let a panic unwind through an incompatible FFI boundary.
@@ -186,11 +204,20 @@ environment variable.
 ## Tests and delivery
 
 - Reproduce bugs with failing tests before fixing them. Test observable behavior,
-  properties, and failure/cleanup paths rather than mirrored branches or constants.
+  properties, and failure/cleanup paths rather than mirrored branches or constants; a
+  test that restates a constant or recomputes the expected value with the code under test
+  passes by construction and is not coverage.
   Preserve API, wire format, checkpoint, and error compatibility unless the task changes them.
-- Put test bodies in the owning crate's `tests/`; mount private unit tests through the
-  existing `#[cfg(test)]`/`#[path]` pattern. Register targets and update the test inventory
-  when collection changes. Do not put new test bodies in `src/` or silently lose cases.
+- Test code must be recognizable from its path alone. Tests that need only the public API
+  go in the owning crate's `tests/` as integration targets. A private unit test lives in its
+  own file next to the module it tests, `src/<module>/tests.rs` or
+  `src/<module>/<name>_tests.rs`, declared with a plain `#[cfg(test)] mod tests;`. Do not
+  write `#[test]` cases inline in production files, mount test files with `#[path]`, or reach
+  across directories with `../`. Shared cross-crate cases and doubles go in dev-only crates
+  under `crates/testing/`. Existing `#[path]` mounts are migrating per the
+  [test layout plan](docs/plans/engineering/test-layout.md); the inventory only lets them
+  shrink. Register targets and update the test inventory when collection changes; do not
+  silently lose cases.
 - Cover relevant feature/target combinations. Use deterministic inputs, bounded waits,
   isolated ports, and reliable cleanup. A selected hardware suite must fail for missing
   devices/fixtures; zero collected or fully ignored tests are not successful acceptance.

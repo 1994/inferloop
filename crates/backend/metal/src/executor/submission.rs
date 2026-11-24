@@ -104,5 +104,4 @@ impl MetalBackend {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/executor_submission.rs"]
 mod tests;

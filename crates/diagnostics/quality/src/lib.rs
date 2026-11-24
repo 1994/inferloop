@@ -1,7 +1,6 @@
 //! Numerical verification, progress contracts and reproducible experiment evidence.
 //! Cold-path verification, progress diagnostics, measurements and experiment gates.
 #[cfg(test)]
-#[path = "../tests/unit/cases.rs"]
 mod tests;
 mod verification;
 pub use verification::{VerificationReport, compare};

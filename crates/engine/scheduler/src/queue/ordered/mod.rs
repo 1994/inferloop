@@ -101,5 +101,4 @@ impl<K: Copy + Ord + Debug> Debug for OrderedSet<K> {
     }
 }
 #[cfg(test)]
-#[path = "../../tests/unit/ordered.rs"]
 mod tests;

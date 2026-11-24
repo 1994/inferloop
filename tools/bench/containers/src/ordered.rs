@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::hint::black_box;
 
 // Exercise the production slab wrapper, including its preallocation and range workaround.
-#[path = "../../../../crates/engine/scheduler/src/queue/ordered.rs"]
+#[path = "../../../../crates/engine/scheduler/src/queue/ordered/mod.rs"]
 mod production;
 use production::OrderedSet;
 type Key = (u64, u64, RequestId, usize);

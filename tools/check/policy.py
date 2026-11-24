@@ -475,7 +475,12 @@ PRODUCTION_ROOTS = ("crates", "tools")
 def is_test_source(path, root):
     """Whether a file is test source, where unwrapping a failed expectation is the point."""
     relative = path.relative_to(root)
-    return "tests" in relative.parts or path.name == "tests.rs" or path.name.startswith("test_")
+    return (
+        "tests" in relative.parts
+        or path.name == "tests.rs"
+        or path.name.endswith("_tests.rs")
+        or path.name.startswith("test_")
+    )
 
 
 def check_production_unwraps(root=ROOT):

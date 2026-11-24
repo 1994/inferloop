@@ -39,5 +39,4 @@ impl Mask {
     }
 }
 #[cfg(test)]
-#[path = "../../../tests/unit/placement_native_mask.rs"]
 mod tests;

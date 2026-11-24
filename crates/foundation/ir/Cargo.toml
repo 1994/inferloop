@@ -5,12 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Unit case bodies live under `tests/`, mounted from the module they test, so they must not
-# be auto-discovered as their own integration targets.
-autotests = false
-
-# `tests/` holds both unit case bodies (mounted from their module) and platform integration
-# tests, so the integration targets are named explicitly while `autotests` stays off.
 [[test]]
 name = "device_timing"
 path = "tests/device_timing.rs"

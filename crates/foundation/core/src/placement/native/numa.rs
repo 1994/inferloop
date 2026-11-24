@@ -74,8 +74,6 @@ impl Policy {
     }
 }
 #[cfg(test)]
-#[path = "../../../tests/unit/placement_native_numa_tests.rs"]
 mod memory_tests;
 #[cfg(test)]
-#[path = "../../../tests/unit/placement_native_numa.rs"]
 mod tests;

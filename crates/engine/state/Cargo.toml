@@ -5,10 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Case bodies under `tests/` are mounted from their module, so `tests/unit` and
-# `tests/support` must not be auto-discovered as integration targets.
-autotests = false
-
 [[test]]
 name = "cache"
 path = "tests/cache.rs"
@@ -20,6 +16,10 @@ path = "tests/kv_manager.rs"
 [[test]]
 name = "prefix_reuse"
 path = "tests/prefix_reuse.rs"
+
+[[test]]
+name = "recurrent_reference"
+path = "tests/recurrent_reference.rs"
 
 [lints]
 workspace = true

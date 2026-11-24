@@ -1,6 +1,6 @@
 # 测试布局：改为 tokio 式
 
-状态：**已决定，未实施**（2026-11-21）。取代 [测试目录方案](tests.md) 中"私有单元测试用 `#[path]` 挂载
+状态：**实施中**（2026-11-21 决定；2026-11-24 完成第 1 批）。取代 [测试目录方案](tests.md) 中"私有单元测试用 `#[path]` 挂载
 `tests/unit/`"的部分；该方案的资源分类、执行入口与用例棘轮继续有效。
 
 ## 背景
@@ -56,9 +56,10 @@ crates/<group>/<crate>/
   src/
     storage/gguf/
       arch.rs                 末尾一行 #[cfg(test)] mod tests;
-      tests/                  私有单元测试（模块名不变，过滤串不变）
-        mod.rs
-        arch.rs
+      arch/
+        tests.rs              arch 的私有单元测试（模块名 arch::tests 不变，过滤串不变）
+      mod.rs                  #[cfg(test)] mod tests;
+      tests.rs                gguf 自己的私有单元测试
   tests/
     <crate>/main.rs           唯一的 host 集成 target，只用公开 API
     <crate>/<domain>.rs
@@ -67,6 +68,11 @@ crates/testing/
   cuda-acceptance/            跨 crate 共享的 CUDA 用例（host 测试与 AOT 示例共用）
   support/                    runtime / frontdoor / agent 的协议替身
 ```
+
+私有单元测试只能是被测模块的子模块（否则拿不到私有项），而 `arch.rs` 里的 `mod tests;` 只会解析到
+`arch/tests.rs` 或 `arch/tests/mod.rs`；不用 `#[path]` 就无法把正文放到同级的 `tests/arch.rs`。所以落点取
+Rust 默认的 `<module>/tests.rs`，非 `tests` 名的测试模块用 `<module>/<name>_tests.rs`：测试文件只看路径就能认出
+（`tests/` 下，或文件名是 `tests.rs` / `*_tests.rs`），生产文件里不写内联 `#[test]`。
 
 规则：
 
@@ -82,9 +88,10 @@ crates/testing/
 
 ## 工具与门禁
 
-- `tools/check/test-inventory.py`：现在的棘轮是"`src` 内测试条目只减不增"且"每个 `#[path]` 挂载必须解析"。
-  改为：测试用 `#[path]` 挂载数只减不增（迁移完成后为 0 并禁止新增）；`src` 内允许的位置限定为
-  `src/**/tests/` 与 `mod tests` 声明；总用例数不得下降（删除需 `--record` 并在 PR 说明）。
+- `tools/check/test-inventory.py`（第 1 批已改）：测试用 `#[path]` 挂载数按 crate 与总数只减不增（迁移完成后为 0
+  并禁止新增）；生产文件内联 `#[test]` 不得增加（当前为 0），`tests.rs` / `*_tests.rs` 近旁文件不受此限；
+  剩余挂载必须解析；总用例数不得下降（删除需 `--record` 并在 PR 说明）。
+- `tools/check/policy.py`（第 1 批已改）：`*_tests.rs` 与 `tests.rs` 一样按测试源码处理。
 - `tools/check/layout.py`：校验 `tests/` 下没有被 `src` 挂载的文件，`crates/testing/*` 只作 dev-dependency。
 - 更新 `docs/architecture/cuda-layers.md` 中"`tests/` 按 `#[path]` 挂载"的描述与 [测试目录方案](tests.md)。
 
@@ -92,8 +99,11 @@ crates/testing/
 
 每个 PR 一组 crate，迁移后 `test-inventory.py` 总数不变、`make check-rust` 通过：
 
-1. 小 crate：core、ir、spi、api、kernel-api、observe、quality、compiler、recipes、media、scheduler、state、
-   workloads、metal（约 50 个文件），顺带修工具规则；
+1. ✓ 小 crate：core、ir、spi、api、kernel-api、observe、quality、compiler、recipes、media、scheduler、state、
+   workloads、metal（46 个文件），顺带修工具规则。45 个移到 `<module>/tests.rs` 或 `<module>/<name>_tests.rs`；
+   `infer-state` 的 recurrent golden 检查不用 crate 任何项，改为集成 target `tests/recurrent_reference.rs`；
+   `infer-workloads` 的 `recurrent_reference` 模块改名 `recurrent_reference_tests`（唯一的过滤串变化）。
+   这些 crate 的 `tests/` 只剩集成 target，`autotests = false` 一并去掉。挂载 290 → 244（含 main 新增的 `digest`），用例总数 1399 不变；
 2. package、cli、agent、runtime、frontdoor（约 70 个文件），抽出 `crates/testing/support`；
 3. cuda-kernels 与 cuda（176 个文件），抽出 `crates/testing/cuda-acceptance`；设备测试按
    [质量门禁](../../guides/quality-gates.md) 在 CUDA 主机上逐进程跑一遍受影响清单。

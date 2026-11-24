@@ -1,5 +1,4 @@
 [package]
-autotests = false
 name = "infer-compiler"
 version.workspace = true
 edition.workspace = true

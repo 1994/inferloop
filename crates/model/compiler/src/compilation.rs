@@ -127,5 +127,4 @@ pub fn compile(
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/compilation.rs"]
 mod tests;

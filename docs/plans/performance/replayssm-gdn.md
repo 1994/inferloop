@@ -126,7 +126,7 @@ conv1d 状态（短窗口）保持现有处理；它很小，不在本方案收�
 
 ## 6. 数值与正确性
 
-- 参考：`examples/recurrent-delta/golden.json` 与 `crates/engine/state/tests/unit/recurrent_reference.rs`
+- 参考：`examples/recurrent-delta/golden.json` 与 `crates/engine/state/tests/recurrent_reference.rs`
   校验已登记的参考制品，逐步递推使用 `crates/engine/workloads/src/recurrent.rs` 的独立参考。
   对同一输入逐项比较每个有效位置的输出、任意接受前缀的状态、flush 后状态与后续输出。
   F32 和 BF16 分别沿用各自的 recurrent 容差，覆盖非零基点、不同 gate 与长序列重复 flush。

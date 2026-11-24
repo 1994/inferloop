@@ -135,5 +135,4 @@ impl<I: StableId, T> Arena<I, T> {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/arena.rs"]
 mod tests;
