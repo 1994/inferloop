@@ -2469,7 +2469,7 @@ impl SlotDecodeGraph {
 
     /// Validate the lane set against the cursors, then stage every slot's metadata for
     /// the next replay. `graph` only retains the metadata writes until that replay.
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "disjoint field borrows of the graph"
     )]

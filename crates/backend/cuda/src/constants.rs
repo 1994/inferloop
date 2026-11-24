@@ -7,104 +7,100 @@ pub const DEFAULT_TILE_ROWS: usize = 16;
 /// Fallback decode GEMV tile when no measurement applies.
 pub const DEFAULT_TILE_COLUMNS: usize = 256;
 
-/// Launch geometry and budget constants for CUDA execution modules.
-mod device {
+// Launch geometry and budget constants for CUDA execution modules.
 
-    /// Middle prompt capture bucket, including quantized recurrent models.
-    pub const MID_PREFILL_LANES: usize = 64;
-    /// Head-major KV cache axes: heads, capacity, head dimension.
-    pub const KV_CACHE_RANK: usize = 3;
-    /// Minimum KV span where split decoding amortizes its reduction.
-    pub const ATTENTION_SPLIT_THRESHOLD: usize = 1024;
-    /// Maximum split attention partitions and their scratch budget.
-    pub const ATTENTION_SPLIT_MAX_PARTS: usize = 16;
-    /// External hidden, embedding and two normalized rows used by draft fusion.
-    pub const MTP_FUSION_ROWS: u64 = 4;
-    /// Maximum row count before MMA replaces the vocabulary GEMV path.
-    pub const SMALL_GEMV_MAX_ROWS: usize = 4;
-    /// Vocabulary-like expansion ratio where narrow-batch GEMV remains useful.
-    pub const GEMV_WIDE_OUTPUT_RATIO: usize = 4;
-    /// Tokens per KV block. Step 1 of the KV refactor uses it only to resolve a position through
-    /// the sequence's block table; a real allocator will later hand these blocks out across
-    /// sequences. It matches the attention kernels' 32-token KV tile, so a block is one tile.
-    pub const KV_BLOCK_TOKENS: usize = 32;
-    /// Column block of a block-scaled FP8 GEMM: one scale covers this many input columns.
-    pub const FP8_BLOCK_COLUMNS: usize = 128;
-    /// Packed activation codes written by one NVFP4 quantization block.
-    pub const NVFP4_QUANT_CODES_TILE: [usize; 2] = [1, 256];
-    /// Activation scales written by one NVFP4 quantization block.
-    pub const NVFP4_QUANT_SCALES_TILE: [usize; 2] = [1, 32];
-    /// QKV, beta and alpha activation inputs to gated delta recurrence.
-    pub const GDN_PROJECTED_INPUTS: usize = 3;
-    /// Fallback decode GEMV tile used by the untiled `matvec` entry point.
-    pub const MATVEC_TILE_ROWS: usize = 4;
-    /// Fallback decode GEMV tile used by the untiled `matvec` entry point.
-    pub const MATVEC_TILE_COLUMNS: usize = 128;
-    /// One MiB in bytes, for readable budget expressions.
-    pub const MIB: usize = 1024 * 1024;
-    /// One GiB in bytes, for device-memory budget expressions.
-    pub const GIB: usize = 1024 * MIB;
-    /// Bytes per F32 element on device and in pinned host readbacks.
-    pub const F32_BYTES: usize = size_of::<f32>();
-    /// Elementwise and fused kernels process one tile of this many elements per block.
-    pub const AUX_KERNEL_TILE: usize = 256;
-    /// Tokens per batched prefill graph; the GEMM M tile matches the lane count.
-    pub const PREFILL_LANES: usize = 32;
-    /// Largest automatically selected prompt batch, bounded by the activation budget.
-    pub const MAX_PREFILL_LANES: usize = 128;
-    /// Rung above `MAX_PREFILL_LANES`, taken only when the activation arena has room.
-    ///
-    /// A wider prompt graph is arithmetically identical to several narrower chunks because keys and
-    /// values always pass through the cache and the GEMM accumulates per element over K, and the
-    /// measured history agrees: 128 lanes matched two 64-lane chunks exactly and cut long-prompt
-    /// TTFT 13% by turning eight replays into four.
-    pub const WIDE_PREFILL_LANES: usize = 256;
-    /// Prompt rung above `WIDE_PREFILL_LANES`, taken only when the arena funds it.
-    pub const EXTRA_WIDE_PREFILL_LANES: usize = 512;
-    /// Prompt rung above `EXTRA_WIDE_PREFILL_LANES`, taken only when the arena funds it.
-    pub const WIDER_PREFILL_LANES: usize = 1024;
-    /// Widest prompt rung, matching vLLM's 2048-token prefill step.
-    pub const WIDEST_PREFILL_LANES: usize = 2048;
-    /// Column tile of the batched prefill GEMM.
-    pub const PREFILL_GEMM_TILE_N: usize = 64;
-    /// K tile of the batched prefill GEMM: columns of input per loop iteration.
-    pub const PREFILL_GEMM_TILE_K: usize = 64;
-    /// Output column tile of the fixed split-K NVFP4 prompt kernel, matching its MMA shape;
-    /// narrower tiles shrink every MMA and multiply the instruction count.
-    pub const PREFILL_NVFP4_TILE_N: usize = 64;
-    /// K-windows the fixed NVFP4 prompt kernel splits across CTAs before its reduction pass.
-    /// The split count fixes the F32 accumulation order, so it is part of that path's numeric
-    /// contract rather than a measured tuning choice; it also sizes the partials scratch.
-    pub const PREFILL_SPLIT_K: usize = 4;
-    /// Candidates verified by the fused shared-weight GEMV.
-    pub const FUSED_VERIFY_LANES: usize = 3;
-    /// Maximum draft candidates accepted by the verification graph builder.
-    pub const MAX_VERIFICATION_WIDTH: usize = 9;
-    /// Maximum speculative draft depth accepted when loading an MTP model. The verify batch
-    /// carries the submitted token plus every candidate, so the depth is bounded by its width.
-    pub const MAX_MTP_DEPTH: usize = MAX_VERIFICATION_WIDTH - 1;
-    /// Target positions the MTP draft's KV cache lags behind, matching the draft head's
-    /// `kv_offset`: the draft attends to the position before the token it consumes.
-    pub const MTP_KV_OFFSET: usize = 1;
-    /// Per-lane metadata carries position, token, KV position and the external-hidden flag.
-    pub const METADATA_FIELDS: usize = 4;
-    /// Tap count of the hybrid mixer convolution kernel.
-    pub const CONV_KERNEL_SIZE: usize = 4;
-    /// Stateful conv taps retained per mixer; the current input is separate.
-    pub const CONV_STATE_TENSORS: usize = 3;
-    /// Convolution kernels process one tile of channels per block.
-    #[cfg(test)]
-    #[cfg(feature = "cuda")]
-    pub const CONV_KERNEL_TILE: usize = 128;
-    /// Hidden size bound for resident programs.
-    pub const MAX_HIDDEN_SIZE: usize = 32768;
-    /// Legacy normalization and exact-projection reference geometry. This is not the
-    /// automatic serving concurrency; retain its arithmetic for compatibility.
-    pub const CB_DECODE_SLOTS: usize = 16;
-    /// Shared pools cannot exceed the protocol's completion-cell capacity.
-    pub const MAX_POOL_SLOTS: usize = infer_gpu_api::MAX_SUBMISSION_BATCH;
-    /// Metadata state-position sentinel masking one lane's state writes in a batched replay.
-    pub const INACTIVE_LANE_STATE_POSITION: i32 = -1;
-}
-
-pub use device::*;
+/// Middle prompt capture bucket, including quantized recurrent models.
+pub const MID_PREFILL_LANES: usize = 64;
+/// Head-major KV cache axes: heads, capacity, head dimension.
+pub const KV_CACHE_RANK: usize = 3;
+/// Minimum KV span where split decoding amortizes its reduction.
+pub const ATTENTION_SPLIT_THRESHOLD: usize = 1024;
+/// Maximum split attention partitions and their scratch budget.
+pub const ATTENTION_SPLIT_MAX_PARTS: usize = 16;
+/// External hidden, embedding and two normalized rows used by draft fusion.
+pub const MTP_FUSION_ROWS: u64 = 4;
+/// Maximum row count before MMA replaces the vocabulary GEMV path.
+pub const SMALL_GEMV_MAX_ROWS: usize = 4;
+/// Vocabulary-like expansion ratio where narrow-batch GEMV remains useful.
+pub const GEMV_WIDE_OUTPUT_RATIO: usize = 4;
+/// Tokens per KV block. Step 1 of the KV refactor uses it only to resolve a position through
+/// the sequence's block table; a real allocator will later hand these blocks out across
+/// sequences. It matches the attention kernels' 32-token KV tile, so a block is one tile.
+pub const KV_BLOCK_TOKENS: usize = 32;
+/// Column block of a block-scaled FP8 GEMM: one scale covers this many input columns.
+pub const FP8_BLOCK_COLUMNS: usize = 128;
+/// Packed activation codes written by one NVFP4 quantization block.
+pub const NVFP4_QUANT_CODES_TILE: [usize; 2] = [1, 256];
+/// Activation scales written by one NVFP4 quantization block.
+pub const NVFP4_QUANT_SCALES_TILE: [usize; 2] = [1, 32];
+/// QKV, beta and alpha activation inputs to gated delta recurrence.
+pub const GDN_PROJECTED_INPUTS: usize = 3;
+/// Fallback decode GEMV tile used by the untiled `matvec` entry point.
+pub const MATVEC_TILE_ROWS: usize = 4;
+/// Fallback decode GEMV tile used by the untiled `matvec` entry point.
+pub const MATVEC_TILE_COLUMNS: usize = 128;
+/// One MiB in bytes, for readable budget expressions.
+pub const MIB: usize = 1024 * 1024;
+/// One GiB in bytes, for device-memory budget expressions.
+pub const GIB: usize = 1024 * MIB;
+/// Bytes per F32 element on device and in pinned host readbacks.
+pub const F32_BYTES: usize = size_of::<f32>();
+/// Elementwise and fused kernels process one tile of this many elements per block.
+pub const AUX_KERNEL_TILE: usize = 256;
+/// Tokens per batched prefill graph; the GEMM M tile matches the lane count.
+pub const PREFILL_LANES: usize = 32;
+/// Largest automatically selected prompt batch, bounded by the activation budget.
+pub const MAX_PREFILL_LANES: usize = 128;
+/// Rung above `MAX_PREFILL_LANES`, taken only when the activation arena has room.
+///
+/// A wider prompt graph is arithmetically identical to several narrower chunks because keys and
+/// values always pass through the cache and the GEMM accumulates per element over K, and the
+/// measured history agrees: 128 lanes matched two 64-lane chunks exactly and cut long-prompt
+/// TTFT 13% by turning eight replays into four.
+pub const WIDE_PREFILL_LANES: usize = 256;
+/// Prompt rung above `WIDE_PREFILL_LANES`, taken only when the arena funds it.
+pub const EXTRA_WIDE_PREFILL_LANES: usize = 512;
+/// Prompt rung above `EXTRA_WIDE_PREFILL_LANES`, taken only when the arena funds it.
+pub const WIDER_PREFILL_LANES: usize = 1024;
+/// Widest prompt rung, matching vLLM's 2048-token prefill step.
+pub const WIDEST_PREFILL_LANES: usize = 2048;
+/// Column tile of the batched prefill GEMM.
+pub const PREFILL_GEMM_TILE_N: usize = 64;
+/// K tile of the batched prefill GEMM: columns of input per loop iteration.
+pub const PREFILL_GEMM_TILE_K: usize = 64;
+/// Output column tile of the fixed split-K NVFP4 prompt kernel, matching its MMA shape;
+/// narrower tiles shrink every MMA and multiply the instruction count.
+pub const PREFILL_NVFP4_TILE_N: usize = 64;
+/// K-windows the fixed NVFP4 prompt kernel splits across CTAs before its reduction pass.
+/// The split count fixes the F32 accumulation order, so it is part of that path's numeric
+/// contract rather than a measured tuning choice; it also sizes the partials scratch.
+pub const PREFILL_SPLIT_K: usize = 4;
+/// Candidates verified by the fused shared-weight GEMV.
+pub const FUSED_VERIFY_LANES: usize = 3;
+/// Maximum draft candidates accepted by the verification graph builder.
+pub const MAX_VERIFICATION_WIDTH: usize = 9;
+/// Maximum speculative draft depth accepted when loading an MTP model. The verify batch
+/// carries the submitted token plus every candidate, so the depth is bounded by its width.
+pub const MAX_MTP_DEPTH: usize = MAX_VERIFICATION_WIDTH - 1;
+/// Target positions the MTP draft's KV cache lags behind, matching the draft head's
+/// `kv_offset`: the draft attends to the position before the token it consumes.
+pub const MTP_KV_OFFSET: usize = 1;
+/// Per-lane metadata carries position, token, KV position and the external-hidden flag.
+pub const METADATA_FIELDS: usize = 4;
+/// Tap count of the hybrid mixer convolution kernel.
+pub const CONV_KERNEL_SIZE: usize = 4;
+/// Stateful conv taps retained per mixer; the current input is separate.
+pub const CONV_STATE_TENSORS: usize = 3;
+/// Convolution kernels process one tile of channels per block.
+#[cfg(test)]
+#[cfg(feature = "cuda")]
+pub const CONV_KERNEL_TILE: usize = 128;
+/// Hidden size bound for resident programs.
+pub const MAX_HIDDEN_SIZE: usize = 32768;
+/// Legacy normalization and exact-projection reference geometry. This is not the
+/// automatic serving concurrency; retain its arithmetic for compatibility.
+pub const CB_DECODE_SLOTS: usize = 16;
+/// Shared pools cannot exceed the protocol's completion-cell capacity.
+pub const MAX_POOL_SLOTS: usize = infer_gpu_api::MAX_SUBMISSION_BATCH;
+/// Metadata state-position sentinel masking one lane's state writes in a batched replay.
+pub const INACTIVE_LANE_STATE_POSITION: i32 = -1;

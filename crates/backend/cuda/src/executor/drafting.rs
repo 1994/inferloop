@@ -127,7 +127,7 @@ fn eligible(state: &Sequence, task: &ExecutionTask, width: usize) -> bool {
 }
 
 /// Restore accepted draft timelines using target hidden rows, including full acceptance.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "mirrors the pooled execution transaction"
 )]
