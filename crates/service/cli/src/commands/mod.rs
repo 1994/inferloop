@@ -7,7 +7,11 @@ use crate::{
 };
 
 mod options;
-pub use options::*;
+pub use options::{
+    AgentOptions, BenchmarkOptions, CompareOptions, ImageDecoder, InspectModelOptions,
+    InspectPackageOptions, ProfileOptions, ReplayOptions, RunOptions, ServeOptions,
+    TokenizeOptions, VerifyOptions,
+};
 
 #[cfg(any(all(test, unix), cuda_backend))]
 mod tuning_worker;
