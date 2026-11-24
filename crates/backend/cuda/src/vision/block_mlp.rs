@@ -10,7 +10,6 @@ use infer_cuda_kernels::runtime::Allocation;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/vision_block_mlp.rs"]
 mod tests;
 
 /// Keep both projections and the GELU output on the device until the residual is added.

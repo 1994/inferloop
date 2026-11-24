@@ -54,5 +54,4 @@ pub(super) fn record(
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_conv_prefill.rs"]
 mod tests;

@@ -218,5 +218,4 @@ fn cubic(value: f64) -> f64 {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/vision_image_axis.rs"]
 mod tests;

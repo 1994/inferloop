@@ -1,6 +1,6 @@
 # 测试布局：改为 tokio 式
 
-状态：**实施中**（2026-11-21 决定；2026-11-24 完成第 1 批）。取代 [测试目录方案](tests.md) 中"私有单元测试用 `#[path]` 挂载
+状态：**已完成**（2026-11-21 决定；2026-11-24 三批迁移完成）。取代 [测试目录方案](tests.md) 中"私有单元测试用 `#[path]` 挂载
 `tests/unit/`"的部分；该方案的资源分类、执行入口与用例棘轮继续有效。
 
 ## 背景
@@ -108,8 +108,12 @@ Rust 默认的 `<module>/tests.rs`，非 `tests` 名的测试模块用 `<module>
    `openai/tests/`）；runtime 的协议替身抽成 dev-only crate `infer-test-support`（`crates/testing/cpu/support`），
    runtime/agent/frontdoor 用 dev-dependency 引入，不再跨 crate `#[path]` 挂载；runtime 的 `runner` 改为目录 target
    `tests/runner/main.rs`；移动文件里的相对 `include_bytes!` 改为 `CARGO_MANIFEST_DIR` 形式。挂载 244 → 177，用例总数不变；
-3. cuda-kernels 与 cuda（176 个文件），抽出 `crates/testing/cuda-acceptance`；设备测试按
-   [质量门禁](../../guides/quality-gates.md) 在 CUDA 主机上逐进程跑一遍受影响清单。
+3. ✓ cuda-kernels 与 cuda：172 个挂载文件移到被测模块旁（嵌套挂载落在 `<module>/tests/`）；5 个共享验收用例抽成
+   dev-only crate `infer-cuda-acceptance`（`crates/testing/cpu/cuda-acceptance`），cuda 主机测试与 AOT 示例共用；
+   20 个名字不带 `tests` 的测试模块（`gate`、`check`、`tensors`、`test_support` 等）改名为 `*_tests`，attention
+   gate 的过滤串随之改为 `attention::gate_tests::attention_native_gate`；删除 72205f1b 起已无模块挂载、从未运行的
+   `tuning_recurrent_exact.rs`（2 条用例）。只移动文件、不改设备行为，设备测试未重跑；CUDA clippy 与 hosted 测试在
+   CUDA 主机上通过。测试挂载 177 → 0（剩下的唯一 `#[path]` 是 cli 的产品替代实现 `cuda_unavailable.rs`）。
 
 #290 分支（`refactor/unit-tests-next-to-modules`）已做过机械移动和两个共享 crate，可复用其脚本与
 `crates/testing` 部分。

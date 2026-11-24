@@ -104,5 +104,4 @@ pub(super) fn record(
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../../tests/unit/resident_recurrent_scan_tiling.rs"]
 mod scan_tiling_tests;

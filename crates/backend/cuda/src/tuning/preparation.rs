@@ -97,5 +97,4 @@ pub fn record_prepared(invocation: &[Vec<u8>], ordinal: usize, width: usize) {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/tuning_preparation.rs"]
 mod tests;

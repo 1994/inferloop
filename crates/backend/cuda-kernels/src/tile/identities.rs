@@ -188,5 +188,4 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/tile_identities.rs"]
 mod tests;

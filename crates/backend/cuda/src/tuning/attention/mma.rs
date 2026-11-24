@@ -451,5 +451,4 @@ fn tune(
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/tuning_attention_mma.rs"]
 mod tests;

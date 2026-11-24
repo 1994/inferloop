@@ -1462,6 +1462,7 @@ dependencies = [
  "futures-channel",
  "infer-compiler",
  "infer-core",
+ "infer-cuda-acceptance",
  "infer-cuda-kernels",
  "infer-format",
  "infer-gpu-api",
@@ -1570,6 +1571,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "infer-cuda-acceptance"
+version = "0.1.0"
+
+[[package]]
 name = "infer-cuda-kernels"
 version = "0.1.0"
 dependencies = [
@@ -1577,6 +1582,7 @@ dependencies = [
  "cutile",
  "half",
  "infer-core",
+ "infer-cuda-acceptance",
  "infer-ir",
  "libloading 0.9.1",
  "serde",

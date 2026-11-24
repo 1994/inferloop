@@ -1091,5 +1091,4 @@ fn add(a: u64, b: u64) -> Result<u64> {
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/loading_budget.rs"]
 mod tests;

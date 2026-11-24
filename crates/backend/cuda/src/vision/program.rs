@@ -8,10 +8,10 @@ use super::{
 };
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-use crate::attention::benchmark::REPEATS;
+use crate::attention::benchmark_tests::REPEATS;
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-use crate::attention::benchmark::measure;
+use crate::attention::benchmark_tests::measure;
 use crate::attention::tile_rows;
 use crate::device::vision_position::DeviceTaps;
 use crate::device::{CudaDevice, device_error};
@@ -33,7 +33,6 @@ use infer_spi::ModalityEncoder;
 use std::env::var;
 
 #[cfg(test)]
-#[path = "../../tests/unit/vision_projection_output.rs"]
 mod projection_output_tests;
 
 /// Token tile of every vision projection, matching the prompt GEMM.

@@ -391,5 +391,4 @@ pub fn argmax(logits: &[f32]) -> Result<u32> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/vision_session.rs"]
 mod tests;

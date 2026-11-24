@@ -11,7 +11,6 @@ use infer_cuda_kernels::runtime::bf16;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/vision_position.rs"]
 mod tests;
 
 /// Bilinear interpolation takes two taps on each image axis.

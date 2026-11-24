@@ -29,10 +29,8 @@ pub use infer_cuda_kernels::tile::attention::resident_attention_prefill as kerne
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_attention_prefill.rs"]
 mod tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_prefill_page_append.rs"]
 mod page_tests;

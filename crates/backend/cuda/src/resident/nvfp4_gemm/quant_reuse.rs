@@ -353,5 +353,4 @@ pub fn with_quant_reuse_disabled<T>(run: impl FnOnce() -> T) -> T {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/resident_quant_reuse_plan.rs"]
 mod tests;

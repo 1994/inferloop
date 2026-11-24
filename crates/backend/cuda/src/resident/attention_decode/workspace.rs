@@ -28,8 +28,7 @@ use std::collections::BTreeSet;
 use std::mem::swap;
 
 #[cfg(test)]
-#[path = "../../../tests/unit/resident_attention_prefill_taps.rs"]
-pub mod taps;
+pub mod taps_tests;
 
 pub use infer_cuda_kernels::contract::VERIFY_LANES;
 pub(super) use infer_cuda_kernels::contract::{STACKED_LANE_ROWS, STACKED_ROWS};
@@ -62,7 +61,7 @@ pub struct Workspace {
     vector: Option<super::super::attention_oxide::Support>,
     combined: Option<super::super::attention_oxide::Support>,
     #[cfg(test)]
-    pub taps: taps::Taps,
+    pub taps: taps_tests::Taps,
     buffers: BTreeMap<(usize, usize), Buffers>,
     pub(super) pooled: Option<super::pooled::Workspace>,
     prefill: BTreeMap<(TensorId, usize), Choice>,
@@ -133,7 +132,7 @@ impl Workspace {
         }
         Ok(Self {
             #[cfg(test)]
-            taps: taps::Taps::default(),
+            taps: taps_tests::Taps::default(),
             oxide_available: super::super::attention_oxide::Support::eligible(device, graph),
             mma: None,
             mma_f16: None,
@@ -242,7 +241,7 @@ impl Workspace {
     ) {
         let enabled = attention_enabled();
         #[cfg(test)]
-        let enabled = enabled || taps::forced_choice().is_some();
+        let enabled = enabled || taps_tests::forced_choice().is_some();
         if !enabled && !self.oxide_available && self.mma.is_none() && self.mma_f16.is_none() {
             self.prefill.retain(|(_, width), _| *width != lanes);
             self.precise_prefill.retain(|(_, width), _| *width != lanes);
@@ -307,8 +306,8 @@ impl Workspace {
             });
             #[cfg(test)]
             let (choice, precise) = (
-                taps::forced_choice().unwrap_or(choice),
-                taps::forced_choice().unwrap_or(precise),
+                taps_tests::forced_choice().unwrap_or(choice),
+                taps_tests::forced_choice().unwrap_or(precise),
             );
             self.prefill.insert((node.outputs[0], lanes), choice);
             self.precise_prefill
@@ -344,7 +343,7 @@ impl Workspace {
         let baseline = vector_select(device, shape, false, &weights.resident_tuning, baseline);
         let baseline = vector_combined_select(device, shape, baseline);
         #[cfg(test)]
-        if taps::forced_choice().is_some() {
+        if taps_tests::forced_choice().is_some() {
             return (baseline, baseline);
         }
         let selected = if self.mma.is_some() {

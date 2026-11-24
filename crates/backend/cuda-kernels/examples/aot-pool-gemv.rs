@@ -4,8 +4,7 @@
     reason = "Makes contract buffers from allocations owned by this function"
 )]
 
-#[path = "../acceptance/pool_gemv.rs"]
-mod acceptance;
+use infer_cuda_acceptance::pool_gemv as acceptance;
 
 use acceptance::{Case, OUTPUTS, ROWS};
 use infer_cuda_kernels::aot::{AotProjection, Device};

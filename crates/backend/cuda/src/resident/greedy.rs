@@ -154,5 +154,4 @@ impl Greedy {
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_greedy.rs"]
 mod tests;

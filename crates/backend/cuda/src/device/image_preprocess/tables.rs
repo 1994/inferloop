@@ -108,5 +108,4 @@ fn to_usize(value: i32) -> Result<usize> {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/vision_image_tables.rs"]
 mod tests;

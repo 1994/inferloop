@@ -246,5 +246,4 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
     Ok(Some(entry))
 }
 #[cfg(test)]
-#[path = "../../../tests/unit/tuning_attention_vector.rs"]
 mod tests;

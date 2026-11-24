@@ -1928,5 +1928,4 @@ mod draft;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_slot_batch_draft_tests.rs"]
 mod draft_tests;

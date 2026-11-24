@@ -333,5 +333,4 @@ impl Model {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/model_smoke_bindings.rs"]
 mod tests;

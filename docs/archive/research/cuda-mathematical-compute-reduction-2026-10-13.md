@@ -60,7 +60,7 @@ norm 和 cache 操作；prefill 和 decode 的有效行数也不同。
 也不改变最终 chunk 的行数。两个对照程序保留相同 arena 和额外图，避免 admission 干扰。
 
 [内部规划器](../../../crates/backend/cuda/src/resident/prefill_demand.rs)仅编译进 CUDA 单元测试，
-没有生产环境变量或 CLI 开关。[完整模型检查](../../../crates/backend/cuda/tests/unit/resident_prefill_demand_model.rs)
+没有生产环境变量或 CLI 开关。[完整模型检查](../../../crates/backend/cuda/src/loading/prefill_demand_model_tests.rs)
 在默认 scalar recurrent、MTP=0、冻结权重/tokens/tuning 下，对宽度 64/256 和长度
 51/64/255/256/511 比较全部 F32 状态、FP8 KV、完整最终 logits、每个长度后 8 步完整
 hidden/logits 与 greedy 选择；均逐位一致，hidden readout 的完整图回退也通过。

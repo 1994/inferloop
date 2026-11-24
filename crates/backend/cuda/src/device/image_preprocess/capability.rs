@@ -61,5 +61,4 @@ impl ImagePreprocessing for DeviceCapability {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/vision_image_capability.rs"]
 mod tests;

@@ -359,5 +359,4 @@ impl ProjectionWeight {
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/projection_tensors.rs"]
-mod tensors;
+mod tensors_tests;

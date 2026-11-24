@@ -8,7 +8,6 @@ use std::cell::Cell;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_small_gemm.rs"]
 mod tests;
 
 /// Internal A/B selection; failed candidates cannot be enabled in a production build.

@@ -52,5 +52,4 @@ pub fn grouped_parts_for(
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/resident_attention_decode_workspace.rs"]
 mod tests;

@@ -101,5 +101,4 @@ pub fn workspace_bytes(capacity: usize, lanes: usize) -> Result<usize> {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/resident_attention_mma_catalog.rs"]
 mod tests;

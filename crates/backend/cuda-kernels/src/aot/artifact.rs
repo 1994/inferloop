@@ -114,5 +114,4 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/aot_artifact.rs"]
 mod tests;

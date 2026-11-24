@@ -27,5 +27,4 @@ pub fn for_model(capacity: usize, model_limit: usize) -> Result<usize> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/resident_capacity.rs"]
 mod tests;

@@ -237,5 +237,4 @@ const fn disjoint(a: Option<Range<u64>>, b: Option<Range<u64>>) -> bool {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/contract_buffer.rs"]
 mod tests;

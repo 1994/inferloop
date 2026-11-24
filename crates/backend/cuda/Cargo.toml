@@ -5,10 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Case bodies under `tests/` are mounted from their module, so `tests/unit` and
-# `tests/support` must not be auto-discovered as integration targets.
-autotests = false
-
 [lints]
 workspace = true
 
@@ -59,6 +55,7 @@ libloading.workspace = true
 futures-channel = { workspace = true, optional = true }
 
 [dev-dependencies]
+infer-cuda-acceptance.workspace = true
 infer-format.workspace = true
 infer-models.workspace = true
 infer-runtime.workspace = true

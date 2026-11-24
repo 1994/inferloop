@@ -227,5 +227,4 @@ const fn rows_lowering(
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/projection_lowering.rs"]
 mod tests;

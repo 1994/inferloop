@@ -395,5 +395,4 @@ impl ProjectionWeight {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/loading_e4m3.rs"]
 mod tests;

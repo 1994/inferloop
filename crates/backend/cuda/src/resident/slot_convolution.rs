@@ -106,5 +106,4 @@ pub fn with_row_reference<T>(run: impl FnOnce() -> T) -> T {
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_slot_convolution.rs"]
 mod tests;

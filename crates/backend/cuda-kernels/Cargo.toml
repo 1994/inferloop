@@ -7,7 +7,6 @@ license.workspace = true
 
 # Kernel bodies live in their own crate, separate from host graphs and tuning. `tile` needs CUDA
 # 13.x; `aot` needs no toolkit, so a device without cuTile builds with `aot` alone.
-autotests = false
 
 [lints]
 workspace = true
@@ -29,6 +28,9 @@ half = { workspace = true, optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 cutile = { workspace = true, optional = true }
 cuda-core = { workspace = true, optional = true }
+
+[dev-dependencies]
+infer-cuda-acceptance.workspace = true
 
 [[example]]
 name = "aot-pool-gemv"

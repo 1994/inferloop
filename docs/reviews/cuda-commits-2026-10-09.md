@@ -44,7 +44,7 @@ FP8 workspace 只以 `(rows, columns)` 为 key，但 per-channel 与 block-scale
 
 ## P2 投影对照在预热之前捕获 cuBLAS
 
-位置：[bench_check.rs](../../crates/backend/cuda/tests/unit/resident_prefill_gemm_bench_check.rs) 第 65–86 行；对照生产路径的 [cublaslt.rs](../../crates/backend/cuda/src/device/cublaslt.rs) 第 335–339 行和 [program.rs](../../crates/backend/cuda/src/resident/program.rs) 第 362 行、第 967 行起。相关提交：`fd32ec5`、`ac7988b`。
+位置：[bench_check.rs](../../crates/backend/cuda/src/resident/prefill_gemm/bench_check_tests.rs) 第 65–86 行；对照生产路径的 [cublaslt.rs](../../crates/backend/cuda/src/device/cublaslt.rs) 第 335–339 行和 [program.rs](../../crates/backend/cuda/src/resident/program.rs) 第 362 行、第 967 行起。相关提交：`fd32ec5`、`ac7988b`。
 
 对照用例先创建包含 vendor GEMM 的 `gemm_graph`，随后才重放图进行 warmup。新进程首次遇到配置时，cuBLAS 可能需要在主机侧初始化算法或 workspace；图捕获期间不允许这类工作。捕获后的 warmup 无法解决发生在捕获阶段的失败。
 

@@ -89,5 +89,4 @@ pub(super) fn lower(mode: Mode, window: Option<usize>, prepared: Prepared) -> Lo
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/attention_lowering.rs"]
 mod tests;

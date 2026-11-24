@@ -1395,7 +1395,7 @@ impl DeviceProgram {
 
     #[cfg(test)]
     #[cfg(feature = "cuda")]
-    pub(crate) const fn attention_taps(&self) -> &super::attention_decode::taps::Taps {
+    pub(crate) const fn attention_taps(&self) -> &super::attention_decode::taps_tests::Taps {
         &self.attention.taps
     }
 

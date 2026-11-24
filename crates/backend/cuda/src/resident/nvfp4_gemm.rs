@@ -77,20 +77,16 @@ fn record_input(
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_nvfp4_gemm.rs"]
 mod tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_nvfp4_pipeline.rs"]
 mod pipeline_tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_vendor_fp8.rs"]
 mod vendor_tests;
 
 #[cfg(test)]
 #[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_quant_reuse.rs"]
 mod quant_reuse_tests;
