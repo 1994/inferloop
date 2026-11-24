@@ -14,7 +14,7 @@ pub use policy::{
 pub use pool_demand::{LiveStates, PoolAction, PoolDemand, PoolFacts, PoolRetry, decide_pool};
 pub use room::{RoomFacts, RoomStep, next_room_step};
 
-pub mod queue;
+mod queue;
 pub use queue::{BlockedOn, QueueInspection, QueueRequest, QueueState, QueueTiming, RequestQueue};
 
 mod validation;

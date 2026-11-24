@@ -1,18 +1,18 @@
 //! Protocol-independent, serializable planning and execution representations.
-pub mod dataflow;
-pub mod device_timing;
-pub mod diagnostics;
-pub mod execution;
-pub mod hardware;
+mod dataflow;
+mod device_timing;
+mod diagnostics;
+mod execution;
+mod hardware;
 mod image;
-pub mod model;
-pub mod multimodal;
-pub mod precision;
-pub mod request;
-pub mod scheduling;
-pub mod state_recipe;
-pub mod tokens;
-pub mod workload;
+mod model;
+mod multimodal;
+mod precision;
+mod request;
+mod scheduling;
+mod state_recipe;
+mod tokens;
+mod workload;
 pub use dataflow::{
     BufferLifetime, DataflowGraph, TensorNode, TensorOp, TensorSpec, TensorStorage,
 };

@@ -18,17 +18,17 @@ pub use responses::{
 };
 
 pub const SPI_VERSION: u32 = 1;
-pub mod backend;
-pub mod cost;
-pub mod extensions;
-pub mod kernel;
-pub mod model;
-pub mod observer;
-pub mod protocol;
-pub mod provider;
-pub mod scheduling;
-pub mod state;
-pub mod workload;
+mod backend;
+mod cost;
+mod extensions;
+mod kernel;
+mod model;
+mod observer;
+mod protocol;
+mod provider;
+mod scheduling;
+mod state;
+mod workload;
 pub use backend::{BackendProvider, DeviceHostExecutor, ImagePreprocessing};
 pub use cost::{BatchCostSummary, CostModelProvider};
 pub use extensions::{
