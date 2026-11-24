@@ -1,10 +1,10 @@
 //! Inspection responsibilities.
-use super::{SequenceState, SequenceStateManager, StateSnapshot};
+use super::{SequenceState, SequenceStates, StateSnapshot};
 use infer_core::{Error, ErrorCode, Result, StateId, StatePageId};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-impl SequenceStateManager {
+impl SequenceStates {
     #[must_use]
     pub const fn block_size(&self) -> usize {
         self.block_size

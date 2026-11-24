@@ -125,7 +125,7 @@ kernel 的 K 累积顺序相同。
 
 ## 职责
 
-模型包负责权重格式、scale、shape 和执行图；`LinearStrategy` 提供合法候选；设备层管理 CUDA 生命周期与 typed buffer；kernel 负责计算，executor 负责提交、完成、状态和回滚。所有权与 checkpoint 遵守 `BackendProvider` / `KvCacheManager` 契约，prefill GEMM 与 decode GEMV 独立调优。
+模型包负责权重格式、scale、shape 和执行图；`LinearStrategy` 提供合法候选；设备层管理 CUDA 生命周期与 typed buffer；kernel 负责计算，executor 负责提交、完成、状态和回滚。所有权与 checkpoint 遵守 `BackendProvider` / `KvPages` 契约，prefill GEMM 与 decode GEMV 独立调优。
 
 ### 非阻塞执行
 

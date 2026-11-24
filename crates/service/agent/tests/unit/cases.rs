@@ -1,5 +1,5 @@
 use crate::{
-    AgentBackend, AgentService, experiment::AccuracyConstraints, experiment::BenchmarkPlan,
+    AgentBackend, AgentDispatcher, experiment::AccuracyConstraints, experiment::BenchmarkPlan,
     experiment::ExperimentConstraints, experiment::ExperimentPlan, registry::CommandDescriptor,
     registry::CommandEffect, registry::CommandRegistry, transport,
 };
@@ -46,11 +46,11 @@ impl AgentBackend for support::ProtocolBackend {
     }
 }
 
-fn service() -> Result<AgentService<support::ProtocolBackend>> {
+fn service() -> Result<AgentDispatcher<support::ProtocolBackend>> {
     let model = support::model(ModelId::ONE);
     let backend = support::ProtocolBackend::new(16, 8, &model)?;
     let registry = AgentBackend::registry(&backend)?;
-    AgentService::new(
+    AgentDispatcher::new(
         Engine::new(
             backend,
             model,
@@ -82,7 +82,7 @@ fn request() -> CanonicalRequest {
     }
 }
 fn response(
-    service: &mut AgentService<support::ProtocolBackend>,
+    service: &mut AgentDispatcher<support::ProtocolBackend>,
     method: &str,
     params: Value,
 ) -> Result<Value> {

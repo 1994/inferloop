@@ -1,6 +1,6 @@
 //! Server HTTP adapter.
 use super::{RuntimeHandle, logging::log_request, router, router_with_text_media_and_responses};
-use crate::media::MediaService;
+use crate::media::MediaIngest;
 use axum::middleware::from_fn;
 use infer_core::{Error, ErrorCode, Result};
 use infer_spi::ResponsesExtensions;
@@ -35,7 +35,7 @@ pub async fn serve_with_text_and_media(
     listener: TcpListener,
     handle: RuntimeHandle,
     assets: Arc<infer_models::TextAssets>,
-    media: Option<Arc<MediaService>>,
+    media: Option<Arc<MediaIngest>>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     serve_with_text_media_and_responses(
@@ -57,7 +57,7 @@ pub async fn serve_with_text_media_and_responses(
     listener: TcpListener,
     handle: RuntimeHandle,
     assets: Arc<infer_models::TextAssets>,
-    media: Option<Arc<MediaService>>,
+    media: Option<Arc<MediaIngest>>,
     responses: ResponsesExtensions,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {

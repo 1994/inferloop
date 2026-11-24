@@ -1,15 +1,15 @@
 //! Reservation responsibilities.
-use super::{Page, PrefixKey, SequenceState, SequenceStateManager};
+use super::{Page, PrefixKey, SequenceState, SequenceStates};
 use infer_core::{
     Error, ErrorCode, IdAllocator, RequestId, Result, StateId, StatePageId, map::BoundedMap,
 };
 use infer_ir::StateKind;
 
-/// Floor on the request capacity granted by `SequenceStateManager::new`, so small
+/// Floor on the request capacity granted by `SequenceStates::new`, so small
 /// page pools still provision enough sequence/owner ledger slots for the scheduler.
 const MIN_REQUEST_CAPACITY: usize = 256;
 
-impl SequenceStateManager {
+impl SequenceStates {
     /// # Errors
     /// Returns an invalid-input error for a zero state capacity or page size.
     pub fn new(total_pages: usize, block_size: usize) -> Result<Self> {

@@ -30,13 +30,13 @@ pub struct KvCopy {
 ///
 /// Active sequence tables hold manager-issued leases. Backends own buffer storage and execute
 /// returned copy plans before kernels use new pages. Scheduler queries have no mutation side effects.
-pub struct KvCacheManager<P: KvPrefix> {
+pub struct KvPages<P: KvPrefix> {
     config: KvCacheConfig,
     pool: BlockPool,
     prefixes: PrefixCache<P>,
     allocation: Vec<BlockLease>,
 }
-impl<P: KvPrefix> KvCacheManager<P> {
+impl<P: KvPrefix> KvPages<P> {
     /// # Errors
     /// Returns invalid-input errors for an invalid namespace, page layout, or device block ABI.
     pub fn new(config: KvCacheConfig) -> Result<Self> {

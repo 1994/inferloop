@@ -25,7 +25,7 @@ pub fn agent(
             .checked_mul(MIB_U64)
             .ok_or_else(|| Error::invalid("probe budget overflow"))?,
     )?;
-    let mut service = infer_agent::AgentService::new(engine, backend::catalog())?;
+    let mut service = infer_agent::AgentDispatcher::new(engine, backend::catalog())?;
     serve(
         &mut service,
         &mut io::stdin().lock(),

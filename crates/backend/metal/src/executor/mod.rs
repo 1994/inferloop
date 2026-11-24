@@ -19,7 +19,7 @@ use forward::ForwardNode;
 use infer_core::{Error, ErrorCode, OpId, RequestId, Result, StateId, StepId, TensorId};
 use infer_ir::{DataflowGraph, LayerProbe, ModelIr, OpTrace, StateKind, TensorSpec, TensorStorage};
 use infer_models::{TensorDtype, WeightLoadPlan};
-use infer_state::{blocks::BlockLease, kv::KvCacheManager, kv::KvPrefix};
+use infer_state::{blocks::BlockLease, kv::KvPages, kv::KvPrefix};
 use metal::{Buffer, CommandBuffer};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, collections::VecDeque, sync::Arc, time::Instant};
@@ -190,7 +190,7 @@ pub struct MetalBackend {
     completion_pool: Vec<Vec<infer_ir::TaskOutput>>,
     tokens_executed: u64,
     prefix_hits: u64,
-    kv: KvCacheManager<CachedPrefix>,
+    kv: KvPages<CachedPrefix>,
     kv_buffers: BTreeMap<TensorId, Buffer>,
     kv_block_bytes: u64,
     state_recipe: infer_ir::StateRecipe,

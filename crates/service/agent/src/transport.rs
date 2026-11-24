@@ -1,7 +1,7 @@
 use crate::constants::INITIAL_FRAME_CAPACITY;
 use crate::constants::JSONRPC_PARSE_ERROR;
 use crate::constants::JSONRPC_SERVER_ERROR;
-use crate::{AgentBackend, AgentService, protocol::RpcError, protocol::error_response};
+use crate::{AgentBackend, AgentDispatcher, protocol::RpcError, protocol::error_response};
 use infer_core::{Error, ErrorCode, Result};
 use serde_json::Value;
 use std::io::Error as IoError;
@@ -13,7 +13,7 @@ pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 /// # Errors
 /// Returns input/output errors; malformed messages get RPC errors and the stream continues.
 pub fn serve<B: AgentBackend>(
-    service: &mut AgentService<B>,
+    service: &mut AgentDispatcher<B>,
     input: &mut impl BufRead,
     output: &mut impl Write,
 ) -> Result<()> {

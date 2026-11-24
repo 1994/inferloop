@@ -10,7 +10,7 @@ pub async fn axum_serve(
     handle: infer_frontdoor::RuntimeHandle,
     shutdown: infer_frontdoor::RuntimeHandle,
     assets: Option<Arc<infer_models::TextAssets>>,
-    media: Option<Arc<infer_frontdoor::MediaService>>,
+    media: Option<Arc<infer_frontdoor::MediaIngest>>,
     responses: ResponsesExtensions,
 ) -> Result<()> {
     let stop = async move {

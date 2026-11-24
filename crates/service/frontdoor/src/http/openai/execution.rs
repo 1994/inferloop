@@ -3,7 +3,7 @@ use super::request::OpaqueJson;
 use super::{ApiResult, GenerationRequest, TextState, ToolPolicy};
 use crate::constants::TOKEN_STAGING_BYTES;
 use crate::cpu::CpuContext;
-use crate::media::{MediaRequest, MediaService, ResolvedMedia};
+use crate::media::{MediaIngest, MediaRequest, ResolvedMedia};
 use axum::http::HeaderMap;
 use infer_core::{Error, ErrorCode, FinishReason, RequestId};
 use infer_ir::{CanonicalRequest, RequestInput, Workload, WorkloadOutput};
@@ -45,7 +45,7 @@ struct Encoding {
     assets: Arc<infer_models::TextAssets>,
     messages: Option<Vec<infer_models::ChatMessage>>,
     media_requests: Vec<MediaRequest>,
-    media: Option<Arc<MediaService>>,
+    media: Option<Arc<MediaIngest>>,
     image_options: Option<crate::ImageProcessingOptions>,
     prompt: Option<String>,
     tools: Option<OpaqueJson>,

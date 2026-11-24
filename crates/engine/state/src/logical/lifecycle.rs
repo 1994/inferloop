@@ -1,9 +1,9 @@
 //! Lifecycle responsibilities.
-use super::SequenceStateManager;
+use super::SequenceStates;
 use infer_core::{Error, ErrorCode, Result, StateId, StatePageId};
 use std::mem::take;
 
-impl SequenceStateManager {
+impl SequenceStates {
     /// # Errors
     /// Returns a not-found error for unknown sequence state.
     pub fn reset(&mut self, id: StateId) -> Result<()> {

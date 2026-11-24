@@ -132,7 +132,7 @@ impl ResolvedMedia {
 }
 
 /// Decoded-media service shared by the HTTP handlers.
-pub struct MediaService {
+pub struct MediaIngest {
     assets: Arc<MultimodalAssets>,
     limits: MediaLimits,
     source: SourcePolicy,
@@ -140,7 +140,7 @@ pub struct MediaService {
     image_options: ImageProcessingOptions,
     image_decoder: ImageDecoder,
 }
-impl MediaService {
+impl MediaIngest {
     #[must_use]
     pub const fn new(assets: Arc<MultimodalAssets>, limits: MediaLimits) -> Self {
         Self {

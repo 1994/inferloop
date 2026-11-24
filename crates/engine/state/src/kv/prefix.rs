@@ -1,5 +1,5 @@
 //! Page-backed adapter for the common prefix publication/reuse lifecycle.
-use super::{KvCacheManager, KvPrefix};
+use super::{KvPages, KvPrefix};
 use crate::{
     blocks::BlockPool,
     cache::{PrefixReuse, PrefixSnapshot},
@@ -22,7 +22,7 @@ impl<P: KvPrefix, F: Fn(&P) -> bool> PrefixReuse<P> for PageReuse<'_, F> {
         Ok(acquired)
     }
 }
-impl<P: KvPrefix> KvCacheManager<P> {
+impl<P: KvPrefix> KvPages<P> {
     /// Acquire only snapshots compatible with the consumer's recurrent/readout layout.
     /// # Errors
     /// Returns stale-lease or reference overflow errors.

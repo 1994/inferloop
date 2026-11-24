@@ -18,7 +18,7 @@ impl KvPrefix for PageSnapshot {
 }
 #[test]
 fn stale_page_acquisition_does_not_commit_a_cache_hit() {
-    let mut manager = KvCacheManager::new(KvCacheConfig {
+    let mut manager = KvPages::new(KvCacheConfig {
         namespace: b"pages".to_vec(),
         block_size: 2,
         blocks: 2,

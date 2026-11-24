@@ -20,8 +20,8 @@ impl KvPrefix for Prefix {
         self.bytes
     }
 }
-fn manager(blocks: usize) -> Result<KvCacheManager<Prefix>> {
-    KvCacheManager::new(KvCacheConfig {
+fn manager(blocks: usize) -> Result<KvPages<Prefix>> {
+    KvPages::new(KvCacheConfig {
         namespace: b"model-weights-layout-v1".to_vec(),
         block_size: 2,
         blocks,

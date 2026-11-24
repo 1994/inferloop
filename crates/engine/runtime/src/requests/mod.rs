@@ -164,7 +164,7 @@ impl RequestArena {
         dirty.clear();
         self.dirty = dirty;
     }
-    pub fn sync(&mut self, slot: usize, state: &infer_state::SequenceStateManager) -> Result<()> {
+    pub fn sync(&mut self, slot: usize, state: &infer_state::SequenceStates) -> Result<()> {
         self.marked[slot] = false;
         let Some(record) = self.hot.handles[slot].and_then(|h| self.records.get(h)) else {
             self.hot.status[slot] = HotStatus::Terminal;

@@ -137,7 +137,7 @@ role，现改为用 `gate.orientation(baseline, candidate)` 判定真实方向�
 | **P1** ✅ | CUDA 实现 `kv_cache()`：把已有块池与表如实上报（`block_size`/`total`/`free`/`active`/`cached`/`shared`/`pool_bytes`/`bytes_per_block`） | 无 | **已验收（2026-10-11）**：`/native/v1/runtime` 的 `config_readback.kv_cache` 由 `null` 变为真实块报（`block_size=32, total_blocks=1024, bytes_per_block=1 MiB, pool_bytes=1 GiB`）；观测端口出现 `available_kv_blocks`/`active_kv_blocks`/`cached_kv_blocks`/`kv_pool_bytes`；engine 逻辑页池与后端调和（`serving.rs` 把 `block_size` 同调成 32，`num_gpu_blocks=total_blocks=1024`，逻辑容量 4096×16 → 1024×32 = 32768 token，恰好等于物理池与 `max_model_len`）；官方 matrix **16/16 trial、28/28 请求流 token 逐位一致**（run-id `kv-before`/`kv-after`，`artifacts/kv-paging-p1p2-20261011/`），两侧 checklist 均 compliant。实测数据见实验记录 §15 |
 | **P2** ✅ | CUDA 实现 `state_page_growth()`：按当前 token 数报"下一步用/增长多少块" | P1 | **已落地（2026-10-11）**，验收口径修正见下：在租序列报 `ceil(history/32)`、私有序列报满容量预付（`required_pages` 恒 0，物理诚实）；`cost_query.page_growth` 不再恒 `None`。但**"deferred_reasons 显著下降"在计划点名的两组负载（4×2560 / 2×8000）上不成立——实测前后逐位相同**（4×2560：TokenBudget +24/+23、GpuBudget +72/+72、Preparation +8/+8；2×8000：各 +4 Preparation；`state_capacity` 两侧恒 0）：那两组负载的递延来自 token 预算与执行预算，KV/状态计价从来不是它们的瓶颈。P2 的价值是把真实增长数交给调度器（可证、可查），而不是改变这两组负载的递延结构 |
 | **P3** | 计价改为块数（原④）：`state_reservation_bytes*` 与准入按块；池已覆盖的部分从请求报价扣除 | P1、P2 | `CB_SLOT_TOKENS` 不再是墙：`CB_DECODE_SLOTS=16` prewarm 成功、matrix 16/16；长上下文请求不再因"池占内存"被拒。**注意 §13.30**：报价大头是固定激活 arena 与块两件事，减免必须针对正确的项。**边界（2026-10-11 复核）**：`CB_DECODE_SLOTS=16` 的 prewarm 验收在本机物理不可达——16 槽 × 405 MiB/槽（262 KV + 149 递推）≈ 6.3 GiB > 4.8 GiB 状态预算，只有 P5 的共享 arena 才可能解开；本阶段剩余价值是"池覆盖部分从报价扣除"，其中池内计价部分已随 `9421a8c` 落地 |
-| **P4** | 块级前缀共享 + COW（原③）：`reusable_prefix*()` 按页暴露 + 内容哈希 + 引用计数 | P3 | `hot_long` 类场景 TTFT 与块复用计数同时改善；重复前缀不再产生整状态拷贝。**未做（2026-10-11）**；§八 已否证"共享 arena + 偏移表"路线，参照实现应看 `infer_state::kv::KvCacheManager`（`crates/engine/state/src/kv.rs`，Metal 侧完整 BlockPool/前缀/COW） |
+| **P4** | 块级前缀共享 + COW（原③）：`reusable_prefix*()` 按页暴露 + 内容哈希 + 引用计数 | P3 | `hot_long` 类场景 TTFT 与块复用计数同时改善；重复前缀不再产生整状态拷贝。**未做（2026-10-11）**；§八 已否证"共享 arena + 偏移表"路线，参照实现应看 `infer_state::kv::KvPages`（`crates/engine/state/src/kv.rs`，Metal 侧完整 BlockPool/前缀/COW） |
 | **P5** | 共享 arena / 按需分配（原②，**可选实现细节**） | 仅当 P1–P4 后 per-slot arena 仍是浪费 | 若做：先按 §13.23 办法在**回放时**打印 `(lane, position, block, 表项)`，并核对 draft 私有 program 的 `identity_table` 与它 arena 的归属。**注意：这条路上 `attention.rs:113` 越界不在关键路径**。**未做（2026-10-11）**：§13.21–13.26 三轮实测失败已否证，数周级高风险 |
 | **P6** | token-major 块内布局 + 张量核 SDPA（原⑤） | P3 后按块寻址稳定 | ≥3072 走张量核；与 SIMT 路径在 1e-4 相对误差内一致（沿用已验证的 6.2×）。**未做（2026-10-11）** |
 
@@ -280,7 +280,7 @@ P1/P2 已落地并验收（§五 表），§2.1 已修。剩余工作按序：
    （池内计价已随 `9421a8c` 落地，剩私有路径报价与准入的块化）。**不要**把
    `CB_DECODE_SLOTS=16` prewarm 当验收：物理账目（§四）决定了它在 4.8 GiB 状态预算下不可达。
 3. **P4**（块级前缀共享 + COW）：参照 `crates/engine/state/src/kv.rs` 的
-   `KvCacheManager`（Metal 侧完整范本）；§八 的"共享 arena + 偏移表"路线已否证，不走。
+   `KvPages`（Metal 侧完整范本）；§八 的"共享 arena + 偏移表"路线已否证，不走。
 4. P5/P6 按 §五 的启动条件排队；§九.1 的准入竞态（5×8000 实测复现）可单独立项。
 
 若用户更看重"比分"而非"容量/规模"，§二 读法第 3、4 条指出应优先 batch4/long 的 TTFT：

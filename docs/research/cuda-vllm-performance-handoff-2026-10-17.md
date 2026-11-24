@@ -96,7 +96,7 @@ target attention 为 18.8841 s，draft attention 仅 0.2469 s。10 月 13 日“
 |---|---|---|
 | C1Q | 模式一致性与发布质量：固定 scorer、原 MTP0 控制、失败 MTP2 输出及 matched MTP2 归因 | 首个真实数值或状态差异的通用定位和修复；按原模式合同验收发布二进制；保留失败，不能用同模式归因代替原门 |
 | C1A | Target attention 完整成本：本次 profile、NCU、9 份真实输入、canonical F32 oracle | 先量可削减成本，再做一个可归因候选；原数值、边界、canary、资源门通过后，自动 SPI/tuning、原 20 项五组服务门及相应质量门全部通过 |
-| C1M | 真实显存与多会话驻留：分项采集源码、quote、engine/KvCacheManager 合同 | 先测实际 target/draft、arena、workspace、graph，再决定实现；报价兑现、状态独立、取消/回滚/prefix 正确，报告实际驻留与完整 C4 makespan/吞吐 |
+| C1M | 真实显存与多会话驻留：分项采集源码、quote、engine/KvPages 合同 | 先测实际 target/draft、arena、workspace、graph，再决定实现；报价兑现、状态独立、取消/回滚/prefix 正确，报告实际驻留与完整 C4 makespan/吞吐 |
 | C1V | 稳定 vLLM 长矩阵：冻结制品、强 wheel、相同输入和实际配置 | 先解释旧 C4 波动或配置边界，实质修复后预注册匹配 32K/64K C1/C4 矩阵；保留全部样本、质量、冷启动与独立复算，合格后才签发正式倍率 |
 | C1H | H/B 实机验收：现有六份 AOT 与架构 tuning 接线 | 设备到位后逐架构验 ABI、数值、owner、资源、自动选择和完整服务；当前无 H/B 机器，离线编译不等于性能收益 |
 | C1D | 分支交付与合并：对应质量、服务、CI 和持久证据 | 形成可 review 的 PR 并处理反馈；PR #10 已完成，后续分支不能继承其个别合并批准 |

@@ -5,7 +5,7 @@ use infer_core::{
 use infer_spi::{ResourcePool, ResourceReply};
 use infer_state::blocks::BlockLease;
 use infer_state::kv::KvCacheConfig;
-use infer_state::kv::KvCacheManager;
+use infer_state::kv::KvPages;
 use infer_state::kv::KvPrefix;
 #[derive(Clone)]
 struct NoPrefix;
@@ -26,7 +26,7 @@ pub fn run() -> Result<Measurement> {
     let credits = CreditPool::new(64, 1024)?;
     let replies = ResourcePool::new(64)?;
     let mut next = 0u64;
-    let mut state = infer_state::SequenceStateManager::with_capacity(256, 16, 64)?;
+    let mut state = infer_state::SequenceStates::with_capacity(256, 16, 64)?;
     let first = state.reserve_incremental(
         infer_core::RequestId::ONE,
         infer_ir::StateKind::AttentionKv,
@@ -38,7 +38,7 @@ pub fn run() -> Result<Measurement> {
         1024,
     )?;
 
-    let mut physical = KvCacheManager::<NoPrefix>::new(KvCacheConfig {
+    let mut physical = KvPages::<NoPrefix>::new(KvCacheConfig {
         namespace: vec![1],
         block_size: 16,
         blocks: 256,
