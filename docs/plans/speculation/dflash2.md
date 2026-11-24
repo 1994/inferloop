@@ -195,7 +195,7 @@ attends(q, k) = (q / block_size == k / block_size) || (k <= q && q - k < sliding
 **明确还没有做的**：arena 与捕获图的报价（需要设备事实）；上述 walk 的实现（归 I1 的 provider 层，
 等 SPI 契约落地）；tokenizer 文件的逐 token 对照（需要 tokenizer 制品，目前 fixture 只登记了配置）。
 
-单测 19 个（`tests/unit/providers_dflash2.rs`），覆盖每个接受条件、对应反例与 golden 交叉核对，其中
+单测 19 个（`src/providers/dflash2/tests.rs`），覆盖每个接受条件、对应反例与 golden 交叉核对，其中
 7 个直接读登记的 fixture 与 golden。
 
 ### 已实施：fixture 的来源**可离线核验**（并如实登记两处缺口）

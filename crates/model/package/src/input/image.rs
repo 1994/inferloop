@@ -723,5 +723,4 @@ fn resample_axis(source: usize, target: usize) -> Vec<Vec<(usize, f64)>> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/input_image.rs"]
 mod tests;

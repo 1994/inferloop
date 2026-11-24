@@ -657,5 +657,4 @@ impl DraftGeometry {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/providers_dflash2.rs"]
 mod tests;

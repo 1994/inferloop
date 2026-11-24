@@ -11,7 +11,10 @@ fn declared() -> ModalityEncoder {
     let imported = QwenProvider
         .import_manifest(
             ModelId::new(1).unwrap(),
-            include_bytes!("../../../../../examples/qwen3.8-27b/config.json"),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../examples/qwen3.8-27b/config.json"
+            )),
         )
         .unwrap();
     let plan = imported
@@ -25,9 +28,10 @@ fn declared() -> ModalityEncoder {
 #[test]
 fn inventory_matches_the_package_index_exactly() -> Result<()> {
     let encoder = declared();
-    let index = crate::SafetensorsIndex::parse(include_bytes!(
-        "../../../../../examples/qwen3.8-27b/model.safetensors.index.json"
-    ))?;
+    let index = crate::SafetensorsIndex::parse(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../examples/qwen3.8-27b/model.safetensors.index.json"
+    )))?;
     let declared: BTreeSet<_> = slots(&encoder)?
         .into_iter()
         .map(|slot| slot.tensor)

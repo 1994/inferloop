@@ -362,6 +362,9 @@ def magic_number_files():
             continue
         if MAGIC_TEST_PARTS.intersection(relative.parts):
             continue
+        # Dev-only crates under `crates/testing/` are test fixtures, not production code.
+        if relative.parts[:2] == ("crates", "testing"):
+            continue
         yield path
 
 
@@ -517,6 +520,9 @@ def check_typed_api_json():
     """
     require(API_ROOT.is_dir(), f"API adapter root is missing: {API_ROOT}")
     for path in sorted(API_ROOT.rglob("*.rs")):
+        # Unit tests next to the adapters build and inspect arbitrary JSON on purpose.
+        if is_test_source(path, ROOT):
+            continue
         relative = path.relative_to(API_ROOT).as_posix()
         for lineno, line in enumerate(path.read_text().splitlines(), 1):
             code = line.split("//", 1)[0]

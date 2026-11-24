@@ -141,5 +141,4 @@ impl ResolvedLengthLimits {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/lengths.rs"]
 mod tests;

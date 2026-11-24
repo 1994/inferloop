@@ -659,7 +659,6 @@ pub(super) fn finish_reason(reason: &FinishReason) -> infer_core::Result<&'stati
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/http_openai_execution.rs"]
 mod tests;
 
 fn validate_capabilities(

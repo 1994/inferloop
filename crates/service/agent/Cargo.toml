@@ -5,10 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Case bodies under `tests/` are mounted from their module, so `tests/unit` and
-# `tests/support` must not be auto-discovered as integration targets.
-autotests = false
-
 [lints]
 workspace = true
 
@@ -27,4 +23,5 @@ sha2.workspace = true
 # The agent's scenes run on the declared protocol double in the runtime's tests/support
 # source, so they need no CPU inference executor and no IR test feature.
 [dev-dependencies]
+infer-test-support.workspace = true
 infer-model-recipes.workspace = true

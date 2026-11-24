@@ -11,7 +11,6 @@ mod request;
 mod state;
 mod stream;
 #[cfg(test)]
-#[path = "../../../../tests/unit/http_responses.rs"]
 mod tests;
 
 use super::execution;

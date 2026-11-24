@@ -3,8 +3,7 @@ use crate::{
     experiment::ExperimentConstraints, experiment::ExperimentPlan, registry::CommandDescriptor,
     registry::CommandEffect, registry::CommandRegistry, transport,
 };
-#[path = "../../../../engine/runtime/tests/support/mod.rs"]
-mod support;
+use infer_test_support::fixtures as support;
 
 use infer_core::{Error, ModelId, RequestId, Result};
 use infer_ir::{

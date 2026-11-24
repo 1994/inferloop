@@ -5,10 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Case bodies under `tests/` are mounted from their module, so `tests/unit` and
-# `tests/support` must not be auto-discovered as integration targets.
-autotests = false
-
 [[test]]
 name = "capacity"
 path = "tests/capacity.rs"
@@ -35,7 +31,7 @@ path = "tests/rank_group.rs"
 
 [[test]]
 name = "runner"
-path = "tests/runner.rs"
+path = "tests/runner/main.rs"
 
 [[test]]
 name = "scheduling"
@@ -61,5 +57,6 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+infer-test-support.workspace = true
 tracing-subscriber.workspace = true
 infer-model-recipes.workspace = true

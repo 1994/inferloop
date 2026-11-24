@@ -116,5 +116,4 @@ impl Rule {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/storage_quantized_activations.rs"]
 mod tests;

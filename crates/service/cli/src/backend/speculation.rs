@@ -69,5 +69,4 @@ fn complete_head(package: &QuantizedPackage) -> bool {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/backend_speculation.rs"]
 mod tests;

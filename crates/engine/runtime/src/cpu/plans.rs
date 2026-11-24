@@ -103,5 +103,4 @@ impl QueryPool {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/cpu_plans.rs"]
 mod tests;

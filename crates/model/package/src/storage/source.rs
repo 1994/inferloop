@@ -607,5 +607,4 @@ impl PackageProbe {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/source.rs"]
 mod tests;

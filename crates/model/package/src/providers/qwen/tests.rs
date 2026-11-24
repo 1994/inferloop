@@ -86,7 +86,10 @@ fn imports_pinned_qwen38_hybrid_architecture() {
     let imported = QwenProvider
         .import_manifest(
             ModelId::new(1).unwrap(),
-            include_bytes!("../../../../../examples/qwen3.8-27b/config.json"),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../examples/qwen3.8-27b/config.json"
+            )),
         )
         .unwrap();
     assert_eq!(imported.model.mixers.len(), 64);
@@ -118,12 +121,16 @@ fn official_bf16_package_does_not_fit_32_gib() {
     let imported = QwenProvider
         .import(
             ModelId::new(1).unwrap(),
-            include_bytes!("../../../../../examples/qwen3.8-27b/config.json"),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../examples/qwen3.8-27b/config.json"
+            )),
         )
         .unwrap();
-    let index = crate::SafetensorsIndex::parse(include_bytes!(
-        "../../../../../examples/qwen3.8-27b/model.safetensors.index.json"
-    ))
+    let index = crate::SafetensorsIndex::parse(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../examples/qwen3.8-27b/model.safetensors.index.json"
+    )))
     .unwrap();
     let budget = crate::memory_estimate(
         &imported.model,
@@ -146,9 +153,10 @@ fn rejects_shard_path_traversal() {
 
 #[test]
 fn moe_hybrid_import_preserves_routing_and_dense_layer_policy() -> Result<()> {
-    let mut config: serde_json::Value = serde_json::from_slice(include_bytes!(
-        "../../../../../examples/qwen-next-moe-tiny/config.json"
-    ))
+    let mut config: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../examples/qwen-next-moe-tiny/config.json"
+    )))
     .map_err(|e| Error::invalid(e.to_string()))?;
     config["decoder_sparse_step"] = 2.into();
     let bytes = serde_json::to_vec(&config).map_err(|e| Error::invalid(e.to_string()))?;

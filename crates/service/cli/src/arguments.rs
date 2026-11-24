@@ -144,7 +144,6 @@ impl Cli {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/arguments.rs"]
 mod tests;
 
 /// Parse the vLLM-style per-prompt media limits.

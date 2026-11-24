@@ -281,5 +281,4 @@ const fn apply_fields(
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/media_options.rs"]
 mod tests;

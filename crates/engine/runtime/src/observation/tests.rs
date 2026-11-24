@@ -4,8 +4,7 @@ use infer_core::ModelId;
 use infer_ir::{CanonicalRequest, PrecisionPlan};
 use infer_kernel_api::KernelRegistry;
 
-#[path = "../support/mod.rs"]
-mod support;
+use infer_test_support::fixtures as support;
 
 #[test]
 fn trace_parent_without_retained_events_is_pruned_when_request_is_consumed() -> Result<()> {

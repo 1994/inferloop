@@ -165,5 +165,4 @@ impl Drop for Streamed {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/http_logging.rs"]
 mod tests;

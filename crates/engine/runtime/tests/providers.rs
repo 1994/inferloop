@@ -4,7 +4,7 @@ use infer_spi::{ProviderMetadata, SPI_VERSION, WorkloadProvider};
 use infer_workloads::{NativeWorkloads, WorkloadRegistry};
 use std::collections::BTreeMap;
 
-mod support;
+use infer_test_support::fixtures as support;
 
 use infer_core::*;
 use infer_ir::*;

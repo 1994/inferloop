@@ -1,5 +1,4 @@
-#[path = "../../../engine/runtime/tests/support/mod.rs"]
-mod support;
+use infer_test_support::fixtures as support;
 
 use infer_core::{Error, FinishReason, ModelId, RequestId, Result, StateId};
 use infer_frontdoor::{RuntimeHandle, cpu::CpuConfig};

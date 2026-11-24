@@ -153,9 +153,10 @@ fn an_omni_family_converges_every_customization_into_one_import() -> Result<()> 
 
 #[test]
 fn builtin_registry_resolves_the_shipped_configuration() -> Result<()> {
-    let provider = default_registry().resolve(include_bytes!(
-        "../../../../../examples/qwen3.8-27b/config.json"
-    ))?;
+    let provider = default_registry().resolve(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../examples/qwen3.8-27b/config.json"
+    )))?;
     assert!(provider.architectures().contains(&"qwen3_5"));
     Ok(())
 }

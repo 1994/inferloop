@@ -104,7 +104,10 @@ Rust 默认的 `<module>/tests.rs`，非 `tests` 名的测试模块用 `<module>
    `infer-state` 的 recurrent golden 检查不用 crate 任何项，改为集成 target `tests/recurrent_reference.rs`；
    `infer-workloads` 的 `recurrent_reference` 模块改名 `recurrent_reference_tests`（唯一的过滤串变化）。
    这些 crate 的 `tests/` 只剩集成 target，`autotests = false` 一并去掉。挂载 290 → 244（含 main 新增的 `digest`），用例总数 1399 不变；
-2. package、cli、agent、runtime、frontdoor（约 70 个文件），抽出 `crates/testing/support`；
+2. ✓ package、cli、agent、runtime、frontdoor：57 个挂载正文移到被测模块旁（含 openai 测试的两个嵌套子模块，落在
+   `openai/tests/`）；runtime 的协议替身抽成 dev-only crate `infer-test-support`（`crates/testing/cpu/support`），
+   runtime/agent/frontdoor 用 dev-dependency 引入，不再跨 crate `#[path]` 挂载；runtime 的 `runner` 改为目录 target
+   `tests/runner/main.rs`；移动文件里的相对 `include_bytes!` 改为 `CARGO_MANIFEST_DIR` 形式。挂载 244 → 177，用例总数不变；
 3. cuda-kernels 与 cuda（176 个文件），抽出 `crates/testing/cuda-acceptance`；设备测试按
    [质量门禁](../../guides/quality-gates.md) 在 CUDA 主机上逐进程跑一遍受影响清单。
 
