@@ -1,10 +1,9 @@
-#[path = "../../../../engine/runtime/tests/support/mod.rs"]
-mod support;
 use crate::cpu::CpuConfig;
 use infer_core::{ErrorCode, ModelId};
 use infer_ir::PrecisionPlan;
 use infer_kernel_api::KernelRegistry;
 use infer_runtime::RuntimeConfig;
+use infer_test_support::fixtures as support;
 use std::collections::BTreeSet;
 use std::thread::spawn;
 use std::time::Duration;

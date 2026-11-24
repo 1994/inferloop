@@ -1,4 +1,4 @@
-mod support;
+use infer_test_support::fixtures as support;
 
 use infer_core::{Error, ModelId, RequestId, Result};
 use infer_ir::{CanonicalRequest, PrecisionPlan};

@@ -3,8 +3,8 @@
     "agent": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 12
+      "src_near": 12,
+      "tests": 0
     },
     "api": {
       "benches": 0,
@@ -15,8 +15,8 @@
     "cli": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 36
+      "src_near": 34,
+      "tests": 2
     },
     "compiler": {
       "benches": 0,
@@ -51,8 +51,8 @@
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 198
+      "src_near": 185,
+      "tests": 13
     },
     "ir": {
       "benches": 0,
@@ -87,8 +87,8 @@
     "package": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 210
+      "src_near": 166,
+      "tests": 44
     },
     "quality": {
       "benches": 0,
@@ -105,8 +105,8 @@
     "runtime": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 0,
-      "tests": 118
+      "src_near": 26,
+      "tests": 92
     },
     "scheduler": {
       "benches": 0,
@@ -1188,352 +1188,17 @@
       "mount": "../../tests/unit/tile_identities.rs"
     },
     {
-      "crate": "runtime",
-      "file": "src/config.rs",
-      "mount": "../tests/unit/config_concurrency.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/cpu/plans.rs",
-      "mount": "../../tests/unit/cpu_plans.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/lengths.rs",
-      "mount": "../tests/unit/lengths.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/observation/collector.rs",
-      "mount": "../../tests/unit/observation_collector.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/observation/mod.rs",
-      "mount": "../../tests/unit/observation.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/preparation/mod.rs",
-      "mount": "../../tests/unit/media_plan.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/resource/waiters.rs",
-      "mount": "../../tests/unit/resource_waiters.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/stages/output.rs",
-      "mount": "../../tests/unit/backend_token_output.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "src/stages/worker.rs",
-      "mount": "../../tests/unit/stages_worker.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "tests/rank_group.rs",
-      "mount": "support/rank_group.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "tests/runner.rs",
-      "mount": "unit/runner_bytes_capacity.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "tests/runner.rs",
-      "mount": "unit/runner_capacity_progress.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "tests/runner.rs",
-      "mount": "unit/runner_maintenance.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "tests/runner.rs",
-      "mount": "unit/runner_queue_deadline.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "tests/runner.rs",
-      "mount": "unit/runner_reservation.rs"
-    },
-    {
-      "crate": "runtime",
-      "file": "tests/unit/observation.rs",
-      "mount": "../support/mod.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/generation/mod.rs",
-      "mount": "../../tests/unit/generation.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/constraint/mod.rs",
-      "mount": "../../../tests/unit/tool_constraint.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/image.rs",
-      "mount": "../../tests/unit/input_image.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/mrope.rs",
-      "mount": "../../tests/unit/input_mrope.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/prompt.rs",
-      "mount": "../../tests/unit/input_prompt.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/tool.rs",
-      "mount": "../../tests/unit/input_tool.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/video.rs",
-      "mount": "../../tests/unit/input_video.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/input/vision.rs",
-      "mount": "../../tests/unit/input_vision.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/providers/dflash2.rs",
-      "mount": "../../tests/unit/providers_dflash2.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/providers/llama.rs",
-      "mount": "../../tests/unit/providers_llama.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/providers/qwen/mod.rs",
-      "mount": "../../../tests/unit/providers_qwen.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/providers/registry.rs",
-      "mount": "../../tests/unit/providers_registry.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/storage/mod.rs",
-      "mount": "../../tests/unit/storage_shards_tests.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/storage/quantized/activations.rs",
-      "mount": "../../../tests/unit/storage_quantized_activations.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/storage/quantized.rs",
-      "mount": "../../tests/unit/storage_quantized.rs"
-    },
-    {
-      "crate": "package",
-      "file": "src/storage/source.rs",
-      "mount": "../../tests/unit/source.rs"
-    },
-    {
-      "crate": "agent",
-      "file": "src/lib.rs",
-      "mount": "../tests/unit/cases.rs"
-    },
-    {
-      "crate": "agent",
-      "file": "tests/unit/cases.rs",
-      "mount": "../../../../engine/runtime/tests/support/mod.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/arguments.rs",
-      "mount": "../tests/unit/arguments.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/backend/defaults.rs",
-      "mount": "../../tests/unit/backend_defaults.rs"
-    },
-    {
       "crate": "cli",
       "file": "src/backend/mod.rs",
       "mount": "cuda_unavailable.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/backend/mod.rs",
-      "mount": "../../tests/unit/backend_mod.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/backend/selected.rs",
-      "mount": "../../tests/unit/backend_selected.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/backend/speculation.rs",
-      "mount": "../../tests/unit/backend_speculation.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/commands/tuning_worker.rs",
-      "mount": "../../tests/unit/tuning_worker.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/support/logging.rs",
-      "mount": "../../tests/unit/support_logging.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/support/memory.rs",
-      "mount": "../../tests/unit/support_memory.rs"
-    },
-    {
-      "crate": "cli",
-      "file": "src/support/serving.rs",
-      "mount": "../../tests/unit/support_serving.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/actor/mod.rs",
-      "mount": "../../tests/unit/actor.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/cpu/queue.rs",
-      "mount": "../../tests/unit/cpu_queue.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/logging.rs",
-      "mount": "../../tests/unit/http_logging.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/mod.rs",
-      "mount": "../../tests/unit/http.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/decisions/mod.rs",
-      "mount": "../../../../tests/unit/http_openai_decisions_request.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/execution.rs",
-      "mount": "../../../tests/unit/http_openai_execution.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/ids.rs",
-      "mount": "../../../tests/unit/ids.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/mod.rs",
-      "mount": "../../../tests/unit/http_openai.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/request.rs",
-      "mount": "../../../tests/unit/http_openai_request.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/responses/mod.rs",
-      "mount": "../../../../tests/unit/http_responses.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/responses/output.rs",
-      "mount": "../../../../tests/unit/http_responses_output.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/responses/request.rs",
-      "mount": "../../../../tests/unit/http_responses_request.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/http/openai/stream.rs",
-      "mount": "../../../tests/unit/http_openai_stream.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/ingress.rs",
-      "mount": "../tests/unit/ingress.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/media/options.rs",
-      "mount": "../../tests/unit/media_options.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/media/source.rs",
-      "mount": "../../tests/unit/media_source.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/media.rs",
-      "mount": "../tests/unit/media.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "src/responses_store.rs",
-      "mount": "../tests/unit/responses_store.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "tests/isolation.rs",
-      "mount": "../../../engine/runtime/tests/support/mod.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "tests/output.rs",
-      "mount": "../../../engine/runtime/tests/support/mod.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "tests/unit/actor.rs",
-      "mount": "../../../../engine/runtime/tests/support/mod.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "tests/unit/http.rs",
-      "mount": "../../../../engine/runtime/tests/support/mod.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "tests/unit/http_openai.rs",
-      "mount": "http_strict_tools.rs"
-    },
-    {
-      "crate": "frontdoor",
-      "file": "tests/unit/http_openai.rs",
-      "mount": "http_openai_decisions.rs"
     }
   ],
   "totals": {
     "all": 1399,
     "benches": 0,
-    "src": 150,
+    "src": 573,
     "src_inline": 0,
-    "src_near": 150,
-    "tests": 1249
+    "src_near": 573,
+    "tests": 826
   }
 }

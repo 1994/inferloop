@@ -511,5 +511,4 @@ fn resize_frames(frames: &[&RgbImage], height: usize, width: usize) -> Result<Ve
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/input_video.rs"]
 mod tests;

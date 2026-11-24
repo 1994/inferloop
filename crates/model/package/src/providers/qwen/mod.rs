@@ -625,5 +625,4 @@ fn validate_vision(vision: Option<&VisionConfig>, hidden_size: usize) -> Result<
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/providers_qwen.rs"]
 mod tests;

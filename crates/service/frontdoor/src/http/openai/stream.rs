@@ -506,5 +506,4 @@ pub(super) async fn stream(
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/http_openai_stream.rs"]
 mod tests;

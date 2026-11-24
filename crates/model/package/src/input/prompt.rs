@@ -842,5 +842,4 @@ pub fn place_visual_embeddings(
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/input_prompt.rs"]
 mod tests;

@@ -1,4 +1,4 @@
-mod support;
+use infer_test_support::fixtures as support;
 
 use infer_core::event::CpuStage;
 use infer_core::{Error, ErrorCode, ModelId, RequestId, Result};

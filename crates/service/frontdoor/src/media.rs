@@ -1255,5 +1255,4 @@ impl Drop for TempPath {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/media.rs"]
 mod tests;

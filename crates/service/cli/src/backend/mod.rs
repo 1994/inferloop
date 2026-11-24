@@ -249,7 +249,6 @@ pub fn formats(choice: BackendChoice) -> Result<infer_ir::BackendFormats> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/backend_mod.rs"]
 mod tests;
 
 #[cfg(any(test, cuda_backend))]

@@ -246,7 +246,7 @@ P1 的硬件前提是 NVLink 机型；5090 这类无 NVLink 的机器不用于 T
 
 **P0.4 组协议主机测试**
 
-- 入口：在 `crates/engine/runtime/tests/support` 放一个只实现 `BackendProvider` 的 fake 2-rank backend，复用现有 Engine 测试构造；不新增产品 feature，不改 `src/` 的公开 API。
+- 入口：在测试替身 crate（现为 `crates/testing/cpu/support`）放一个只实现 `BackendProvider` 的 fake 2-rank backend，复用现有 Engine 测试构造；不新增产品 feature，不改 `src/` 的公开 API。
 - 验收：group ticket 在所有 rank fence 前不发布；reserve 部分失败可回滚；prefix 取各 rank 最小值；任一 rank 错误进入隔离且继续 poll 其余 rank。
 
 **P1 的前置**

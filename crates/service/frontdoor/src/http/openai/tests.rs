@@ -766,7 +766,6 @@ async fn completion_stream_uses_sdk_choice_schema_and_reports_usage() {
     handle.shutdown().await.unwrap();
 }
 
-#[path = "http_strict_tools.rs"]
 mod strict_tools;
 
 #[tokio::test]
@@ -815,5 +814,4 @@ async fn public_chat_rejects_server_local_media_paths() {
     handle.shutdown().await.unwrap();
 }
 
-#[path = "http_openai_decisions.rs"]
 mod decisions;

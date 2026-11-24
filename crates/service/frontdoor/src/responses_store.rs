@@ -413,5 +413,4 @@ impl ResponseStore for InMemoryResponseStore {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/responses_store.rs"]
 mod tests;

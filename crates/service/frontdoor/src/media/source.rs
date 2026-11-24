@@ -56,5 +56,4 @@ pub(super) async fn fetch(url: &str, limit: Option<usize>) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/media_source.rs"]
 mod tests;

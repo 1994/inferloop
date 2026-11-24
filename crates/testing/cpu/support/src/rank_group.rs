@@ -6,7 +6,7 @@
 //! reservation is all-or-nothing, a reused prefix is the shortest any rank holds, and a failing
 //! rank fails the group only once every other rank has fenced its work. It is a test double, not
 //! a product backend.
-use crate::support::ProtocolBackend;
+use crate::fixtures::ProtocolBackend;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::{
     BackendFormats, DataflowGraph, DeviceCapabilities, ExecutionProgram, ExecutionTask, ModelIr,

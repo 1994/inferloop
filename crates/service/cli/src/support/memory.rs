@@ -29,5 +29,4 @@ pub fn utilization_bytes(total_bytes: u64, utilization: f64) -> Result<u64> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/support_memory.rs"]
 mod tests;

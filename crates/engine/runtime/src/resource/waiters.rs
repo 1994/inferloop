@@ -111,5 +111,4 @@ impl ResourceWaiters {
     }
 }
 #[cfg(test)]
-#[path = "../../tests/unit/resource_waiters.rs"]
 mod tests;

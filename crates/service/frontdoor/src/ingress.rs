@@ -252,5 +252,4 @@ impl Drop for Abandon {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/ingress.rs"]
 mod tests;

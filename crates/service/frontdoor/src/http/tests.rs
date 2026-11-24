@@ -20,14 +20,7 @@ use tower::ServiceExt;
 use super::*;
 use infer_ir::*;
 
-// `actor.rs` includes the same source; both are modules of this crate's test binary, and the
-// shared file is written to be included once per target.
-#[allow(
-    clippy::duplicate_mod,
-    reason = "one shared test source, two unit-test modules"
-)]
-#[path = "../../../../engine/runtime/tests/support/mod.rs"]
-pub(super) mod support;
+pub(super) use infer_test_support::fixtures as support;
 
 use support::ProtocolBackend;
 

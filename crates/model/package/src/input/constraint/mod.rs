@@ -229,5 +229,4 @@ impl TextAssets {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/tool_constraint.rs"]
 mod tests;

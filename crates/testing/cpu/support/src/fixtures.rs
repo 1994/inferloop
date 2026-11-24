@@ -1,5 +1,5 @@
-// Each integration test compiles its own copy of this module, so whatever a given scene does not
-// use is dead code in that target.
+// One shared crate serves every runtime, frontdoor and agent test target, so whatever a given
+// scene does not use is dead code in that build.
 #![allow(
     dead_code,
     reason = "shared test source, included once per test target"
@@ -164,6 +164,8 @@ pub struct ProtocolBackend {
 }
 
 impl ProtocolBackend {
+    /// The same double reporting `device` instead of no device.
+    #[must_use]
     pub fn with_device(mut self, device: infer_ir::DeviceIdentity) -> Self {
         self.device = Some(device);
         self
@@ -184,6 +186,8 @@ impl ProtocolBackend {
     pub const fn reserved_states(&self) -> usize {
         self.states.len()
     }
+    /// The same double reporting `profile` from an execution-profile query.
+    #[must_use]
     pub fn with_profile(mut self, profile: infer_ir::ExecutionProfileInspection) -> Self {
         self.profile = Some(profile);
         self
@@ -221,6 +225,10 @@ impl ProtocolBackend {
     }
 
     /// A declared sequence of peaks, advanced once per logits readout for each request.
+    ///
+    /// # Errors
+    /// Returns an invalid-input error when a token is outside the vocabulary or the request bound
+    /// cannot be reserved.
     pub fn scripted(tokens: Vec<usize>, ir: &ModelIr) -> Result<Self> {
         if tokens.iter().any(|&token| token >= ir.vocab_size) {
             return Err(Error::invalid("script token outside vocabulary"));
@@ -324,6 +332,7 @@ impl ProtocolBackend {
         self
     }
     /// Advertise a loaded draft while rejecting any task that permits backend sampling.
+    #[must_use]
     pub const fn requiring_engine_sampling(mut self, draft_depth: usize) -> Self {
         self.host_sampling_draft_depth = draft_depth;
         self

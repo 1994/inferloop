@@ -7,7 +7,6 @@ mod request;
 mod responses;
 mod stream;
 #[cfg(test)]
-#[path = "../../../tests/unit/http_openai.rs"]
 mod tests;
 
 use super::text::TextState;

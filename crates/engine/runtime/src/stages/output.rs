@@ -201,5 +201,4 @@ impl OutputShape {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/backend_token_output.rs"]
 mod backend_token_tests;

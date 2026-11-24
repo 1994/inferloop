@@ -21,5 +21,4 @@ pub(super) fn response() -> String {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/ids.rs"]
 mod tests;

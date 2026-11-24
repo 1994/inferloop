@@ -373,5 +373,4 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/observation.rs"]
 mod tests;

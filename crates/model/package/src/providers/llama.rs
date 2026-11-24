@@ -174,5 +174,4 @@ impl ModelProvider for LlamaProvider {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/providers_llama.rs"]
 mod tests;

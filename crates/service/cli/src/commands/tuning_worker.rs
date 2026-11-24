@@ -238,5 +238,4 @@ fn io_error(error: &io::Error) -> Error {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/tuning_worker.rs"]
 mod tests;

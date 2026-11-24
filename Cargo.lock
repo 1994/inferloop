@@ -1446,6 +1446,7 @@ dependencies = [
  "infer-quality",
  "infer-runtime",
  "infer-spi",
+ "infer-test-support",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -1609,6 +1610,7 @@ dependencies = [
  "infer-observe",
  "infer-runtime",
  "infer-spi",
+ "infer-test-support",
  "infer-workloads",
  "mime",
  "serde",
@@ -1739,6 +1741,7 @@ dependencies = [
  "infer-scheduler",
  "infer-spi",
  "infer-state",
+ "infer-test-support",
  "infer-workloads",
  "serde",
  "serde_json",
@@ -1775,6 +1778,17 @@ dependencies = [
  "infer-core",
  "infer-ir",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "infer-test-support"
+version = "0.1.0"
+dependencies = [
+ "infer-core",
+ "infer-ir",
+ "infer-model-recipes",
+ "infer-spi",
  "serde_json",
 ]
 
