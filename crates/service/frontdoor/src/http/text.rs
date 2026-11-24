@@ -1,4 +1,5 @@
 //! Text HTTP adapter.
+use super::openai;
 use super::{HttpError, HttpResult, RuntimeHandle, cpu, router, trace_parent};
 use crate::constants::MAX_BACKGROUND_RESPONSES;
 use crate::constants::MAX_REQUEST_BODY_BYTES;
@@ -72,7 +73,7 @@ pub fn router_with_text_media_and_responses(
     router(handle).merge(
         Router::new()
             .route("/native/v1/text", post(text_infer))
-            .merge(super::openai::routes())
+            .merge(openai::routes())
             .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
             .with_state(state),
     )

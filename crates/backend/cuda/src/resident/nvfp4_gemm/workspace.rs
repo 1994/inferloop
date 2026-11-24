@@ -28,6 +28,9 @@ use crate::tuning::resident_gemm::GemmConfig;
 use crate::tuning::resident_gemm::swiglu::{self, Binding as SwigluBinding};
 use infer_cuda_kernels::runtime::bf16;
 
+use super::super::capture;
+use super::super::fp8_quant_reduction;
+use super::super::norm_maximum;
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::WeightKey as ResidentGemmWeightKey;
 use crate::{
@@ -42,6 +45,7 @@ use infer_ir::DataflowGraph;
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::env::var;
+use vendor_fp8::nvfp4;
 
 /// FP4 activation codes and their per-group scales.
 type Quantized = (Allocation<f4e2m1fnx2>, Allocation<f8e4m3fn>);
@@ -53,7 +57,7 @@ type Fp8Buffers = (Allocation<f8e4m3fn>, Allocation<f32>);
 
 pub struct Workspace {
     quant_reuse: CaptureQuantReuse,
-    norm_maximum: Option<super::super::norm_maximum::Pending>,
+    norm_maximum: Option<norm_maximum::Pending>,
     norm_fp4: Option<norm_fp4::Pending>,
     strategies: BTreeMap<StrategyKey, GemmConfig>,
     swiglu_strategies: BTreeMap<SwigluBinding, GemmConfig>,
@@ -63,7 +67,7 @@ pub struct Workspace {
     fp8_strategies: BTreeMap<(WeightKey, usize, usize, usize), Choice>,
     /// Lt handle, descriptors and original weight allocations outlive every program capture.
     vendor_fp8: vendor_fp8::Support,
-    vendor_fp4: vendor_fp8::nvfp4::Support,
+    vendor_fp4: nvfp4::Support,
     /// Explicit diagnostic override; production automatic choices still require exact gates.
     vendor_diagnostic: bool,
     /// Keyed by `(rows, columns, scale_columns)`: per-channel and block-scaled FP8 share an
@@ -227,11 +231,8 @@ impl Workspace {
         widths: &[usize],
     ) -> Result<Self> {
         let vendor_fp8 = vendor_fp8::Support::new_with(device, true);
-        let vendor_fp4 = vendor_fp8::nvfp4::Support::new(
-            &vendor_fp8,
-            &weights.resident_tuning,
-            weights.autotune,
-        );
+        let vendor_fp4 =
+            nvfp4::Support::new(&vendor_fp8, &weights.resident_tuning, weights.autotune);
         let mut workspace = Self {
             quant_reuse: CaptureQuantReuse::default(),
             norm_maximum: None,
@@ -285,13 +286,13 @@ impl Workspace {
         certified: bool,
     ) -> Result<()> {
         let ProjectionWeight::Fp4(..) = weight else {
-            return Err(super::super::capture::error("FP4 workspace weight"));
+            return Err(capture::error("FP4 workspace weight"));
         };
         let rows = output.rows;
         let (q, qs) = self
             .buffers
             .get(&(rows, columns))
-            .ok_or_else(|| super::super::capture::error("FP4 quantization workspace missing"))?;
+            .ok_or_else(|| capture::error("FP4 quantization workspace missing"))?;
         let (q, qs) = (q.operand(), qs.operand());
         let key = quant_key(
             certified,
@@ -342,7 +343,7 @@ impl Workspace {
         columns: usize,
     ) -> Result<()> {
         let ProjectionWeight::Fp4(..) = weight else {
-            return Err(super::super::capture::error("FP4 workspace weight"));
+            return Err(capture::error("FP4 workspace weight"));
         };
         let rows = output.rows;
         // The fused codes overwrite the shared quantization buffers; no reuse permit may span it.
@@ -350,10 +351,10 @@ impl Workspace {
         let (q, qs) = self
             .buffers
             .get(&(rows, columns))
-            .ok_or_else(|| super::super::capture::error("FP4 quantization workspace missing"))?;
+            .ok_or_else(|| capture::error("FP4 quantization workspace missing"))?;
         let (q, qs) = (q.operand(), qs.operand());
         if !rows.is_multiple_of(QUANTIZATION_ROWS) {
-            return Err(super::super::capture::error("fused SwiGLU row tile"));
+            return Err(capture::error("fused SwiGLU row tile"));
         }
         contract
             .projection
@@ -399,14 +400,14 @@ impl Workspace {
         let pointer = input.address();
         let pending = self.norm_fp4.take();
         let (ProjectionWeight::Fp4(..), ProjectionWeight::Fp4(..)) = (gate, up) else {
-            return Err(super::super::capture::error("fused SwiGLU weights"));
+            return Err(capture::error("fused SwiGLU weights"));
         };
         let binding = SwigluBinding::new(
             (gate, up),
             (input_scale, down_scale),
             [rows, hidden, columns],
         )
-        .map_err(super::super::capture::error)?;
+        .map_err(capture::error)?;
         let config = self
             .swiglu_strategies
             .get(&binding)
@@ -415,11 +416,11 @@ impl Workspace {
         #[cfg(test)]
         let config = swiglu::recorded_config(config);
         if !self.gate_up_swiglu_ready(rows, columns, hidden) {
-            return Err(super::super::capture::error("fused SwiGLU geometry"));
+            return Err(capture::error("fused SwiGLU geometry"));
         }
         // Both writes replace shared quantization buffers; no reuse permit may span them.
         self.quant_reuse.clear();
-        let missing = || super::super::capture::error("FP4 quantization workspace missing");
+        let missing = || capture::error("FP4 quantization workspace missing");
         let (q, qs) = self.buffers.get(&(rows, columns)).ok_or_else(missing)?;
         let (codes, code_scales) = self.buffers.get(&(rows, hidden)).ok_or_else(missing)?;
         let (q, qs) = (q.operand(), qs.operand());
@@ -473,7 +474,7 @@ impl Workspace {
         let (q, qs) = self
             .buffers
             .get(&(rows, columns))
-            .ok_or_else(|| super::super::capture::error("FP4 quantization workspace missing"))?;
+            .ok_or_else(|| capture::error("FP4 quantization workspace missing"))?;
         Self::record_quantized_gemm(
             &self.strategies,
             (contract, scope),
@@ -498,8 +499,7 @@ impl Workspace {
             let outputs = output.columns;
             let config = strategies
                 .get(&(
-                    ResidentGemmWeightKey::new(weight, scale)
-                        .map_err(super::super::capture::error)?,
+                    ResidentGemmWeightKey::new(weight, scale).map_err(capture::error)?,
                     rows,
                     outputs,
                     columns,
@@ -610,7 +610,7 @@ impl Workspace {
                 },
             )
             .map_err(capture_error)?;
-        self.norm_maximum = Some(super::super::norm_maximum::Pending {
+        self.norm_maximum = Some(norm_maximum::Pending {
             next,
             pointer,
             rows,
@@ -674,10 +674,7 @@ impl Workspace {
                             .quantize_fp8(
                                 recording,
                                 &Fp8QuantPlan {
-                                    kind: super::super::fp8_quant_reduction::kind(
-                                        columns,
-                                        maximum_ready,
-                                    ),
+                                    kind: fp8_quant_reduction::kind(columns, maximum_ready),
                                     rows,
                                     columns,
                                 },
@@ -687,7 +684,7 @@ impl Workspace {
                             )
                             .map_err(error)?;
                         #[cfg(test)]
-                        super::super::norm_maximum::record_consumption(maximum_ready);
+                        norm_maximum::record_consumption(maximum_ready);
                     }
                     let outputs = output.columns;
                     let gemm = Gemm {

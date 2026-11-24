@@ -3,7 +3,10 @@
 //! projection (one lane, gathered verify rows, slot rows in place, prompt tiles, the prompt
 //! logits row) cannot drift apart: each passes its mode and records the decision.
 use super::capture::error;
+use super::pool_gemv;
 use super::program::ActivationQuantization;
+#[cfg(test)]
+use super::small_gemm;
 use crate::constants::{
     FUSED_VERIFY_LANES, GEMV_WIDE_OUTPUT_RATIO, NVFP4_GROUP_SIZE, SMALL_GEMV_MAX_ROWS,
 };
@@ -142,7 +145,7 @@ pub(super) fn lower(
     let unquantized = |arithmetic_rows: usize| {
         #[cfg(test)]
         if weight == Format::Dense
-            && super::small_gemm::precise_dense_enabled()
+            && small_gemm::precise_dense_enabled()
             && outputs <= columns.saturating_mul(GEMV_WIDE_OUTPUT_RATIO)
         {
             return Lowering::Compensated;
@@ -187,7 +190,7 @@ pub(super) fn lower(
             let shape = [rows, outputs, columns];
             if activation.is_none()
                 && (!priced || pool_dense::supported(shape))
-                && let Some(pool) = super::pool_gemv::lowered(weight, shape, pool)
+                && let Some(pool) = pool_gemv::lowered(weight, shape, pool)
             {
                 return Ok(Lowering::PoolDense(pool));
             }

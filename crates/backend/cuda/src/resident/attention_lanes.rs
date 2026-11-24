@@ -1,4 +1,5 @@
 //! One launch of decode attention across a pool's lanes instead of three per lane.
+use super::narrow_kv;
 use super::{
     ActivationArena,
     batch::BatchBuilder,
@@ -136,7 +137,7 @@ impl BatchBuilder<'_> {
         scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
-        caches: &[super::narrow_kv::NarrowCaches],
+        caches: &[narrow_kv::NarrowCaches],
         (metadata, table_group): (&Allocation<i32>, usize),
     ) -> Result<bool> {
         let TensorOp::Attention {

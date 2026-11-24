@@ -2,6 +2,7 @@
 //!
 //! Tuning keys embed these values in their own formats, so each is exposed as the compiler reports
 //! it: changing a formatting here would invalidate every cached entry.
+use super::identities;
 use crate::tile::backend_error;
 use cutile::cutile_compiler::cuda_tile_runtime_utils as compiler;
 use cutile::cutile_compiler::hints::CompileOptions;
@@ -35,7 +36,7 @@ pub fn enable_cache() -> Result<()> {
 /// Entries are scoped to `scope`, the device and driver identity the caller keys its tuning by.
 /// Without a usable cache directory identities are derived each time.
 pub fn enable_identity_cache(scope: &[u8]) {
-    super::identities::enable(scope);
+    identities::enable(scope);
 }
 
 /// Check that the device with `ordinal` can launch kernels with programmatic dependent launch.

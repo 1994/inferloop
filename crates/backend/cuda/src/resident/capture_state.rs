@@ -1,3 +1,4 @@
+use super::capture;
 use super::recurrent_lowering::{Delta, Lowering, Mode, Recurrence, lower};
 use super::shaped::StateTensor;
 use super::{
@@ -85,8 +86,7 @@ impl Capture<'_> {
         if let Some(recurrence) = Recurrence::of(&node.op)? {
             // The pooled graph holds state roots here, not lane views: one replay advances every
             // busy lane instead of one launch per lane.
-            let pooled =
-                self.mode == super::capture::CaptureMode::Pooled && self.states.contains_key(&id);
+            let pooled = self.mode == capture::CaptureMode::Pooled && self.states.contains_key(&id);
             let mode = if pooled { Mode::Pooled } else { Mode::Lane };
             return match (lower(recurrence, mode), recurrence) {
                 (Lowering::Lanes, Recurrence::Conv { channels }) => {

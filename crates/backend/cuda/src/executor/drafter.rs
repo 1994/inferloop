@@ -2,6 +2,8 @@
 //! verifies them on the target, then lets it settle what the target accepted; the step itself
 //! does not know which draft is loaded. A new draft is one more variant here.
 use super::Sequence;
+use super::drafting;
+use super::execution;
 use crate::{
     device::CudaDevice,
     resident::{
@@ -193,11 +195,10 @@ impl Drafter {
     ) -> Result<Option<Proposal>> {
         let chains = match self {
             Self::Model(engine) if engine.attached() => Some(
-                super::execution::model_chains(engine, states, device, tasks, participants, width)
-                    .await?,
+                execution::model_chains(engine, states, device, tasks, participants, width).await?,
             ),
             Self::Head(Some(pool)) => {
-                super::drafting::propose(pool, states, device, tasks, participants, width).await?
+                drafting::propose(pool, states, device, tasks, participants, width).await?
             }
             Self::None | Self::Head(None) | Self::Model(_) => None,
         };
@@ -220,7 +221,7 @@ impl Drafter {
             Self::Model(engine) if engine.attached() && !verified.features.is_empty() => {
                 engine.ingest_verified(device, verified.features, target.verified_slots())
             }
-            Self::Head(Some(pool)) if verified.settles_after => super::drafting::catch_up(
+            Self::Head(Some(pool)) if verified.settles_after => drafting::catch_up(
                 pool,
                 states,
                 device,

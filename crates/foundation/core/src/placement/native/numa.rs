@@ -1,3 +1,4 @@
+use super::linux;
 use super::mask::Mask;
 use crate::placement::topology::allowed_nodes;
 use crate::{
@@ -35,7 +36,7 @@ impl Policy {
             )
         } != 0
         {
-            return Err(super::linux::os_error("read NUMA policy"));
+            return Err(linux::os_error("read NUMA policy"));
         }
         Ok(Self { mode, mask })
     }
@@ -69,7 +70,7 @@ impl Policy {
         {
             Ok(())
         } else {
-            Err(super::linux::os_error("set NUMA memory policy"))
+            Err(linux::os_error("set NUMA memory policy"))
         }
     }
 }

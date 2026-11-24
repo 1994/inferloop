@@ -1,4 +1,5 @@
 //! Captures retain every operand; timing includes the original append and full attention compute.
+use super::mma;
 use super::{
     Choice, Shape,
     reference::{Fixture, KEY_SCALE, VALUE_SCALE},
@@ -277,7 +278,7 @@ impl Captured {
         self.verify_graph_limit(device, f, graph, super::MAX_ERROR)
     }
     pub fn verify_mma(&self, device: &CudaDevice, f: &Fixture) -> Result<f64> {
-        self.verify_graph_limit(device, f, &self.graph, super::mma::MAX_ERROR)
+        self.verify_graph_limit(device, f, &self.graph, mma::MAX_ERROR)
     }
     pub fn verify_mma_history(&self, device: &CudaDevice, f: &Fixture) -> Result<()> {
         device.tile().sync(self.graph.launch())?;

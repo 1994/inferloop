@@ -1,4 +1,5 @@
 //! Clearing every recurrent and rank-1 state in place, as one replayable graph.
+use super::batch;
 use super::buffers::buffer;
 use crate::device::{CudaDevice, device_error};
 use infer_core::Result;
@@ -12,7 +13,7 @@ mod tests;
 ///
 /// # Errors
 /// Reports a state the device cannot address or a rejected capture.
-pub(super) fn capture(device: &CudaDevice, states: &super::batch::States) -> Result<Graph> {
+pub(super) fn capture(device: &CudaDevice, states: &batch::States) -> Result<Graph> {
     let kernels = device.kernels();
     device.tile().capture(|scope| {
         let recording = scope;

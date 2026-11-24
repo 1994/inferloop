@@ -1,5 +1,12 @@
 //! Cross-sequence target verification with per-slot recurrent rollback.
+use super::batch;
+use super::batch_projection;
+use super::slot_convolution;
+use super::slot_recurrent;
 use super::slot_recurrent::ValueDevice;
+use super::slot_rope;
+use super::slot_states;
+use super::token_readout;
 use super::{
     ActivationArena,
     batch::{BatchBuilder, BatchReadout, Dispatch32, States, dispatch32, take_result},
@@ -44,7 +51,7 @@ pub(super) struct SlotVerifyGraph {
     /// the accepted prefix instead of restoring snapshots.
     fused: bool,
     readbacks: Readbacks,
-    token_readout: Option<super::token_readout::TokenReadout>,
+    token_readout: Option<token_readout::TokenReadout>,
     metadata_owner: Allocation<i32>,
     metadata_upload: Vec<i32>,
     metadata_staging: PinnedUpload<i32>,
@@ -74,8 +81,8 @@ pub(super) struct SlotVerifyGraph {
 
 /// Captured verification and commits retain all recurrent scratch and staged inputs.
 struct RecurrentCapture {
-    staging: super::slot_recurrent::Staging,
-    parameters: super::slot_states::RecurrentParameters,
+    staging: slot_recurrent::Staging,
+    parameters: slot_states::RecurrentParameters,
 }
 impl RecurrentCapture {
     fn new(
@@ -83,10 +90,10 @@ impl RecurrentCapture {
         arena: &ActivationArena,
         (slots, verify): (usize, usize),
         fused: bool,
-        shared: Option<&super::slot_recurrent::Staging>,
+        shared: Option<&slot_recurrent::Staging>,
     ) -> Result<Self> {
         let staging = if fused {
-            super::slot_recurrent::allocate_staging(
+            slot_recurrent::allocate_staging(
                 builder.device,
                 &builder.graph.nodes,
                 arena,
@@ -94,16 +101,12 @@ impl RecurrentCapture {
                 shared,
             )?
         } else {
-            super::slot_recurrent::Staging::new()
+            slot_recurrent::Staging::new()
         };
         let parameters = if fused {
-            super::slot_states::prepare_parameters(
-                builder.device,
-                &builder.graph.nodes,
-                builder.weights,
-            )?
+            slot_states::prepare_parameters(builder.device, &builder.graph.nodes, builder.weights)?
         } else {
-            super::slot_states::RecurrentParameters::new()
+            slot_states::RecurrentParameters::new()
         };
         Ok(Self {
             staging,
@@ -117,18 +120,15 @@ impl RecurrentCapture {
 pub(super) type SlotVerifyLane = (usize, usize, u32, usize, usize);
 
 /// One slot's verification lanes of the pooled arena with their metadata.
-fn slot_lanes(
-    slot: usize,
-    metadata: &[Allocation<i32>],
-) -> Result<super::slot_recurrent::SlotLanes<'_>> {
-    let base = slot * super::slot_recurrent::LANES;
+fn slot_lanes(slot: usize, metadata: &[Allocation<i32>]) -> Result<slot_recurrent::SlotLanes<'_>> {
+    let base = slot * slot_recurrent::LANES;
     let [first, second, third] = [base, base + 1, base + 2];
     let lane = |index: usize| {
         metadata
             .get(index)
             .ok_or_else(|| error("slot verify lane metadata"))
     };
-    Ok(super::slot_recurrent::SlotLanes {
+    Ok(slot_recurrent::SlotLanes {
         lanes: [first, second, third],
         metadata: [lane(first)?, lane(second)?, lane(third)?],
     })
@@ -163,7 +163,7 @@ pub(super) fn fused_recurrent(graph: &infer_ir::DataflowGraph, verify: usize) ->
                             }
                         )
                 })
-            }) || super::slot_recurrent::covers(node)
+            }) || slot_recurrent::covers(node)
         })
 }
 
@@ -175,7 +175,7 @@ impl BatchBuilder<'_> {
         lane_states: &mut [States],
         arena: &ActivationArena,
         metadata: &[Allocation<i32>],
-        (verify, staging): (usize, &super::slot_recurrent::Staging),
+        (verify, staging): (usize, &slot_recurrent::Staging),
     ) -> Result<Vec<Vec<Graph>>> {
         let mut commits = Vec::with_capacity(lane_states.len());
         let hardware = ValueDevice::new(self.device)?;
@@ -185,11 +185,11 @@ impl BatchBuilder<'_> {
             for count in 1..=verify {
                 graphs.push(self.device.tile().capture(|scope| {
                     for (index, node) in self.graph.nodes.iter().enumerate() {
-                        if super::slot_recurrent::covers(node) {
+                        if slot_recurrent::covers(node) {
                             let staged = staging
                                 .get(&(slot, index))
                                 .ok_or_else(|| error("slot commit staging"))?;
-                            super::slot_recurrent::record_commit(
+                            slot_recurrent::record_commit(
                                 scope,
                                 node,
                                 arena,
@@ -299,26 +299,26 @@ impl BatchBuilder<'_> {
         arena: &ActivationArena,
         (states, metadata): (&[States], &[Allocation<i32>]),
         (staging, index, hardware, batch): (
-            &mut super::slot_recurrent::Staging,
+            &mut slot_recurrent::Staging,
             usize,
             ValueDevice,
-            &super::slot_states::VerifyBatch<'_>,
+            &slot_states::VerifyBatch<'_>,
         ),
     ) -> Result<()> {
         staging.record_node(scope, node, arena, index)?;
-        if super::slot_convolution::record(scope, node, arena, batch, self.weights)?
-            || super::slot_states::record_batch(scope, node, arena, batch, hardware)?
+        if slot_convolution::record(scope, node, arena, batch, self.weights)?
+            || slot_states::record_batch(scope, node, arena, batch, hardware)?
         {
             return Ok(());
         }
-        if batch.lanes != super::slot_recurrent::LANES {
+        if batch.lanes != slot_recurrent::LANES {
             return Err(error(
                 "wide slot verification requires the batched recurrent path",
             ));
         }
         for (slot, states) in states.iter().enumerate() {
             let lanes = slot_lanes(slot, metadata)?;
-            super::slot_recurrent::record_verify(
+            slot_recurrent::record_verify(
                 scope,
                 node,
                 arena,
@@ -343,13 +343,9 @@ impl BatchBuilder<'_> {
         &mut self,
         lane_states: &mut [States],
         lane_fp8: &mut [NarrowCaches],
-        geometry: (
-            usize,
-            &[Allocation<i32>],
-            &super::slot_states::VerifyBatch<'_>,
-        ),
+        geometry: (usize, &[Allocation<i32>], &slot_states::VerifyBatch<'_>),
         arena: &mut ActivationArena,
-        (checkpoints, staging): (&mut [Vec<States>], &mut super::slot_recurrent::Staging),
+        (checkpoints, staging): (&mut [Vec<States>], &mut slot_recurrent::Staging),
         profile: &mut Option<profile::SlotProfile>,
     ) -> Result<Graph> {
         let (verify, metadata, batch) = geometry;
@@ -363,7 +359,7 @@ impl BatchBuilder<'_> {
                     profile.graph().boundary(scope, index, node)?;
                 }
                 if node.op == TensorOp::Linear {
-                    super::batch_projection::record_slots(
+                    batch_projection::record_slots(
                         scope,
                         node,
                         arena,
@@ -375,7 +371,7 @@ impl BatchBuilder<'_> {
                     )?;
                     continue;
                 }
-                if super::slot_rope::record(scope, node, arena, self.weights, batch.metadata)? {
+                if slot_rope::record(scope, node, arena, self.weights, batch.metadata)? {
                     continue;
                 }
                 if self.record_pool_verify_attention(
@@ -404,7 +400,7 @@ impl BatchBuilder<'_> {
                         mode,
                     }
                     .record(node)?,
-                    Dispatch32::Row if fused && super::slot_recurrent::covers(node) => {
+                    Dispatch32::Row if fused && slot_recurrent::covers(node) => {
                         self.record_slot_recurrent(
                             scope,
                             node,
@@ -468,7 +464,7 @@ impl BatchBuilder<'_> {
     /// capture failures.
     pub fn build_slot_verify(
         &mut self,
-        lane_states: &mut super::slot_states::SlotStates,
+        lane_states: &mut slot_states::SlotStates,
         lane_fp8: &mut [NarrowCaches],
         verify: usize,
     ) -> Result<SlotVerifyGraph> {
@@ -517,11 +513,11 @@ impl BatchBuilder<'_> {
             lanes,
             usize::try_from(self.device.profile()?.arena_budget_bytes()).map_err(device_error)?,
         )?;
-        let (metadata_owner, metadata) = super::batch::batched_metadata(self.device, lanes)?;
+        let (metadata_owner, metadata) = batch::batched_metadata(self.device, lanes)?;
         let mut profile = profile::SlotProfile::from_env(self.device);
         let shared = full.map(|graph| &graph.recurrent.staging);
         let mut recurrent = RecurrentCapture::new(self, &arena, (slots, verify), fused, shared)?;
-        let batch = super::slot_states::VerifyBatch {
+        let batch = slot_states::VerifyBatch {
             kernels: &self.weights.kernels,
             roots,
             parameters: &recurrent.parameters,
@@ -551,8 +547,8 @@ impl BatchBuilder<'_> {
             None
         };
         let wide = fused
-            && verify != super::slot_recurrent::LANES
-            && self.graph.nodes.iter().any(super::slot_recurrent::covers);
+            && verify != slot_recurrent::LANES
+            && self.graph.nodes.iter().any(slot_recurrent::covers);
         if wide && batched_commit.is_none() {
             return Err(Error::unsupported(
                 "wide slot verification needs a batched commit",
@@ -560,7 +556,7 @@ impl BatchBuilder<'_> {
         }
         let restore = if wide {
             Vec::new()
-        } else if fused && verify == super::slot_recurrent::LANES {
+        } else if fused && verify == slot_recurrent::LANES {
             self.capture_commits(lane_states, &arena, &metadata, (verify, &recurrent.staging))?
         } else {
             self.capture_restores(lane_states, &checkpoints)?
@@ -568,7 +564,7 @@ impl BatchBuilder<'_> {
         let hidden = take_result(&arena, self.graph.hidden)?;
         let logits = take_result(&arena, self.graph.logits)?;
         let features = self.graph.features.map(|id| take_result(&arena, Some(id)));
-        let token_readout = super::token_readout::TokenReadout::new(
+        let token_readout = token_readout::TokenReadout::new(
             self.device,
             from_ref(&logits),
             slots * verify,

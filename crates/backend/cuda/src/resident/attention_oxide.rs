@@ -1,5 +1,6 @@
 //! Exact F32 prefill attention compiled from the pinned Rust SIMT source.
 //! The generated PTX is embedded so host builds keep their stable toolchain.
+use super::capture;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::{CudaDevice, device_error};
 use infer_core::Result;
@@ -144,15 +145,15 @@ impl Support {
         window: i32,
     ) -> Result<()> {
         if !self.accepts(&buffers, geometry) {
-            return Err(super::capture::error(
+            return Err(capture::error(
                 "selected SIMT attention cannot record these operands",
             ));
         }
         let (_, _, _, lanes, capacity) = geometry;
         let [keys, values] = buffers.cache.buffers.addresses();
         let [key_scale, value_scale] = buffers.cache.scales;
-        let grid = u32::try_from((lanes * HEADS).div_ceil(self.rows_per_cta))
-            .map_err(super::capture::error)?;
+        let grid =
+            u32::try_from((lanes * HEADS).div_ceil(self.rows_per_cta)).map_err(capture::error)?;
         // SAFETY: these are `attention_fp8_256`'s parameters in order. `accepts` checked every
         // extent the kernel reads; the resident allocator validates logical positions and every
         // physical table entry, and the graph keeps the owned buffers alive.
@@ -169,7 +170,7 @@ impl Support {
                     Argument::buffer(buffers.metadata),
                     Argument::buffer(buffers.table),
                     Argument::buffer(buffers.output),
-                    Argument::U32(u32::try_from(capacity).map_err(super::capture::error)?),
+                    Argument::U32(u32::try_from(capacity).map_err(capture::error)?),
                     Argument::I32(window),
                     Argument::F32(key_scale),
                     Argument::F32(value_scale),
@@ -178,9 +179,7 @@ impl Support {
         };
         let mut keep = owners(&buffers);
         keep.push(launch.owner());
-        recording
-            .foreign(launch, keep)
-            .map_err(super::capture::error)?;
+        recording.foreign(launch, keep).map_err(capture::error)?;
         #[cfg(test)]
         CAPTURES.set(CAPTURES.get() + 1);
         Ok(())

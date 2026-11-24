@@ -12,6 +12,7 @@ use crate::cpu::CpuPool;
 use crate::cpu::Credit;
 use crate::ingress::Pending;
 use crate::ingress::Registry;
+use async_mpsc::error;
 use infer_core::{Error, RequestId, Result};
 use infer_ir::CanonicalRequest;
 use infer_observe::{ObservationQuery, trace::TraceContext};
@@ -140,8 +141,8 @@ impl Subscriber {
             return true;
         };
         match self.channel.try_send(done) {
-            Ok(()) | Err(async_mpsc::error::TrySendError::Closed(_)) => false,
-            Err(async_mpsc::error::TrySendError::Full(done)) => {
+            Ok(()) | Err(error::TrySendError::Closed(_)) => false,
+            Err(error::TrySendError::Full(done)) => {
                 self.terminal = Some(done);
                 true
             }

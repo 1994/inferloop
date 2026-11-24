@@ -24,9 +24,16 @@ use crate::{
     mlp::ProjectionWeight,
     strategy::LinearTiling,
 };
+use attention::exact;
+use attention::mma;
+use attention::mma_f32;
+use attention::shared;
+use attention::vector;
+use attention::vector_combined;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::runtime::Timing;
 use infer_cuda_kernels::runtime::{Allocation, Graph};
+use resident_gemm::swiglu;
 use serde::{Deserialize, Serialize};
 use std::env::var_os;
 use std::fs::OpenOptions;
@@ -380,23 +387,17 @@ impl From<StoredTilingTable> for TilingTable {
         for (family, legacy) in [
             (pool_dense::FAMILY, stored.resident_pool_dense),
             (nvfp4_lt::FAMILY, stored.resident_fp4_lt),
+            (mma_f32::FAMILY, stored.resident_mma_f32_attention),
+            (mma::FAMILY, stored.resident_mma_attention),
+            (exact::FAMILY, stored.resident_exact_attention),
+            (shared::FAMILY, stored.resident_shared_attention),
+            (vector::FAMILY, stored.resident_vector_shared_attention),
             (
-                attention::mma_f32::FAMILY,
-                stored.resident_mma_f32_attention,
-            ),
-            (attention::mma::FAMILY, stored.resident_mma_attention),
-            (attention::exact::FAMILY, stored.resident_exact_attention),
-            (attention::shared::FAMILY, stored.resident_shared_attention),
-            (
-                attention::vector::FAMILY,
-                stored.resident_vector_shared_attention,
-            ),
-            (
-                attention::vector_combined::FAMILY,
+                vector_combined::FAMILY,
                 stored.resident_vector_combined_attention,
             ),
             (resident_gemm::FAMILY, stored.resident_gemm),
-            (resident_gemm::swiglu::FAMILY, stored.resident_swiglu),
+            (swiglu::FAMILY, stored.resident_swiglu),
             (
                 fp8_gemm::FAMILY,
                 stored

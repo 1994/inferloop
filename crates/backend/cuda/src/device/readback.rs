@@ -1,4 +1,6 @@
 //! Owned pinned destinations; host slices are exposed only after submission completion.
+#[cfg(all(test, feature = "cuda"))]
+use super::asynchronous;
 use super::{CudaDevice, device_error};
 use crate::constants::MIB;
 use infer_core::{Error, ErrorCode, Result};
@@ -104,7 +106,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
         graph: &Graph,
         sources: &[Option<ReadbackSource<T>>],
     ) -> Result<Rows<T>> {
-        super::asynchronous::block_on(self.run_async(device, graph, sources))
+        asynchronous::block_on(self.run_async(device, graph, sources))
     }
 
     fn copies(&self, sources: &[Option<ReadbackSource<T>>]) -> Result<Copies> {
@@ -249,7 +251,7 @@ impl Readbacks<f32> {
         sources: &[Option<ReadbackSource>],
         tail: (&Graph, &mut Readbacks<i32>, Allocation<i32>),
     ) -> Result<(Rows<f32>, Rows<i32>)> {
-        super::asynchronous::block_on(self.run_with_tokens_async(device, graph, sources, tail))
+        asynchronous::block_on(self.run_with_tokens_async(device, graph, sources, tail))
     }
 }
 

@@ -6,6 +6,7 @@ mod host;
 mod recorded;
 mod workspace;
 use super::attention_oxide::{Geometry, owners};
+use super::capture;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::{CudaDevice, device_error};
 use catalog::{DIM, HEADS, KV_HEADS, Variant};
@@ -50,7 +51,7 @@ pub struct Support {
     lanes: usize,
 }
 fn rejected() -> Error {
-    super::capture::error("selected MMA cannot record these operands")
+    capture::error("selected MMA cannot record these operands")
 }
 
 impl Support {
@@ -189,10 +190,11 @@ impl Support {
             Arithmetic::Bf16 => self
                 .apis
                 .get(&variant)
-                .ok_or_else(|| super::capture::error("MMA variant not prepared before capture"))?,
-            Arithmetic::F16 => self.f16_api.as_ref().ok_or_else(|| {
-                super::capture::error("FP16 MMA artifact not prepared before capture")
-            })?,
+                .ok_or_else(|| capture::error("MMA variant not prepared before capture"))?,
+            Arithmetic::F16 => self
+                .f16_api
+                .as_ref()
+                .ok_or_else(|| capture::error("FP16 MMA artifact not prepared before capture"))?,
         };
         let pointers = self.scratch.pointers();
         let [
@@ -207,12 +209,12 @@ impl Support {
             (Arithmetic::Bf16, KvBuffers::F32 { .. }) => self
                 .prepare_f32
                 .as_ref()
-                .ok_or_else(|| super::capture::error("F32 cache preparation missing"))?,
+                .ok_or_else(|| capture::error("F32 cache preparation missing"))?,
             _ => &self.prepare,
         };
         let [keys, values] = b.cache.buffers.addresses();
         let [key_scale, value_scale] = b.cache.scales;
-        let u32_of = |value: usize| u32::try_from(value).map_err(super::capture::error);
+        let u32_of = |value: usize| u32::try_from(value).map_err(capture::error);
         // SAFETY: the bridge's parameters in order. `accepts` checked every operand extent and the
         // scratch was sized for this capacity and lane count; the graph keeps both alive. Physical
         // rows, not logical capacity, are the bridge's head stride; lengths bound it.
@@ -280,7 +282,7 @@ impl Support {
                 },
                 keep,
             )
-            .map_err(super::capture::error)
+            .map_err(capture::error)
     }
 }
 pub fn artifact_identity() -> String {

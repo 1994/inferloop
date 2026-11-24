@@ -28,6 +28,8 @@ pub(super) use norm::record as record_fused_norm;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::nvfp4_gemm;
+use super::program;
 use crate::tuning::prefill::{delegate_dense, narrow_dense_layout};
 use infer_core::Result;
 const NARROW_DENSE_TILE: [usize; 2] = [PREFILL_LANES, 16];
@@ -60,7 +62,7 @@ fn swiglu_plan(
                 .is_some_and(ProjectionWeight::is_nvfp4)
             || !matches!(
                 weights.activation_quantization(node.inputs[1]),
-                Some(super::program::ActivationQuantization::Fp4(_))
+                Some(program::ActivationQuantization::Fp4(_))
             )
         {
             continue;
@@ -104,7 +106,7 @@ impl MlpPlan {
         graph: &infer_ir::DataflowGraph,
         weights: &ProgramWeights,
         arena: &super::ActivationArena,
-        nvfp4: &mut super::nvfp4_gemm::Workspace,
+        nvfp4: &mut nvfp4_gemm::Workspace,
     ) -> Result<()> {
         if weights.fusion.is_some() || !weights.attention_profile.is_bf16() {
             return Ok(());
@@ -112,7 +114,7 @@ impl MlpPlan {
         let rows = arena.lanes();
         for &index in &self.fused_downs {
             let node = &graph.nodes[index];
-            let Some(super::program::ActivationQuantization::Fp4(scale)) =
+            let Some(program::ActivationQuantization::Fp4(scale)) =
                 weights.activation_quantization(node.inputs[1])
             else {
                 continue;
@@ -145,7 +147,7 @@ impl MlpPlan {
     pub(super) fn new(
         graph: &infer_ir::DataflowGraph,
         weights: &ProgramWeights,
-        geometry: (usize, &super::nvfp4_gemm::Workspace),
+        geometry: (usize, &nvfp4_gemm::Workspace),
     ) -> Self {
         let swiglu = swiglu_plan(graph, weights);
         let fused = fused_mlp_plan(graph, weights, &swiglu, geometry);
@@ -186,7 +188,7 @@ impl MlpPlan {
         (index, nodes): (usize, &[TensorNode]),
         arena: &super::ActivationArena,
         weights: &ProgramWeights,
-        nvfp4: &mut super::nvfp4_gemm::Workspace,
+        nvfp4: &mut nvfp4_gemm::Workspace,
     ) -> Result<bool> {
         if let Some(&(gate, up, down)) = self.fused.get(&index) {
             let projections = (&nodes[gate], &nodes[up], &nodes[down]);
@@ -238,7 +240,7 @@ fn fused_mlp_plan(
     graph: &infer_ir::DataflowGraph,
     weights: &ProgramWeights,
     swiglu: &BTreeMap<usize, Swiglu>,
-    (rows, nvfp4): (usize, &super::nvfp4_gemm::Workspace),
+    (rows, nvfp4): (usize, &nvfp4_gemm::Workspace),
 ) -> BTreeMap<usize, FusedMlp> {
     use infer_ir::TensorOp;
     let (producer, readers) = dataflow(graph);
@@ -246,9 +248,7 @@ fn fused_mlp_plan(
         weights.projections.get(&node.inputs[1]),
         weights.activation_quantization(node.inputs[1]),
     ) {
-        (Some(weight), Some(super::program::ActivationQuantization::Fp4(scale)))
-            if weight.is_nvfp4() =>
-        {
+        (Some(weight), Some(program::ActivationQuantization::Fp4(scale))) if weight.is_nvfp4() => {
             Some(scale.to_bits())
         }
         _ => None,
@@ -294,10 +294,10 @@ fn record_fused_mlp(
     (gate, up, down): (&TensorNode, &TensorNode, &TensorNode),
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
-    nvfp4: &mut super::nvfp4_gemm::Workspace,
+    nvfp4: &mut nvfp4_gemm::Workspace,
 ) -> Result<()> {
     let scale = |node: &TensorNode| match weights.activation_quantization(node.inputs[1]) {
-        Some(super::program::ActivationQuantization::Fp4(scale)) => Ok(scale),
+        Some(program::ActivationQuantization::Fp4(scale)) => Ok(scale),
         _ => Err(error("fused SwiGLU activation scale")),
     };
     let weight = |node: &TensorNode| {
@@ -325,9 +325,9 @@ fn record_fused_down(
     node: &TensorNode,
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
-    nvfp4: &super::nvfp4_gemm::Workspace,
+    nvfp4: &nvfp4_gemm::Workspace,
 ) -> Result<()> {
-    let Some(super::program::ActivationQuantization::Fp4(scale)) =
+    let Some(program::ActivationQuantization::Fp4(scale)) =
         weights.activation_quantization(node.inputs[1])
     else {
         return Err(error("fused SwiGLU down scale"));
@@ -370,9 +370,9 @@ fn record_swiglu(
     (gate, up): (infer_core::TensorId, infer_core::TensorId),
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
-    nvfp4: &mut super::nvfp4_gemm::Workspace,
+    nvfp4: &mut nvfp4_gemm::Workspace,
 ) -> Result<bool> {
-    let Some(super::program::ActivationQuantization::Fp4(scale)) =
+    let Some(program::ActivationQuantization::Fp4(scale)) =
         weights.activation_quantization(node.inputs[1])
     else {
         return Ok(false);
@@ -409,7 +409,7 @@ pub(super) fn record(
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
     partials: &Partials,
-    nvfp4: &mut super::nvfp4_gemm::Workspace,
+    nvfp4: &mut nvfp4_gemm::Workspace,
     delegated: Option<&mut Support>,
 ) -> Result<()> {
     if weights.constants.contains_key(&node.inputs[0]) {
@@ -429,7 +429,7 @@ pub(super) fn record(
     let shape = [width, flat / width, columns];
     let lowering = lower(Format::of(weight), activation, Mode::Prompt, shape)?;
     if let Lowering::Quantized(quantized) = lowering {
-        return super::nvfp4_gemm::record_certified(
+        return nvfp4_gemm::record_certified(
             (&weights.kernels, scope),
             nvfp4,
             weight,
@@ -549,7 +549,7 @@ fn record_prompt_dense(
     (input, w): (Buffer<'_, f32>, &Matrix<bf16>),
     output: RowMajor<'_, f32>,
     (width, rows, columns): (usize, usize, usize),
-    (nvfp4, delegated): (&super::nvfp4_gemm::Workspace, Option<&mut Support>),
+    (nvfp4, delegated): (&nvfp4_gemm::Workspace, Option<&mut Support>),
 ) -> Result<()> {
     if records_precise_sparse(
         (&weights.kernels, scope),

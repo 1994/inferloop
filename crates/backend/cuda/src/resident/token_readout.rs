@@ -1,4 +1,5 @@
 //! Exact plain-greedy output for contiguous or separately allocated resident logits.
+use super::batch;
 use super::{ProgramWeights, greedy::Greedy};
 use crate::device::{CudaDevice, ReadbackSource, Readbacks};
 use crate::tuning::greedy::select;
@@ -88,7 +89,7 @@ impl TokenReadout {
         readbacks: &mut Readbacks,
         sources: &[Option<ReadbackSource>],
         active: &[usize],
-    ) -> Result<(super::batch::BatchOutput, Vec<u32>)> {
+    ) -> Result<(batch::BatchOutput, Vec<u32>)> {
         if active.iter().any(|&row| row >= self.tokens.len() / 2) {
             return Err(Error::invalid("token readout active row"));
         }
@@ -109,7 +110,7 @@ impl TokenReadout {
         pairs: &[Vec<i32>],
         active: &[usize],
         count: usize,
-    ) -> Result<(super::batch::BatchOutput, Vec<u32>)> {
+    ) -> Result<(batch::BatchOutput, Vec<u32>)> {
         let pairs = pairs
             .first()
             .ok_or_else(|| Error::invariant("token readout pairs"))?;

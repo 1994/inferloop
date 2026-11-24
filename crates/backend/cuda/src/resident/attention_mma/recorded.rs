@@ -1,4 +1,5 @@
 //! One captured MMA attention: conversion, AOT attention and readout, in order on one stream.
+use super::catalog;
 use super::host;
 use infer_core::Result;
 use infer_cuda_kernels::contract::Foreign;
@@ -10,7 +11,7 @@ pub(super) struct Recorded {
     pub prepare: KernelLaunch,
     pub finish: KernelLaunch,
     pub api: Arc<host::Api>,
-    pub pointers: [u64; super::catalog::OPERANDS],
+    pub pointers: [u64; catalog::OPERANDS],
     pub lanes: usize,
     pub capacity: usize,
 }

@@ -1,4 +1,5 @@
 //! Per-dialect lexical state; neither scanner knows about an HTTP response.
+use super::json;
 use super::{
     function::FunctionScanner,
     json::JsonScanner,
@@ -42,7 +43,7 @@ impl BlockScanner {
     }
     pub(super) fn complete(&self, body: &str) -> Option<ParsedToolCall> {
         match self {
-            Self::Json(_) => super::json::complete(body),
+            Self::Json(_) => json::complete(body),
             Self::Function(scan) => scan.complete(),
         }
     }
