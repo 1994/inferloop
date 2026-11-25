@@ -57,7 +57,7 @@ An architecture that is not listed is rejected at load. A listed one is not guar
 |---|---|
 | `POST /v1/chat/completions` | Chat with SSE streaming, tool calls, strict JSON schemas, images and video (CUDA) |
 | `POST /v1/completions` | Text completion |
-| `POST /v1/responses` | Responses text and function-tool subset; optional in-process store with `--enable-response-store` |
+| `POST /v1/responses` | Responses text and function-tool subset; optional store with `--response-store memory`, `sqlite:PATH` or `postgres://...` |
 | `POST /v1/decisions` | Predicate / choice / score decisions answered by the served model |
 | `GET /v1/models` | The served model |
 | `/native/v1/*` | Generate, embed, rerank and decision on one engine, plus runtime state and device timelines |

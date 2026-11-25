@@ -1,7 +1,7 @@
 //! Server commands.
 #[cfg(cuda_backend)]
 use super::tuning_worker;
-use super::{ServeOptions, axum_serve, backend};
+use super::{ResponseStoreLocation, ServeOptions, axum_serve, backend};
 #[cfg(cuda_backend)]
 use crate::support::flush_logs;
 use crate::support::{configured_engine, read_json};
@@ -31,13 +31,10 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         image_decoder,
         host_memory_mib,
         enable_response_store,
+        response_store,
     } = options;
-    let responses = if enable_response_store {
-        ResponsesExtensions::new()
-            .with_store(Arc::new(infer_frontdoor::InMemoryResponseStore::default()))
-    } else {
-        ResponsesExtensions::default()
-    };
+    let response_store =
+        response_store.or_else(|| enable_response_store.then_some(ResponseStoreLocation::Memory));
     let image_options = mm_processor_kwargs
         .as_deref()
         .map(infer_frontdoor::ImageProcessingOptions::parse)
@@ -109,6 +106,10 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
             let listener = TcpListener::bind(listen)
                 .await
                 .map_err(|e| Error::new(ErrorCode::Backend, e.to_string()))?;
+            let responses = match &response_store {
+                Some(location) => ResponsesExtensions::new().with_store(location.open().await?),
+                None => ResponsesExtensions::default(),
+            };
             let handle = infer_frontdoor::RuntimeHandle::start(engine)?;
             let shutdown = handle.clone();
             tracing::info!(target: "infer::serve", listen = %listen, "listening for requests");

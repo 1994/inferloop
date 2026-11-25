@@ -109,7 +109,7 @@ assistant 消息可以回传此前响应中的 `reasoning_content`（`null` 按�
 
 ### 状态存储与后台
 
-默认不安装 response store，所有状态字段都保持显式错误。启动服务时加 `--enable-response-store` 会安装进程内参考实现；外部 SDK 可通过 `ResponsesExtensions::with_store` 注入自己的 `infer_spi::ResponseStore`（见[状态扩展 SPI](../architecture/responses-state.md)）。
+默认不安装 response store，所有状态字段都保持显式错误。启动服务时加 `--response-store memory` 安装进程内参考实现（同 `--enable-response-store`），`--response-store sqlite:/path/responses.db` 保存到本机文件、跨重启保留，`--response-store postgres://user:pass@host/db` 保存到多副本共享的 PostgreSQL；外部 SDK 可通过 `ResponsesExtensions::with_store` 注入自己的 `infer_spi::ResponseStore`（见[状态扩展 SPI](../architecture/responses-state.md)）。
 
 参考实现边界：最多 256 条、总计 64 MiB、单记录 4 MiB、每个响应 4096 个事件、终态保留 1 小时；终态按 LRU 驱逐，活动记录不会因 TTL/LRU 被删除。它是单进程、非持久、非共享的，重启丢失，多副本之间不一致。
 
@@ -286,7 +286,7 @@ schema 或输入错误返回 400，模型不存在 404，body 超限 413，容�
 
 ## 实现说明
 
-Responses 状态由 `infer_spi::ResponseStore` 扩展点承载，frontdoor 只负责 OpenAI 线格式、状态机编排和参考 store。没有安装扩展时状态字段返回 501；`--enable-response-store` 安装有界进程内参考实现。原子写、取消竞争、payload 版本和外部 SDK 接入约定见[状态扩展 SPI](../architecture/responses-state.md)。
+Responses 状态由 `infer_spi::ResponseStore` 扩展点承载，frontdoor 只负责 OpenAI 线格式、状态机编排和参考 store。没有安装扩展时状态字段返回 501；`--response-store` 选择进程内、SQLite 或 PostgreSQL 实现。原子写、取消竞争、payload 版本和外部 SDK 接入约定见[状态扩展 SPI](../architecture/responses-state.md)。
 
 请求 ID 来自 `RuntimeHandle` 的单调分配器：显式原生请求会推进计数器，路由重建不会重置；混用两套接口时可用 `RuntimeHandle::allocate_request_id` 分配 ID，避免手动 ID 冲突。文本编码与结果解码分别运行在有界 preparation / delivery 池中：流式路径同样把每个已提交 token 送进 delivery 池做增量 detokenize 与解析，兼容层继承原生准入、背压和断连取消机制。
 

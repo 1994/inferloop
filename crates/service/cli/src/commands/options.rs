@@ -31,9 +31,13 @@ pub struct ServeOptions {
     pub image_decoder: ImageDecoder,
     /// Retain Responses state in process for `store`, `previous_response_id`, retrieval,
     /// background jobs and cancellation. Off by default; state is lost on restart and is not
-    /// shared by replicas.
-    #[arg(long)]
+    /// shared by replicas. Same as `--response-store memory`.
+    #[arg(long, conflicts_with = "response_store")]
     pub enable_response_store: bool,
+    /// Retain Responses state in `memory`, a SQLite file (`sqlite:PATH`, kept across restarts),
+    /// or a PostgreSQL database (`postgres://...`, shared by replicas). Off by default.
+    #[arg(long, value_name = "LOCATION")]
+    pub response_store: Option<super::ResponseStoreLocation>,
     #[arg(long, default_value_t = 0, hide = true)]
     pub host_memory_mib: u64,
 }

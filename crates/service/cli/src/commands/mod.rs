@@ -13,6 +13,9 @@ pub use options::{
     TokenizeOptions, VerifyOptions,
 };
 
+mod response_store;
+pub use response_store::ResponseStoreLocation;
+
 #[cfg(any(all(test, unix), cuda_backend))]
 mod tuning_worker;
 

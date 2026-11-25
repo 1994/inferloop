@@ -79,9 +79,14 @@ fn run_preparation() {
 }
 
 /// Serving options that never reach the device: changing one must not discard a preparation.
-const HOST_ONLY_OPTIONS: [&str; 3] = ["--listen", "--served-model-name", "--enable-response-store"];
+const HOST_ONLY_OPTIONS: [&str; 4] = [
+    "--listen",
+    "--served-model-name",
+    "--enable-response-store",
+    "--response-store",
+];
 /// Of [`HOST_ONLY_OPTIONS`], those that take a value.
-const HOST_ONLY_VALUED: [&str; 2] = ["--listen", "--served-model-name"];
+const HOST_ONLY_VALUED: [&str; 3] = ["--listen", "--served-model-name", "--response-store"];
 
 /// The binary and command line that decide which geometries a preparation measures. The
 /// backend adds its own device identity.

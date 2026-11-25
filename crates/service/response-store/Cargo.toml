@@ -1,0 +1,25 @@
+[package]
+name = "infer-response-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+autotests = false
+
+[[test]]
+name = "conformance"
+path = "tests/conformance.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+infer-core.workspace = true
+infer-spi.workspace = true
+rusqlite.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+infer-agentic.workspace = true

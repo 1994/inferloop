@@ -99,7 +99,7 @@ queued ──→ in_progress ──→ completed
 
 ## 参考实现与边界
 
-`InMemoryResponseStore` 是 `infer-agentic` 提供的参考后端（frontdoor 为兼容继续重新导出），默认关闭，通过 `--enable-response-store` 安装：
+`InMemoryResponseStore` 是 `infer-agentic` 提供的参考后端（frontdoor 为兼容继续重新导出），默认关闭，通过 `--response-store memory`（或 `--enable-response-store`）安装：
 
 | 限制 | 默认 |
 |---|---|
@@ -112,9 +112,24 @@ queued ──→ in_progress ──→ completed
 
 - 终态按 last-used 驱逐；活动记录只有在其自身写入超预算时才可能失败。
 - 记录与事件都在同一把短临界区锁内处理，不在 `.await` 中持锁。
-- 这是单进程、非持久、非共享实现。需要跨重启/多副本时，外部 SDK 应实现 `persistent`/`shared` 后端；`spi_version` 和 `payload_version` 用于兼容校验。
+- 这是单进程、非持久、非共享实现。需要跨重启或多副本时使用下面的持久实现，或由外部 SDK 实现自己的 `persistent`/`shared` 后端；`spi_version` 和 `payload_version` 用于兼容校验。
+- 替换已有记录（例如后台响应的终态快照）保留该响应已追加的事件；删除与过期才连同事件一起移除。
 - 存储包含 prompt 与输出文本；外部实现负责加密、租户隔离、访问控制和保留策略，不能把 payload 写入普通日志。
 - 前台请求或 SSE 客户端提前断开时，`StoreLease` 会尽力把仍活动的记录写成 failed（取消优先时保持 cancelled）；它不阻塞断连清理，也不保证进程崩溃后的清理。
+
+## 持久实现
+
+`infer-response-store` 提供两个默认持久后端，只使用公开的 `ResponseStore` 契约，与参考实现跑同一套一致性测试（[conformance](../../crates/service/response-store/tests/conformance.rs)）：
+
+| 后端 | 位置 | `persistent` / `shared` | 并发与原子性 |
+|---|---|---|---|
+| `SqliteResponseStore` | `--response-store sqlite:PATH`，文件不存在时创建 | 是 / 否（单机） | 一个 WAL 连接，每次调用一个事务，在 Tokio blocking 池执行 |
+| `PostgresResponseStore` | `--response-store postgres://...` | 是 / 是（多副本共享） | 最多 4 个连接；条件写用 `ON CONFLICT ... WHERE`，迁移用带状态条件的 `UPDATE ... RETURNING`，事件追加锁住响应行 |
+
+- 表结构由 store 首次连接时创建（`infer_responses`、`infer_response_events`、`infer_response_store_meta`），Postgres 用 advisory lock 串行化多副本同时建表；库中 schema 版本不同则拒绝启动。
+- 保留策略与参考实现一致：单记录 4 MiB、单响应 4096 个事件、终态记录最后一次写入 1 小时后过期，活动记录不过期。没有条目数和总字节预算，容量由数据库负责。
+- Postgres 连接暂不支持 TLS：`sslmode=require` 及更严格的模式直接拒绝，不会降级为明文。连接串中的密码不进入 `Debug`、日志和调优准备键。
+- payload 与参考实现一样是不透明字节；加密、租户隔离与访问控制仍由部署负责。
 
 ## 安装方式
 
@@ -127,4 +142,4 @@ infer_frontdoor::serve_with_text_media_and_responses(
 ).await?;
 ```
 
-CLI 的 `--enable-response-store` 安装 `InMemoryResponseStore`。没有安装 store 时，`store:true`、`previous_response_id`、`background`、GET 与 cancel 都返回明确错误，不会被静默忽略。
+CLI 的 `--response-store memory|sqlite:PATH|postgres://...` 选择后端，`--enable-response-store` 等同 `--response-store memory`。没有安装 store 时，`store:true`、`previous_response_id`、`background`、GET 与 cancel 都返回明确错误，不会被静默忽略。

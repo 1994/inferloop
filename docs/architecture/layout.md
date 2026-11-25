@@ -25,6 +25,7 @@
 | `crates/diagnostics/quality` | `infer-quality` | golden、进展检测、校准与性能测量 |
 | `crates/service/media` | `infer-media-input` | 可复用的多模态来源读取和媒体解码 |
 | `crates/service/agentic` | `infer-agentic` | Responses 生命周期编排（store 租约、链式校验、后台任务、取消）与参考 store；不依赖 HTTP 与 backend |
+| `crates/service/response-store` | `infer-response-store` | `ResponseStore` 的 SQLite 与 PostgreSQL 持久实现；只依赖 SPI，与参考 store 共用一致性测试 |
 | `crates/service/frontdoor` | `infer-frontdoor` | 输入准备、单所有者 actor、HTTP/SSE 与 Responses 线格式；通过 `Upstream` 把已准入的生成交给 agentic |
 | `crates/service/agent` | `infer-agent` | 诊断工具、证据查询、实验与建议 |
 | `crates/service/cli` | `infer-cli` | 参数解析、命令分发、backend 选择与运行支持 |

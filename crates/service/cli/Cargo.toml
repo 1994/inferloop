@@ -33,6 +33,7 @@ infer-models.workspace = true
 infer-workloads.workspace = true
 infer-kernel-api.workspace = true
 infer-frontdoor.workspace = true
+infer-response-store.workspace = true
 infer-agent.workspace = true
 tokio.workspace = true
 mimalloc.workspace = true

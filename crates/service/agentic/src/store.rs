@@ -237,7 +237,11 @@ impl InMemoryResponseStore {
         for id in candidates {
             Self::remove(&mut store, &id);
         }
-        Self::remove(&mut store, &response.id);
+        // Replacing a record keeps its events: a background stream's terminal snapshot must not
+        // erase the events it already produced.
+        if let Some(replaced) = store.responses.remove(&response.id) {
+            store.total_bytes = store.total_bytes.saturating_sub(replaced.bytes);
+        }
         let expires_at = self
             .config
             .ttl

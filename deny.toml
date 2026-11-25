@@ -34,11 +34,13 @@ highlight = "all"
 multiple-versions-include-dev = true
 skip = [
     { crate = "base64@0.13.1", reason = "tokenizers 0.23 pulls spm_precompiled 0.1.4, which requires base64 0.13; the services use 0.23. Remove when spm_precompiled ships a base64 >= 0.21 range." },
+    { crate = "base64@0.22.1", reason = "postgres-protocol (every 0.6 release, used by the PostgreSQL response store) requires base64 0.22; the services use 0.23. Remove when postgres-protocol moves." },
     { crate = "block-buffer@0.10.4", reason = "sha2 0.10 from cuTile 0.4 requires 0.10; sha2 0.11 uses 0.12. Remove together with the sha2 0.10 skip." },
     { crate = "core-foundation@0.9.4", reason = "Metal and system-configuration require 0.9 while native TLS certificates use 0.10; remove after their supported ranges converge." },
     { crate = "cpufeatures@0.2.17", reason = "sha2 0.10 from cuTile 0.4 requires 0.2; sha2 0.11 uses 0.3. Remove together with the sha2 0.10 skip." },
     { crate = "crypto-common@0.1.7", reason = "sha2 0.10 from cuTile 0.4 requires 0.1; sha2 0.11 uses 0.2. Remove together with the sha2 0.10 skip." },
     { crate = "digest@0.10.7", reason = "sha2 0.10 from cuTile 0.4 requires 0.10; sha2 0.11 uses 0.11. Remove together with the sha2 0.10 skip." },
+    { crate = "fallible-iterator@0.2.0", reason = "tokio-postgres and postgres-protocol require 0.2 while rusqlite 0.41 uses 0.3 (both response stores). Remove when the PostgreSQL crates move to 0.3." },
     { crate = "getrandom@0.2.17", reason = "ring 0.17 requires getrandom 0.2 while other dependencies use 0.3 or 0.4; remove when ring migrates." },
     { crate = "getrandom@0.3.4", reason = "ahash/rand/tokenizers require 0.3; CUDA compiler uuid uses 0.4. Remove when their supported ranges converge." },
     { crate = "hashbrown@0.14.5", reason = "CUDA dashmap 6 requires 0.14; indexmap uses 0.17. Remove after dashmap migrates." },
@@ -46,6 +48,8 @@ skip = [
     { crate = "libloading@0.8.9", reason = "clang-sys and cuda-bindings require 0.8; the engine uses 0.9. Remove after the CUDA crates migrate." },
     { crate = "miniz_oxide@0.8.9", reason = "png 0.18 requires 0.8 while flate2 uses 0.9 (see the image note in Cargo.toml); remove when png's range converges." },
     { crate = "object@0.36.7", reason = "cuda-core uses oxide-artifacts 0.2 with object 0.36; stacker/psm archive writer uses 0.39. Remove after oxide-artifacts migrates." },
+    { crate = "rand@0.9.5", reason = "tokenizers 0.23 requires rand 0.9 while tokio-postgres 0.7.18 and postgres-protocol 0.6.12 (the first releases without RUSTSEC-2026-0178/0179/0180) require 0.10. Remove when tokenizers moves." },
+    { crate = "rand_core@0.9.5", reason = "Paired with the rand 0.9 skip for tokenizers; remove together." },
     { crate = "rustc-hash@1.1.0", reason = "CUDA bindgen 0.69 requires 1.x; cutile uses 2.x. Remove after the upstream bindgen upgrade." },
     { crate = "sha2@0.10.9", reason = "cutile 0.4's compiler and macros require 0.10; the engine uses 0.11. Remove when cuTile migrates." },
     { crate = "shlex@1.3.0", reason = "CUDA bindgen 0.69 requires 1.x; cc uses 2.x. Remove after the upstream bindgen upgrade." },

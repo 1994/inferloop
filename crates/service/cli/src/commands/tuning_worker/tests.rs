@@ -125,6 +125,8 @@ fn host_only_options_do_not_key_a_preparation() {
             "/models/a",
             "--served-model-name=chat",
             "--enable-response-store",
+            "--response-store",
+            "postgres://user:secret@db/infer",
             "--max-num-seqs",
             "4",
         ]),
