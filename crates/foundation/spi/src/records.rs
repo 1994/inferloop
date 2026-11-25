@@ -125,8 +125,9 @@ impl Version {
 pub struct RecordState(u8);
 
 impl RecordState {
-    /// Labels a [`StateSet`] can hold.
-    pub const LIMIT: u8 = 64;
+    /// Labels a [`StateSet`] can hold. Each label's bit then fits a positive signed 64-bit
+    /// integer, so a SQL store can test a set with one integer parameter.
+    pub const LIMIT: u8 = 63;
 
     /// # Errors
     /// Returns an invalid-input error for a label of [`Self::LIMIT`] or more.
@@ -144,6 +145,12 @@ impl RecordState {
     pub const fn get(self) -> u8 {
         self.0
     }
+
+    /// This label's bit in a [`StateSet`].
+    #[must_use]
+    pub const fn bit(self) -> u64 {
+        1 << self.0
+    }
 }
 
 /// A set of [`RecordState`] labels.
@@ -153,12 +160,18 @@ pub struct StateSet(u64);
 impl StateSet {
     #[must_use]
     pub fn of(states: &[RecordState]) -> Self {
-        Self(states.iter().fold(0, |bits, state| bits | (1 << state.0)))
+        Self(states.iter().fold(0, |bits, state| bits | state.bit()))
     }
 
     #[must_use]
     pub const fn contains(self, state: RecordState) -> bool {
-        self.0 & (1 << state.0) != 0
+        self.0 & state.bit() != 0
+    }
+
+    /// The set as bits, one per label; always a positive `i64`.
+    #[must_use]
+    pub const fn bits(self) -> u64 {
+        self.0
     }
 }
 

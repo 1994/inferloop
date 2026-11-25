@@ -25,6 +25,7 @@
 | `crates/diagnostics/quality` | `infer-quality` | golden、进展检测、校准与性能测量 |
 | `crates/service/media` | `infer-media-input` | 可复用的多模态来源读取和媒体解码 |
 | `crates/service/agentic` | `infer-agentic` | Responses 生命周期编排（store 租约、链式校验、后台任务、取消）与工具 loop；不依赖 HTTP 与 backend |
+| `crates/service/storage-sql` | `infer-storage-sql` | SQL 记录存储：`SqlRecordStore<D>` 写一次记录语义，SQLite（独占连接线程）与 PostgreSQL（连接池 + rustls TLS）只提供方言与执行 |
 | `crates/service/storage` | `infer-storage` | 领域存储适配（`RecordResponseStore`）与进程内 `MemoryRecordStore`；只依赖 SPI，不依赖数据库驱动 |
 | `crates/service/frontdoor` | `infer-frontdoor` | 输入准备、单所有者 actor、HTTP/SSE 与 Responses 线格式；通过 `Upstream` 把已准入的生成交给 agentic |
 | `crates/service/agent` | `infer-agent` | 诊断工具、证据查询、实验与建议 |

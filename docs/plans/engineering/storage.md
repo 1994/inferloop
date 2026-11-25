@@ -1,6 +1,6 @@
 # 存储层方案
 
-状态：ST1 已实施（记录原语、Responses 适配、内存后端与一致性测试），ST2 起未开始。源码基点 `44b5a257`，日期 2026 年 11 月 25 日。取代 PR #313 中"每个数据库各实现一遍 `ResponseStore`"的结构：#313 的 SQLite/PostgreSQL 驱动代码、一致性测试与 CLI 入口按本方案重组后保留。排期见[路线图](../README.md) E3。
+状态：ST1、ST2 已实施（记录原语、Responses 适配、内存后端、SQL 记录存储与一致性测试），ST3 起未开始。源码基点 `44b5a257`，日期 2026 年 11 月 25 日。取代 PR #313 中"每个数据库各实现一遍 `ResponseStore`"的结构：#313 的 SQLite/PostgreSQL 驱动代码、一致性测试与 CLI 入口按本方案重组后保留。排期见[路线图](../README.md) E3。
 
 ## 问题
 
@@ -259,7 +259,14 @@ CLI 简写：`--storage responses=postgres://… --storage state=file:///nvme/in
 | 对象存储 | Blob | 后续；候选是 opendal（一套接口覆盖 S3/GCS/Azure），引入前按依赖方案评估 |
 | Redis | Record | 按需；版本与状态谓词用 Lua 脚本实现原子性 |
 
-SQL 家族的表结构是通用的 `records(namespace, id, version, state, expires_at, value)` 和 `record_logs(namespace, id, sequence, value)`，各后端用自己的迁移列表管理版本。数据库里的版本比代码新时拒绝启动，旧时按顺序迁移。人工排查时，`namespace`、`state` 和 `expires_at` 是明文列；value 的元数据段是可读的 serde 编码。
+SQL 家族的表结构是通用的 `infer_records(namespace, id, version, state, state_bit, disposable, expires_at, value)` 和 `infer_record_logs(namespace, id, sequence, value)`，日志通过外键随记录级联删除。
+
+- **`state_bit = 1 << state`** 让 `StateNotIn` 成为 `($mask & state_bit) = 0`：状态集合是一个整数参数，语句文本固定，可以预编译缓存，三种数据库都不需要类型转换。为了让位值留在正的 i64 范围内，`RecordState` 的上限是 63。
+- **版本号的来源属于方言**：PostgreSQL 用序列，SQLite 在同一事务里递增计数行。store 逻辑只调用"取下一个版本"这一条语句。
+- **迁移**：一张元数据表记录已应用的迁移数；数据库版本比代码新时拒绝启动，旧时按顺序迁移；PostgreSQL 在 advisory lock 下执行。
+- **只锁自己那一行。** 每个操作是一个只触碰单个 key 的事务：写入只清理目标 key 的过期行（正确性只依赖这一步），全局清扫每 1024 次写入在独立的短事务里做一次，尽力而为。并发写入不同 key 的副本互不等待，也不会因大范围清理而互相死锁。
+- **事务结束方式**：失败时显式回滚，连接保留可用；事务被 drop 时（调用被取消），SQLite 由连接线程回滚，PostgreSQL 直接关闭这条连接、由服务端回滚，不让半开的事务回到连接池。
+- **人工排查**：`namespace`、`state` 和 `expires_at` 是明文列；value 的元数据段是可读的 JSON。
 
 ## 一致性测试
 
@@ -303,7 +310,7 @@ SQL 家族的表结构是通用的 `records(namespace, id, version, state, expir
 | 步骤 | 内容 | 验收 |
 |---|---|---|
 | ST1 | `infer-spi` 加 `RecordStore` 原语；`infer-storage` 加 `RecordResponseStore`、`MemoryRecordStore`；`infer-storage-conformance` 记录与 Responses 套件；`InMemoryResponseStore` 拆为两层 | **已完成**：现有 Responses、agentic、frontdoor 测试通过（只改 store 的构造）；两套一致性测试与内存后端的淘汰规则测试通过 |
-| ST2 | #313 重组为 `infer-storage-sql`：通用表、迁移、SQLite actor、PostgreSQL 连接池加 TLS | 一致性测试在 SQLite 与 PostgreSQL 17 上通过；端到端重启取回与链式续接 |
+| ST2 | #313 重组为 `infer-storage-sql`：通用表、迁移、SQLite actor、PostgreSQL 连接池加 TLS | **已完成**：`SqlRecordStore<D>` 只实现一次记录语义，SQLite 与 PostgreSQL 各自只提供方言与执行；两套一致性测试在 SQLite 与 PostgreSQL 17 上通过；端到端重启取回随 ST3 的 CLI 入口验收 |
 | ST3 | `StorageProfile`、scheme 注册、`--storage` 与旧参数别名、能力校验、生效配置读回 | 错误配置启动失败并给出原因；凭据不出现在任何输出 |
 | ST4 | `BlobStore` 原语进入 SPI；file 后端（Record + Blob）与 `Tiered`/`ReadOnly` 组合 | 一致性测试与崩溃测试通过 |
 | ST5 | `StateArchive` 与 `BlobStateArchive`；engine 接入（IO 池、PrefixCache 归档层、恢复/重算决策），与 agentic E2 一起做 | 恢复与重算的完整 token 序列一致；归档命中的 TTFT 低于重算；spill 不使 decode TPOT 回退；需要设备窗口 |
