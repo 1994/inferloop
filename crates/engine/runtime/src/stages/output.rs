@@ -138,6 +138,7 @@ impl OutputJob {
                         infer_ir::RequestInput::Pairs { .. } => &[],
                     },
                     generated: &self.generated,
+                    pending: &[],
                 },
                 mask,
                 scratch,

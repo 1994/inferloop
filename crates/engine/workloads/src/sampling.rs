@@ -81,10 +81,16 @@ pub fn sample_reusing(
     )
 }
 
+/// The tokens a sampling step penalizes.
+///
+/// `generated` is the committed output and `pending` the tokens proposed after it in the same
+/// step (a draft chain or the verified prefix so far). Both count as output, so callers pass the
+/// two slices instead of concatenating them.
 #[derive(Default, Clone, Copy)]
 pub struct SamplingHistory<'a> {
     pub prompt: &'a [u32],
     pub generated: &'a [u32],
+    pub pending: &'a [u32],
 }
 
 /// Sample with repetition penalties over prompt/output and presence over output.
@@ -239,12 +245,11 @@ fn penalties(
     }
     scratch.seen.resize(scratch.candidates.len(), 0);
     scratch.seen.fill(0);
+    let output = REPETITION_PENALTY_FLAG | PRESENCE_PENALTY_FLAG;
     for (tokens, flag) in [
         (history.prompt, REPETITION_PENALTY_FLAG),
-        (
-            history.generated,
-            REPETITION_PENALTY_FLAG | PRESENCE_PENALTY_FLAG,
-        ),
+        (history.generated, output),
+        (history.pending, output),
     ] {
         for token in tokens {
             let index =
