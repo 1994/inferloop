@@ -10,7 +10,7 @@
 |---|---|---|---|
 | vLLM | `VLLM_ENABLE_RESPONSES_API_STORE` 默认关闭；关闭时静默把 `store` 置 false | `response_store` / `msg_store` / `event_store` 进程内 dict，无 TTL/LRU | 官方源码标注 HACK/FIXME 与内存泄漏；有插件化 store 与有界 store 的未合并方案 |
 | SGLang | `--enable-response-store` 默认关闭；关闭时 `previous_response_id`/`background`/GET/cancel 显式 400 | `response_store` / `msg_store` 进程内 dict，无 TTL；后台 queued → in_progress | PD 禁止开启；存储不跨节点；关闭时前台 `store=true` 仍接受但不保留，响应回显请求值 |
-| 本项目 | 无 store 时显式 501；安装后 `store` 默认 true | frontdoor 参考 `InMemoryResponseStore`：有界 LRU + TTL + 字节预算 | 参考实现单进程；后台流式暂未开放；外部 SDK 负责持久/共享 |
+| 本项目 | 无 store 时显式 501；安装后 `store` 默认 true | `infer-agentic` 参考 `InMemoryResponseStore`：有界 LRU + TTL + 字节预算 | 参考实现单进程；后台流式暂未开放；外部 SDK 负责持久/共享 |
 
 参考来源：[vLLM serving.py](https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/responses/serving.py)、[SGLang serving_responses.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/openai/serving_responses.py)、[SGLang #39122](https://github.com/sgl-project/sglang/pull/39122)。
 

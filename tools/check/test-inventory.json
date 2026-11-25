@@ -6,6 +6,12 @@
       "src_near": 12,
       "tests": 0
     },
+    "agentic": {
+      "benches": 0,
+      "src_inline": 0,
+      "src_near": 12,
+      "tests": 8
+    },
     "api": {
       "benches": 0,
       "src_inline": 0,
@@ -51,7 +57,7 @@
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 185,
+      "src_near": 173,
       "tests": 13
     },
     "ir": {
@@ -129,7 +135,7 @@
     "workloads": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 34,
+      "src_near": 35,
       "tests": 0
     }
   },
@@ -313,11 +319,11 @@
     }
   ],
   "totals": {
-    "all": 1397,
+    "all": 1406,
     "benches": 0,
-    "src": 1123,
+    "src": 1124,
     "src_inline": 0,
-    "src_near": 1123,
-    "tests": 274
+    "src_near": 1124,
+    "tests": 282
   }
 }

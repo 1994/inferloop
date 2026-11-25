@@ -1,0 +1,20 @@
+[package]
+name = "infer-agentic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+autotests = false
+
+[[test]]
+name = "responses"
+path = "tests/responses.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+infer-core.workspace = true
+infer-spi.workspace = true
+tokio.workspace = true
+tracing.workspace = true

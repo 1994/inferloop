@@ -1,7 +1,6 @@
 //! Text HTTP adapter.
 use super::openai;
 use super::{HttpError, HttpResult, RuntimeHandle, cpu, router, trace_parent};
-use crate::constants::MAX_BACKGROUND_RESPONSES;
 use crate::constants::MAX_REQUEST_BODY_BYTES;
 use crate::constants::TEXT_STAGING_EXPANSION;
 use crate::constants::TEXT_STAGING_OVERHEAD_BYTES;
@@ -11,6 +10,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::{
     Json, Router, extract::DefaultBodyLimit, extract::State, http::HeaderMap, routing::post,
 };
+use infer_agentic::Responses;
 use infer_core::{Error, ErrorCode, RequestId, Result};
 use infer_ir::{CanonicalRequest, WorkloadOutput};
 use infer_runtime::EngineOutput;
@@ -18,7 +18,6 @@ use infer_spi::ResponsesExtensions;
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 pub(super) struct TextState {
@@ -26,8 +25,7 @@ pub(super) struct TextState {
     pub(super) assets: Arc<infer_models::TextAssets>,
     pub(super) media: Option<Arc<MediaIngest>>,
     pub(super) delivery: cpu::CpuPool,
-    pub(super) responses: ResponsesExtensions,
-    pub(super) background_permits: Arc<Semaphore>,
+    pub(super) responses: Responses,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,8 +65,7 @@ pub fn router_with_text_media_and_responses(
         assets,
         media,
         delivery: handle.delivery_pool(),
-        responses,
-        background_permits: Arc::new(Semaphore::new(MAX_BACKGROUND_RESPONSES)),
+        responses: Responses::new(responses),
     };
     router(handle).merge(
         Router::new()
