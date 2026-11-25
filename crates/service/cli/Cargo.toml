@@ -34,6 +34,7 @@ infer-workloads.workspace = true
 infer-kernel-api.workspace = true
 infer-frontdoor.workspace = true
 infer-storage.workspace = true
+infer-storage-sql.workspace = true
 infer-agent.workspace = true
 tokio.workspace = true
 mimalloc.workspace = true

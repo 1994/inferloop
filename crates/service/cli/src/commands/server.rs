@@ -1,14 +1,14 @@
 //! Server commands.
 #[cfg(cuda_backend)]
 use super::tuning_worker;
-use super::{ServeOptions, axum_serve, backend};
+use super::{ServeOptions, axum_serve, backend, storage_locations};
 #[cfg(cuda_backend)]
 use crate::support::flush_logs;
 use crate::support::{configured_engine, read_json};
 use infer_core::ErrorCode;
 use infer_core::{Error, Result};
 use infer_spi::{BackendProvider, ResponsesExtensions};
-use infer_storage::{MemoryRecordStore, RecordResponseStore, ResponseRetention};
+use infer_storage::{RecordBackends, RecordResponseStore, ResponseRetention, StorageLocation};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
@@ -32,15 +32,14 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         image_decoder,
         host_memory_mib,
         enable_response_store,
+        storage,
     } = options;
-    let responses = if enable_response_store {
-        ResponsesExtensions::new().with_store(Arc::new(RecordResponseStore::new(
-            Arc::new(MemoryRecordStore::default()),
-            ResponseRetention::default(),
-        )?))
-    } else {
-        ResponsesExtensions::default()
-    };
+    // Checked before the model loads, so a bad location or unknown scheme fails in milliseconds.
+    let response_location = storage_locations(storage, enable_response_store)?;
+    let backends = record_backends()?;
+    if let Some(location) = &response_location {
+        backends.check(location)?;
+    }
     let image_options = mm_processor_kwargs
         .as_deref()
         .map(infer_frontdoor::ImageProcessingOptions::parse)
@@ -112,6 +111,7 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
             let listener = TcpListener::bind(listen)
                 .await
                 .map_err(|e| Error::new(ErrorCode::Backend, e.to_string()))?;
+            let responses = responses_extension(&backends, response_location.as_ref()).await?;
             let handle = infer_frontdoor::RuntimeHandle::start(engine)?;
             let shutdown = handle.clone();
             tracing::info!(target: "infer::serve", listen = %listen, "listening for requests");
@@ -119,6 +119,35 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         })?;
 
     Ok(())
+}
+
+/// The record backends this binary links: in-process memory, SQLite and PostgreSQL.
+fn record_backends() -> Result<RecordBackends> {
+    let mut backends = RecordBackends::with_memory();
+    infer_storage_sql::register(&mut backends)?;
+    Ok(backends)
+}
+
+/// Open the Responses store at `location`, if one is configured, and report what it is.
+async fn responses_extension(
+    backends: &RecordBackends,
+    location: Option<&StorageLocation>,
+) -> Result<ResponsesExtensions> {
+    let Some(location) = location else {
+        return Ok(ResponsesExtensions::default());
+    };
+    let records = backends.open(location).await?;
+    let capabilities = records.capabilities();
+    tracing::info!(
+        target: "infer::serve",
+        domain = "responses",
+        location = %location,
+        durable = capabilities.durable,
+        shared = capabilities.shared,
+        "storage ready"
+    );
+    let store = RecordResponseStore::new(records, ResponseRetention::default())?;
+    Ok(ResponsesExtensions::new().with_store(Arc::new(store)))
 }
 
 /// Open the package's text assets only when its detected tokenizer is present.

@@ -1696,6 +1696,7 @@ dependencies = [
  "infer-runtime",
  "infer-spi",
  "infer-storage",
+ "infer-storage-sql",
  "infer-workloads",
  "mimalloc",
  "serde",

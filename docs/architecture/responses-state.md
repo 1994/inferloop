@@ -130,4 +130,4 @@ infer_frontdoor::serve_with_text_media_and_responses(
 ).await?;
 ```
 
-CLI 的 `--enable-response-store` 安装 `RecordResponseStore` + `MemoryRecordStore`。没有安装 store 时，`store:true`、`previous_response_id`、`background`、GET 与 cancel 都返回明确错误，不会被静默忽略。
+CLI 的 `--storage responses=memory|sqlite:PATH|postgres://...` 选择记录后端，`--enable-response-store` 等同 `responses=memory`；三者都装上同一个 `RecordResponseStore`。没有安装 store 时，`store:true`、`previous_response_id`、`background`、GET 与 cancel 都返回明确错误，不会被静默忽略。
