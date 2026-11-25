@@ -110,7 +110,7 @@ package 12 测试 ✓。
 
 `test-backends` 已经成为产品的编译配置：[CLI manifest](../../../crates/service/cli/Cargo.toml) 启用两个 CPU 执行器和 IR feature，[IR hardware](../../../crates/foundation/ir/src/hardware/mod.rs) 据此改变 backend 枚举、能力和序列化类型。CLI 分派、命令、默认值和诊断因此持续携带测试分支。
 
-[Runtime](../../../crates/engine/runtime/Cargo.toml)、[Frontdoor](../../../crates/service/frontdoor/Cargo.toml)、[Agent](../../../crates/service/agent/Cargo.toml) 和 [CUDA](../../../crates/backend/cuda/Cargo.toml) 的测试依赖这两个执行器；工作区测试会启用 IR 的测试 feature。[门禁](../../../tools/check/gate.sh) 再用额外的 CLI/IR 无 feature 检查隔离生产配置，同时构建第二份 CLI 来执行 CPU fixture。
+[Runtime](../../../crates/engine/runtime/Cargo.toml)、[Frontdoor](../../../crates/service/frontdoor/Cargo.toml)、[Agent](../../../crates/diagnostics/agent/Cargo.toml) 和 [CUDA](../../../crates/backend/cuda/Cargo.toml) 的测试依赖这两个执行器；工作区测试会启用 IR 的测试 feature。[门禁](../../../tools/check/gate.sh) 再用额外的 CLI/IR 无 feature 检查隔离生产配置，同时构建第二份 CLI 来执行 CPU fixture。
 
 这使状态机测试、数值对照和可运行产品共用了一套测试推理引擎。一次完整模型计算经常只是 HTTP、取消或资源协议测试的初始化依赖，却扩大了这些测试的依赖图和维护范围。
 

@@ -74,7 +74,7 @@ ROLE_RULES = (
     (r"^crates/backend/cuda/examples/", "numeric"),
     (r"^crates/engine/runtime/", "protocol"),
     (r"^crates/service/frontdoor/", "protocol"),
-    (r"^crates/service/agent/", "protocol"),
+    (r"^crates/diagnostics/agent/", "protocol"),
     (r"^crates/service/cli/", "service"),
 )
 
