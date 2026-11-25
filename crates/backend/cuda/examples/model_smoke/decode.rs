@@ -45,6 +45,7 @@ pub fn decode(
                 SamplingHistory {
                     prompt,
                     generated: &result.tokens,
+                    pending: &[],
                 },
             )?;
             draw_distribution(&p, sampling_uniform(sampling.seed, 1, result.tokens.len()))?
@@ -85,6 +86,7 @@ pub fn decode(
                 SamplingHistory {
                     prompt,
                     generated: &result.tokens,
+                    pending: &[],
                 },
             )?;
             let position = result.tokens.len();
@@ -152,6 +154,7 @@ fn propose(
             SamplingHistory {
                 prompt,
                 generated: &history,
+                pending: &[],
             },
         )?;
         let token = draw_distribution(

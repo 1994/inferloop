@@ -119,6 +119,7 @@ fn nucleus_minimum_probability_and_penalties_change_candidates() -> Result<()> {
     let history = SamplingHistory {
         prompt: &[1],
         generated: &[0, 0],
+        pending: &[],
     };
     assert_eq!(
         sample_with_history(&[3.0, 2.0], &parameters, 1, 0, history, &mut scratch)?,
@@ -129,6 +130,7 @@ fn nucleus_minimum_probability_and_penalties_change_candidates() -> Result<()> {
     let history = SamplingHistory {
         prompt: &[0],
         generated: &[],
+        pending: &[],
     };
     assert_eq!(
         sample_with_history(&[3.0, 2.0], &parameters, 1, 0, history, &mut scratch)?,
@@ -287,6 +289,7 @@ fn constrained_penalties_preserve_original_token_indices() -> Result<()> {
     let history = SamplingHistory {
         prompt: &[0, 3],
         generated: &[3],
+        pending: &[],
     };
     assert_eq!(
         sample_constrained(
@@ -313,7 +316,8 @@ fn constrained_penalties_preserve_original_token_indices() -> Result<()> {
             0,
             SamplingHistory {
                 prompt: &[],
-                generated: &[0, 2]
+                generated: &[0, 2],
+                pending: &[],
             },
             mask,
             &mut scratch
@@ -328,7 +332,8 @@ fn constrained_penalties_preserve_original_token_indices() -> Result<()> {
             0,
             SamplingHistory {
                 prompt: &[4],
-                generated: &[]
+                generated: &[],
+                pending: &[],
             },
             mask,
             &mut scratch
@@ -344,6 +349,7 @@ fn allow_all_masks_preserve_existing_distributions_and_seeded_trajectories() -> 
     let history = SamplingHistory {
         prompt: &[0],
         generated: &[3],
+        pending: &[],
     };
     let mut plain = SamplingWorkspace::default();
     let mut constrained = SamplingWorkspace::default();
@@ -425,6 +431,7 @@ fn changing_prefix_masks_do_not_leak_candidates_or_grow_warmed_storage() -> Resu
     let history = SamplingHistory {
         prompt: &[0],
         generated: &[1, 33],
+        pending: &[],
     };
     let mut scratch = SamplingWorkspace::with_capacity(logits.len())?;
     sample_with_history(&logits, &sampling, 1, 0, history, &mut scratch)?;
@@ -453,6 +460,45 @@ fn changing_prefix_masks_do_not_leak_candidates_or_grow_warmed_storage() -> Resu
             ),
             pointers
         );
+    }
+    Ok(())
+}
+
+#[test]
+fn pending_tokens_are_penalized_like_the_output_they_extend() -> Result<()> {
+    // Splitting the output into committed and pending tokens must sample exactly what the
+    // concatenated output does, for every seed position and every split point.
+    let parameters = Sampling {
+        temperature: 0.8,
+        top_p: 0.9,
+        repetition_penalty: 1.3,
+        presence_penalty: 0.4,
+        seed: 7,
+        ..Sampling::default()
+    };
+    let logits = [0.5, 1.5, 1.0, 2.0, 0.25, 1.75];
+    let output = [3, 1, 3, 5];
+    let mut scratch = SamplingWorkspace::default();
+    for position in 0..16 {
+        let whole = SamplingHistory {
+            prompt: &[2],
+            generated: &output,
+            pending: &[],
+        };
+        let expected = sample_with_history(&logits, &parameters, 9, position, whole, &mut scratch)?;
+        for split in 0..=output.len() {
+            let (generated, pending) = output.split_at(split);
+            let history = SamplingHistory {
+                prompt: &[2],
+                generated,
+                pending,
+            };
+            assert_eq!(
+                sample_with_history(&logits, &parameters, 9, position, history, &mut scratch)?,
+                expected,
+                "position {position}, split {split}"
+            );
+        }
     }
     Ok(())
 }

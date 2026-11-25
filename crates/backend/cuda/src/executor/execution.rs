@@ -1509,15 +1509,15 @@ fn accept(
     tokens: Option<&[Option<u32>]>,
     sampler: &mut Sampler<'_>,
     position: usize,
-    generated: &mut Vec<u32>,
+    pending: &mut Vec<u32>,
 ) -> Result<Vec<u32>> {
     let sampling = sampler.sampling;
     accepted_prefix(
         &chain[1..],
-        generated,
-        |offset, generated| {
+        pending,
+        |offset, pending| {
             tokens.map_or_else(
-                || sampler.pick(&rows[offset].1, position + offset + 1, generated),
+                || sampler.pick(&rows[offset].1, position + offset + 1, pending),
                 |tokens| {
                     tokens[offset].ok_or_else(|| Error::invariant("verification selected token"))
                 },
@@ -1532,10 +1532,12 @@ struct Sampler<'a> {
     sampling: &'a infer_ir::Sampling,
     request: u64,
     prompt: &'a [u32],
+    /// Committed output; the tokens decided in the current step arrive as `pending`.
+    generated: &'a [u32],
     scratch: &'a mut infer_workloads::SamplingWorkspace,
 }
 impl Sampler<'_> {
-    fn pick(&mut self, logits: &[f32], index: usize, generated: &[u32]) -> Result<u32> {
+    fn pick(&mut self, logits: &[f32], index: usize, pending: &[u32]) -> Result<u32> {
         infer_workloads::sample_with_history(
             logits,
             self.sampling,
@@ -1543,7 +1545,8 @@ impl Sampler<'_> {
             index,
             infer_workloads::SamplingHistory {
                 prompt: self.prompt,
-                generated,
+                generated: self.generated,
+                pending,
             },
             self.scratch,
         )
@@ -1595,19 +1598,20 @@ impl Sequence {
             && count > 0
             && position > 0
         {
-            let mut generated = self.history[prompt_len..].to_vec();
-            generated.push(token);
+            let mut pending = Vec::with_capacity(count + 1);
+            pending.push(token);
             let mut sampler = Sampler {
                 sampling,
                 request: task.request.get(),
                 prompt: &self.history[..prompt_len],
+                generated: &self.history[prompt_len..],
                 scratch: &mut spec.scratch,
             };
             chain.extend(
                 propose(
                     &mut spec.program,
                     &mut sampler,
-                    &mut generated,
+                    &mut pending,
                     (token, position),
                     &spec.last_hidden,
                     count,
@@ -1663,32 +1667,34 @@ impl Sequence {
         if let Some(draft) = self.draft.as_mut().filter(|_| chain.len() > 1) {
             let prompt_len = *draft.prompt_len.get_or_insert(position);
             if let Some(sampling) = task.sampling.as_ref() {
-                let mut generated = self.history[prompt_len..].to_vec();
+                let mut pending = Vec::with_capacity(chain.len());
                 let mut sampler = Sampler {
                     sampling,
                     request: task.request.get(),
                     prompt: &self.history[..prompt_len],
+                    generated: &self.history[prompt_len..],
                     scratch: &mut draft.scratch,
                 };
-                accepted = accept(chain, rows, tokens, &mut sampler, position, &mut generated)?;
+                accepted = accept(chain, rows, tokens, &mut sampler, position, &mut pending)?;
             }
         } else if let Some(spec) = self.speculation.as_mut() {
             let prompt_len = *spec.prompt_len.get_or_insert(position);
             if let Some(sampling) = task.sampling.as_ref() {
-                let mut generated = self.history[prompt_len..].to_vec();
+                let mut pending = Vec::with_capacity(chain.len());
                 let mut sampler = Sampler {
                     sampling,
                     request: task.request.get(),
                     prompt: &self.history[..prompt_len],
+                    generated: &self.history[prompt_len..],
                     scratch: &mut spec.scratch,
                 };
-                accepted = accept(chain, rows, tokens, &mut sampler, position, &mut generated)?;
+                accepted = accept(chain, rows, tokens, &mut sampler, position, &mut pending)?;
             }
             if !settles_after {
                 // Even fully accepted proposals used draft hidden rows during drafting.
                 // Replace their KV with target-conditioned rows before the next proposal.
-                let hidden: Vec<_> = rows[..accepted.len()].iter().map(|r| r.0.clone()).collect();
-                spec.replay(&accepted, &hidden, position + 1).await?;
+                spec.replay(&accepted, &rows[..accepted.len()], position + 1)
+                    .await?;
             }
             spec.last_hidden.clone_from(&rows[accepted.len()].0);
         }
@@ -2258,7 +2264,7 @@ impl Speculation {
     async fn replay(
         &mut self,
         decided: &[u32],
-        hidden_of: &[Vec<f32>],
+        rows: &[(Vec<f32>, Vec<f32>)],
         start: usize,
     ) -> Result<()> {
         self.program.rewind_attention(start - 1)?;
@@ -2269,7 +2275,7 @@ impl Speculation {
                     *token,
                     index,
                     index - MTP_KV_OFFSET,
-                    Some(&hidden_of[offset]),
+                    Some(&rows[offset].0),
                     false,
                 )
                 .await?;

@@ -85,8 +85,6 @@ pub(super) async fn propose(
                     let prompt_len = spec
                         .prompt_len
                         .ok_or_else(|| Error::invariant("draft prompt length"))?;
-                    let mut generated = state.history[prompt_len..].to_vec();
-                    generated.extend_from_slice(&chains[i]);
                     infer_workloads::sample_with_history(
                         &logits,
                         task.sampling
@@ -96,7 +94,8 @@ pub(super) async fn propose(
                         state.history.len() + step + 1,
                         infer_workloads::SamplingHistory {
                             prompt: &state.history[..prompt_len],
-                            generated: &generated,
+                            generated: &state.history[prompt_len..],
+                            pending: &chains[i],
                         },
                         &mut spec.scratch,
                     )
