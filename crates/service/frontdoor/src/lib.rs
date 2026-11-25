@@ -11,5 +11,4 @@ pub use http::{
     router_with_text_and_media, router_with_text_media_and_responses, serve, serve_with_text,
     serve_with_text_and_media, serve_with_text_media_and_responses,
 };
-pub use infer_agentic::{InMemoryResponseStore, InMemoryResponseStoreConfig};
 pub use media::{ImageDecoder, ImageProcessingOptions, MediaIngest, MediaRequest};

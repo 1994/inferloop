@@ -1458,6 +1458,7 @@ version = "0.1.0"
 dependencies = [
  "infer-core",
  "infer-spi",
+ "infer-storage",
  "tokio",
  "tracing",
 ]
@@ -1531,6 +1532,7 @@ dependencies = [
  "infer-quality",
  "infer-runtime",
  "infer-spi",
+ "infer-storage",
  "infer-workloads",
  "mimalloc",
  "serde",
@@ -1627,6 +1629,7 @@ dependencies = [
  "infer-observe",
  "infer-runtime",
  "infer-spi",
+ "infer-storage",
  "infer-test-support",
  "infer-workloads",
  "mime",
@@ -1796,6 +1799,27 @@ dependencies = [
  "infer-ir",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "infer-storage"
+version = "0.1.0"
+dependencies = [
+ "infer-core",
+ "infer-spi",
+ "infer-storage-conformance",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "infer-storage-conformance"
+version = "0.1.0"
+dependencies = [
+ "infer-core",
+ "infer-spi",
+ "tokio",
 ]
 
 [[package]]

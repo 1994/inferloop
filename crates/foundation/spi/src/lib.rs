@@ -4,10 +4,16 @@ mod generation;
 pub use constraint::{ConstraintHandle, GenerationConstraint};
 pub use generation::{GenerationPolicy, GenerationPreset, GreedyPreset};
 mod planning;
+mod records;
 mod resource;
 mod responses;
 mod tools;
 pub use planning::DecisionStorage;
+pub use records::{
+    LogRecord, Namespace, Precondition, PutOutcome, RECORDS_SPI_VERSION, Record,
+    RecordCapabilities, RecordFuture, RecordKey, RecordState, RecordStore, RecordWrite, Retention,
+    STATE_PREDICATE_ATTEMPTS, StateSet, UnixMillis, Version, put_by_version,
+};
 pub use resource::{
     ResourceAbandon, ResourceCommand, ResourcePool, ResourceReply, ResourceResponder,
     ResourceTicket, execute_resource,

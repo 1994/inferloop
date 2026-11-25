@@ -1,13 +1,13 @@
 //! Response lifecycles through `Responses` with a scripted upstream and the reference store.
 use infer_agentic::{
-    BackgroundStart, DocumentMetadata, InMemoryResponseStore, InMemoryResponseStoreConfig,
-    ResponseDocument, Responses, Retention, Upstream,
+    BackgroundStart, DocumentMetadata, ResponseDocument, Responses, Retention, Upstream,
 };
 use infer_core::{Error, ErrorCode, RequestId, Result};
 use infer_spi::{
     RESPONSES_PAYLOAD_VERSION, ResponseError, ResponseId, ResponseStatus, ResponseStore,
     ResponsesExtensions, StoredResponse, WriteCondition,
 };
+use infer_storage::{MemoryRecordStore, RecordResponseStore, ResponseRetention};
 use std::future::{Future, ready};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -101,15 +101,15 @@ fn finished(outcome: Result<Body>) -> Receiver<Result<Body>> {
     receiver
 }
 
-fn store(max_record_bytes: usize) -> Result<Arc<InMemoryResponseStore>> {
-    InMemoryResponseStore::new(InMemoryResponseStoreConfig {
+fn store(max_record_bytes: usize) -> Result<Arc<RecordResponseStore>> {
+    let retention = ResponseRetention {
         max_record_bytes,
-        ..InMemoryResponseStoreConfig::default()
-    })
-    .map(Arc::new)
+        ..ResponseRetention::default()
+    };
+    RecordResponseStore::new(Arc::new(MemoryRecordStore::default()), retention).map(Arc::new)
 }
 
-fn service(store: &Arc<InMemoryResponseStore>) -> Responses {
+fn service(store: &Arc<RecordResponseStore>) -> Responses {
     let store: Arc<dyn ResponseStore> = store.clone();
     Responses::new(ResponsesExtensions::new().with_store(store))
 }
@@ -134,7 +134,7 @@ const fn initial() -> Body {
     Body::new(ResponseStatus::InProgress, "initial")
 }
 
-async fn stored(store: &InMemoryResponseStore, id: &str) -> Result<StoredResponse> {
+async fn stored(store: &RecordResponseStore, id: &str) -> Result<StoredResponse> {
     store
         .get(&ResponseId::new(id)?)
         .await?
@@ -142,7 +142,7 @@ async fn stored(store: &InMemoryResponseStore, id: &str) -> Result<StoredRespons
 }
 
 /// Wait until a spawned writer leaves the record in a terminal state.
-async fn settled(store: &InMemoryResponseStore, id: &str) -> Result<StoredResponse> {
+async fn settled(store: &RecordResponseStore, id: &str) -> Result<StoredResponse> {
     timeout(SETTLE, async {
         loop {
             let record = stored(store, id).await?;
@@ -157,7 +157,7 @@ async fn settled(store: &InMemoryResponseStore, id: &str) -> Result<StoredRespon
 }
 
 async fn put(
-    store: &InMemoryResponseStore,
+    store: &RecordResponseStore,
     id: &str,
     status: ResponseStatus,
     model: &str,

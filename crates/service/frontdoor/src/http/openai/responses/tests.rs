@@ -1,4 +1,3 @@
-use crate::InMemoryResponseStore;
 use axum::body::to_bytes;
 use axum::{Router, body::Body, http::Request, http::StatusCode};
 use infer_core::ModelId;
@@ -10,6 +9,7 @@ use infer_spi::{
     RESPONSES_PAYLOAD_VERSION, ResponseId, ResponseStatus, ResponseStore, ResponsesExtensions,
     StoredResponse, WriteCondition,
 };
+use infer_storage::{MemoryRecordStore, RecordResponseStore, ResponseRetention};
 use serde_json::{Value, json};
 use std::env::temp_dir;
 use std::fs::copy;
@@ -391,9 +391,9 @@ async fn responses_media_is_refused_on_a_text_only_deployment() {
     handle.shutdown().await.unwrap();
 }
 
-fn store_fixture() -> (Router, Arc<InMemoryResponseStore>, RuntimeHandle) {
+fn store_fixture() -> (Router, Arc<RecordResponseStore>, RuntimeHandle) {
     let (handle, assets) = fixture();
-    let store = Arc::new(InMemoryResponseStore::default());
+    let store = Arc::new(memory_store());
     let app = router_with_text_media_and_responses(
         handle.clone(),
         assets,
@@ -657,7 +657,7 @@ async fn stateful_routes_need_an_installed_store() {
 #[tokio::test]
 async fn streamed_responses_are_retained_by_the_installed_store() {
     let (handle, assets) = streaming_fixture();
-    let store = Arc::new(InMemoryResponseStore::default());
+    let store = Arc::new(memory_store());
     let app = router_with_text_media_and_responses(
         handle.clone(),
         assets,
@@ -710,4 +710,12 @@ async fn a_chained_request_may_choose_not_to_store_its_own_result() {
     let (status, _) = call(app, &format!("/v1/responses/{id}"), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     handle.shutdown().await.unwrap();
+}
+
+fn memory_store() -> RecordResponseStore {
+    RecordResponseStore::new(
+        Arc::new(MemoryRecordStore::default()),
+        ResponseRetention::default(),
+    )
+    .expect("the default memory store holds default responses")
 }

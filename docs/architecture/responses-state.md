@@ -9,8 +9,9 @@ frontdoor /v1/responses           线格式；ResponseBody 实现 ResponseDocume
   → infer_agentic::Responses        prior / retain / complete / spawn_background / retrieve / cancel
   → infer_spi::ResponseStore        get / put / delete / transition / events
   → 调用方安装的 Arc<dyn ResponseStore>
-       ├─ InMemoryResponseStore    参考实现，进程内、有界
-       └─ 外部 SDK                  Redis / Postgres / DynamoDB / 托管服务
+       ├─ infer_storage::RecordResponseStore   Responses 语义只写一次
+       │    └─ Arc<dyn RecordStore>             MemoryRecordStore（参考，有界）或任何记录后端
+       └─ 直接实现 ResponseStore 的外部 SDK
 ```
 
 `infer-spi` 不依赖 frontdoor、Tokio、数据库或 `serde_json`。存储记录里的协议 payload 是不透明字节，只有 frontdoor 知道其 JSON 含义；这使 wire format 演进不必改动每个存储后端。
@@ -99,7 +100,7 @@ queued ──→ in_progress ──→ completed
 
 ## 参考实现与边界
 
-`InMemoryResponseStore` 是 `infer-agentic` 提供的参考后端（frontdoor 为兼容继续重新导出），默认关闭，通过 `--enable-response-store` 安装：
+参考后端由两层组成（见[存储层方案](../plans/engineering/storage.md)）：`infer-storage` 的 `RecordResponseStore` 把 Responses 语义写在任意 `infer_spi::RecordStore` 之上，`MemoryRecordStore` 是有界的进程内记录存储。默认关闭，通过 `--enable-response-store` 安装二者的组合：
 
 | 限制 | 默认 |
 |---|---|
@@ -110,9 +111,11 @@ queued ──→ in_progress ──→ completed
 | 终态保留 | 1 小时（LRU） |
 | 活动记录 | 不因 TTL/LRU 驱逐 |
 
-- 终态按 last-used 驱逐；活动记录只有在其自身写入超预算时才可能失败。
-- 记录与事件都在同一把短临界区锁内处理，不在 `.await` 中持锁。
-- 这是单进程、非持久、非共享实现。需要跨重启/多副本时，外部 SDK 应实现 `persistent`/`shared` 后端；`spi_version` 和 `payload_version` 用于兼容校验。
+- 每个响应是一条记录，状态标签就是响应状态，后台事件是记录的日志。终态快照"不覆盖已取消/已终态的记录"是一次带 `StateNotIn` 条件的写入；状态迁移是"读版本 → 按版本条件写"，冲突时重试。
+- 活动响应写成 `Retention::Pinned`，终态响应写成带 TTL 的 `Retention::Disposable`。记录存储只按保留等级淘汰：容量不够时按 last-used 丢弃 disposable 记录，pinned 记录从不被驱逐，只有它们挡路时写入才失败。
+- 替换记录保留它的日志，删除和过期才连同日志移除，所以后台响应的终态快照不会抹掉已经产生的事件。
+- 记录与日志都在同一把短临界区锁内处理，不在 `.await` 中持锁。
+- 这是单进程、非持久、非共享实现。需要跨重启或多副本时，实现一个 durable/shared 的 `RecordStore` 即可复用同一份 Responses 语义；也可以像以前一样直接实现 `ResponseStore`。两种实现都跑 `crates/testing/storage/conformance` 的同一套测试；`spi_version` 和 `payload_version` 用于兼容校验。
 - 存储包含 prompt 与输出文本；外部实现负责加密、租户隔离、访问控制和保留策略，不能把 payload 写入普通日志。
 - 前台请求或 SSE 客户端提前断开时，`StoreLease` 会尽力把仍活动的记录写成 failed（取消优先时保持 cancelled）；它不阻塞断连清理，也不保证进程崩溃后的清理。
 
@@ -127,4 +130,4 @@ infer_frontdoor::serve_with_text_media_and_responses(
 ).await?;
 ```
 
-CLI 的 `--enable-response-store` 安装 `InMemoryResponseStore`。没有安装 store 时，`store:true`、`previous_response_id`、`background`、GET 与 cancel 都返回明确错误，不会被静默忽略。
+CLI 的 `--enable-response-store` 安装 `RecordResponseStore` + `MemoryRecordStore`。没有安装 store 时，`store:true`、`previous_response_id`、`background`、GET 与 cancel 都返回明确错误，不会被静默忽略。

@@ -9,7 +9,7 @@
     "agentic": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 12,
+      "src_near": 0,
       "tests": 20
     },
     "api": {
@@ -131,6 +131,12 @@
       "src_inline": 0,
       "src_near": 12,
       "tests": 21
+    },
+    "storage": {
+      "benches": 0,
+      "src_inline": 0,
+      "src_near": 0,
+      "tests": 8
     },
     "workloads": {
       "benches": 0,
@@ -319,11 +325,11 @@
     }
   ],
   "totals": {
-    "all": 1422,
+    "all": 1418,
     "benches": 0,
-    "src": 1124,
+    "src": 1112,
     "src_inline": 0,
-    "src_near": 1124,
-    "tests": 298
+    "src_near": 1112,
+    "tests": 306
   }
 }

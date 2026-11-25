@@ -8,6 +8,7 @@ use crate::support::{configured_engine, read_json};
 use infer_core::ErrorCode;
 use infer_core::{Error, Result};
 use infer_spi::{BackendProvider, ResponsesExtensions};
+use infer_storage::{MemoryRecordStore, RecordResponseStore, ResponseRetention};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
@@ -33,8 +34,10 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         enable_response_store,
     } = options;
     let responses = if enable_response_store {
-        ResponsesExtensions::new()
-            .with_store(Arc::new(infer_frontdoor::InMemoryResponseStore::default()))
+        ResponsesExtensions::new().with_store(Arc::new(RecordResponseStore::new(
+            Arc::new(MemoryRecordStore::default()),
+            ResponseRetention::default(),
+        )?))
     } else {
         ResponsesExtensions::default()
     };
