@@ -6,7 +6,7 @@ use crate::cpu::CpuContext;
 use crate::media::{MediaIngest, MediaRequest, ResolvedMedia};
 use axum::http::HeaderMap;
 use infer_core::{Error, ErrorCode, FinishReason, RequestId};
-use infer_ir::{CanonicalRequest, RequestInput, Workload, WorkloadOutput};
+use infer_ir::{CanonicalRequest, FinishedState, RequestInput, Workload, WorkloadOutput};
 use infer_observe::trace::TraceContext;
 use infer_runtime::{CompletedRequest, EngineOutput};
 use serde::Serialize;
@@ -67,6 +67,13 @@ impl Encoding {
     ) -> infer_core::Result<(CanonicalRequest, Option<infer_spi::ConstraintHandle>)> {
         context.check()?;
         let chat = self.messages.is_some();
+        // A turn of a tool-using conversation is very likely continued by its next turn.
+        let tool_turn = self.tools.is_some()
+            || self.messages.as_ref().is_some_and(|messages| {
+                messages
+                    .iter()
+                    .any(|message| message.role == "tool" || !message.tool_calls.is_empty())
+            });
         let (tokens, media) = if let Some(messages) = self.messages {
             let rendered = self.assets.render_chat(
                 &messages,
@@ -121,6 +128,11 @@ impl Encoding {
             .transpose()?;
         context.check()?;
         let prefix_boundary = conversation_breakpoint(chat, media.is_empty(), tokens.len());
+        let on_finish = if chat && tool_turn && media.is_empty() {
+            FinishedState::PublishPrefix
+        } else {
+            FinishedState::Release
+        };
         Ok((
             CanonicalRequest {
                 id: self.id,
@@ -136,6 +148,7 @@ impl Encoding {
                 qos: infer_ir::Qos::default(),
                 sampling: self.sampling,
                 prefix_boundary,
+                on_finish,
                 extensions: BTreeMap::new(),
             },
             constraint,

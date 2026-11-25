@@ -1,4 +1,4 @@
-use super::{PrefixCache, PrefixId, PrefixRecency};
+use super::{PrefixCache, PrefixId, PrefixRecency, SnapshotScan};
 #[test]
 fn clock_rollover_keeps_eviction_order_independent_of_hash_iteration() {
     let mut cache = PrefixCache::new(b"rollover", 2, 100, 16).unwrap();
@@ -100,4 +100,28 @@ fn exhausted_snapshot_ids_preserve_live_entries_and_allow_replacement() {
     assert_eq!(cache.lookup(&[1, 2], 2), Some(10));
     assert_eq!(cache.insert(vec![1, 2], 30, 4).unwrap(), vec![10]);
     assert_eq!(cache.evict_oldest(), Some(30));
+}
+
+#[test]
+fn a_snapshot_scan_keeps_exact_positions_and_a_block_index_does_not() {
+    // A turn ends wherever its last generated token falls, not on a block.
+    let mut scan = PrefixCache::with_policy(b"exact", 4, 100, 4, SnapshotScan).unwrap();
+    assert_eq!(
+        scan.insert(vec![1, 2, 3, 4, 5, 6], 7, 4).unwrap(),
+        Vec::<u32>::new()
+    );
+    assert_eq!(scan.lookup(&[1, 2, 3, 4, 5, 6, 9, 9], 7), Some(7));
+    assert_eq!(
+        scan.lookup(&[1, 2, 3, 4, 5, 9], 6),
+        None,
+        "a shorter partial match is not a hit"
+    );
+    assert_eq!(
+        scan.lookup(&[1, 2, 3, 4, 5, 6, 9], 5),
+        None,
+        "beyond the maximum"
+    );
+    let mut blocks = PrefixCache::new(b"blocks", 4, 100, 4).unwrap();
+    assert!(blocks.insert(vec![1, 2, 3, 4, 5, 6], 7, 4).is_err());
+    assert!(scan.insert(Vec::new(), 8, 4).is_err());
 }

@@ -6,8 +6,8 @@ use crate::constants::MAX_JSON_FILE_BYTES;
 use crate::{backend::SelectedBackend, support::selected_engine};
 use infer_core::{DecisionId, Error, ErrorCode, RequestId, Result, StateId, StepId};
 use infer_ir::{
-    CanonicalRequest, CostEstimate, ExecutionRole, ExecutionTask, LayerProbe, PlannedWork, Qos,
-    RequestInput, Sampling, StepPlan, Workload, WorkloadOutput,
+    CanonicalRequest, CostEstimate, ExecutionRole, ExecutionTask, FinishedState, LayerProbe,
+    PlannedWork, Qos, RequestInput, Sampling, StepPlan, Workload, WorkloadOutput,
 };
 use infer_runtime::{Engine, RuntimeConfig};
 use infer_spi::BackendProvider;
@@ -257,6 +257,7 @@ fn verify_trajectories(
                 qos: Qos::default(),
                 sampling: Sampling::default(),
                 prefix_boundary: None,
+                on_finish: FinishedState::Release,
                 extensions: BTreeMap::new(),
             })?;
         }

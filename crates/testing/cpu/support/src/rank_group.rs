@@ -9,8 +9,8 @@
 use crate::fixtures::ProtocolBackend;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::{
-    BackendFormats, DataflowGraph, DeviceCapabilities, ExecutionProgram, ExecutionTask, ModelIr,
-    OutputReadout, StepPlan, TaskOutput,
+    BackendFormats, DataflowGraph, DeviceCapabilities, ExecutionProgram, ExecutionTask,
+    FinishedState, ModelIr, OutputReadout, StepPlan, TaskOutput,
 };
 use infer_spi::BackendProvider;
 use std::sync::Arc;
@@ -198,6 +198,9 @@ impl BackendProvider for RankGroup {
     }
     fn release_state(&mut self, state: StateId) -> Result<()> {
         self.each(|rank| rank.release_state(state))
+    }
+    fn finish_state(&mut self, state: StateId, kept: FinishedState) -> Result<()> {
+        self.each(|rank| rank.finish_state(state, kept))
     }
     /// Only a prefix every rank holds can be reused.
     fn reusable_prefix(&self, tokens: &[u32], maximum: usize) -> usize {

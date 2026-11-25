@@ -1,7 +1,9 @@
 //! Exercise the same provider through scheduler, incremental input and completion handling.
 use infer_backend_cuda::{executor::CudaBackend, registry::CudaKernels};
 use infer_core::{Error, ModelId, RequestId, Result};
-use infer_ir::{CanonicalRequest, PrecisionPlan, Qos, RequestInput, Sampling, Workload};
+use infer_ir::{
+    CanonicalRequest, FinishedState, PrecisionPlan, Qos, RequestInput, Sampling, Workload,
+};
 use infer_kernel_api::KernelRegistry;
 use infer_runtime::{Engine, RuntimeConfig};
 use std::{
@@ -51,6 +53,7 @@ pub fn run(
                 ..sampling.clone()
             },
             prefix_boundary: None,
+            on_finish: FinishedState::Release,
             extensions: BTreeMap::new(),
         })?;
     }

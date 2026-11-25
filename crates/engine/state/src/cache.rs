@@ -267,9 +267,12 @@ impl<V, M: PrefixPolicy> PrefixCache<V, M> {
     }
     /// Check publication policy before a backend acquires any additional resource references.
     /// # Errors
-    /// Rejects empty or incomplete prefixes.
+    /// Rejects empty prefixes, and prefixes off a token block when the policy needs whole
+    /// blocks.
     pub fn can_publish(&self, tokens: &[u32], bytes: u64) -> Result<bool> {
-        if tokens.is_empty() || !tokens.len().is_multiple_of(self.block_size) {
+        if tokens.is_empty()
+            || (M::COMPLETE_BLOCKS && !tokens.len().is_multiple_of(self.block_size))
+        {
             return Err(Error::invalid(
                 "only complete token blocks may be published",
             ));

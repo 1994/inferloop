@@ -431,6 +431,9 @@ impl BackendProvider for SelectedBackend {
     fn release_state(&mut self, id: StateId) -> Result<()> {
         forward!(self, release_state, id)
     }
+    fn finish_state(&mut self, id: StateId, kept: infer_ir::FinishedState) -> Result<()> {
+        forward!(self, finish_state, id, kept)
+    }
     fn capture_execution_state(&self) -> Result<Option<Vec<u8>>> {
         forward!(self, capture_execution_state)
     }

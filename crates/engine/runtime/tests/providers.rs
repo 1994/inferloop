@@ -1,3 +1,4 @@
+use infer_ir::FinishedState;
 use infer_kernel_api::KernelRegistry;
 use infer_runtime::{Engine, RuntimeConfig};
 use infer_spi::{ProviderMetadata, SPI_VERSION, WorkloadProvider};
@@ -90,6 +91,7 @@ fn registered_provider_runs_through_core_and_checkpoint_requires_same_registry()
         qos: Qos::default(),
         sampling: Sampling::default(),
         prefix_boundary: None,
+        on_finish: FinishedState::Release,
         extensions: BTreeMap::new(),
     };
     engine.submit(request).unwrap();

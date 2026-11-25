@@ -183,6 +183,9 @@ impl BackendProvider for CudaBackend {
     fn release_state(&mut self, state: StateId) -> Result<()> {
         self.control(|executor| executor.release(state))
     }
+    fn finish_state(&mut self, state: StateId, kept: infer_ir::FinishedState) -> Result<()> {
+        self.control(|executor| executor.finish(state, kept))
+    }
     fn reuse_prefix_shared(
         &mut self,
         state: StateId,

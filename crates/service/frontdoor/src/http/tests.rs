@@ -3,6 +3,7 @@ use axum::body::to_bytes;
 use axum::http::Request;
 use axum::http::StatusCode;
 use infer_core::{Error, ErrorCode, ModelId, RequestId, Result};
+use infer_ir::FinishedState;
 use infer_kernel_api::KernelRegistry;
 use infer_observe::ObservationQuery;
 use infer_runtime::{CompletedRequest, Engine, EngineOutput, RuntimeConfig};
@@ -53,6 +54,7 @@ fn request(id: u64, max_new_tokens: usize) -> CanonicalRequest {
         qos: Qos::default(),
         sampling: Sampling::default(),
         prefix_boundary: None,
+        on_finish: FinishedState::Release,
         extensions: BTreeMap::new(),
     }
 }

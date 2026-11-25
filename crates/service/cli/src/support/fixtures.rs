@@ -1,6 +1,6 @@
 //! Fixtures CLI support.
 use infer_core::{ModelId, RequestId, Result};
-use infer_ir::{CanonicalRequest, Qos, RequestInput, Sampling, Workload};
+use infer_ir::{CanonicalRequest, FinishedState, Qos, RequestInput, Sampling, Workload};
 use std::collections::BTreeMap;
 
 /// Token identifiers shared by every example request's input sequence.
@@ -18,6 +18,7 @@ pub fn example(id: u64, workload: Workload) -> Result<CanonicalRequest> {
         qos: Qos::default(),
         sampling: Sampling::default(),
         prefix_boundary: None,
+        on_finish: FinishedState::Release,
         extensions: BTreeMap::new(),
     })
 }

@@ -49,7 +49,7 @@ pub use multimodal::{
     MediaInput, MediaItem, MediaNode, MediaPixels, MediaPlan, MediaStage, Modality, MultimodalGraph,
 };
 pub use precision::{DType, PrecisionPlan, ScaleGranularity, ScaleSpec, TensorLayout};
-pub use request::{CanonicalRequest, Qos, RequestInput, Sampling};
+pub use request::{CanonicalRequest, FinishedState, Qos, RequestInput, Sampling};
 pub use scheduling::{
     AdmissionConfig, AdmissionDecision, AdmissionInput, AdmissionReason, CostModelConfig,
     CostModelInspection, CostObservation, CostQuery, ExecutionTiming, PageGrowth, PrefillGeometry,

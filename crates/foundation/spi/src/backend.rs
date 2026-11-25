@@ -3,7 +3,7 @@ use super::{ResourceCommand, ResourceTicket, execute_resource};
 use infer_core::{Error, Result, StateId};
 use infer_ir::{
     DeviceCapabilities, DeviceTimingSample, ExecutionProgram, ExecutionTask, ExecutionTiming,
-    KvCacheInspection, ModelIr, PageGrowth, StepPlan, TaskOutput,
+    FinishedState, KvCacheInspection, ModelIr, PageGrowth, StepPlan, TaskOutput,
 };
 use std::sync::Arc;
 
@@ -314,6 +314,17 @@ pub trait BackendProvider {
     /// Returns a not-found, invariant, or backend error if owned state cannot be released.
     fn release_state(&mut self, _state: StateId) -> Result<()> {
         Ok(())
+    }
+    /// Release the state of a request that finished on its own, first keeping what `kept`
+    /// asks for when this backend can. Keeping is best effort: a backend that cannot snapshot
+    /// the state, or whose cache declines it, releases as usual and reports success.
+    ///
+    /// # Errors
+    /// Returns the [`Self::release_state`] errors.
+    fn finish_state(&mut self, state: StateId, kept: FinishedState) -> Result<()> {
+        match kept {
+            FinishedState::Release | FinishedState::PublishPrefix => self.release_state(state),
+        }
     }
     /// # Errors
     /// Returns a conflict error while execution is in flight or a backend/serialization error during capture.

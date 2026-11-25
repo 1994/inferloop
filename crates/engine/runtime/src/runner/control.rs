@@ -2,8 +2,8 @@
 use super::{RunnerTicket, ThreadedBackend, worker::Job};
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::{
-    DeviceCapabilities, ExecutionProgram, ExecutionTask, ExecutionTiming, KvCacheInspection,
-    ModelIr, PageGrowth, StepPlan, TaskOutput,
+    DeviceCapabilities, ExecutionProgram, ExecutionTask, ExecutionTiming, FinishedState,
+    KvCacheInspection, ModelIr, PageGrowth, StepPlan, TaskOutput,
 };
 use infer_spi::BackendProvider;
 use std::{sync::Arc, sync::atomic::Ordering};
@@ -108,8 +108,8 @@ where
             self.active = None;
             self.shared.flight_abandoned.store(false, Ordering::Release);
         }
-        while let Some(state) = self.pending_releases.front().copied() {
-            let job = Job::Release(state);
+        while let Some((state, kept)) = self.pending_releases.front().copied() {
+            let job = Job::Release(state, kept);
             match self.enqueue(job) {
                 Ok(()) => {
                     self.pending_releases.pop_front();
@@ -212,11 +212,14 @@ where
         ))
     }
     fn release_state(&mut self, state: StateId) -> Result<()> {
+        self.finish_state(state, FinishedState::Release)
+    }
+    fn finish_state(&mut self, state: StateId, kept: FinishedState) -> Result<()> {
         if !self.state_ids.remove(&state) {
             return Err(Error::invalid("release unknown runner state"));
         }
         self.shared.releases.fetch_add(1, Ordering::AcqRel);
-        self.pending_releases.push_back(state);
+        self.pending_releases.push_back((state, kept));
         self.maintenance()
     }
     fn capture_execution_state(&self) -> Result<Option<Vec<u8>>> {

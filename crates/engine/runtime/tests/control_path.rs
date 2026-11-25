@@ -1,3 +1,4 @@
+use infer_ir::FinishedState;
 use infer_test_support::fixtures as support;
 
 use infer_kernel_api::KernelRegistry;
@@ -50,6 +51,7 @@ mod fixtures {
                 ..Default::default()
             },
             prefix_boundary: None,
+            on_finish: FinishedState::Release,
             extensions: BTreeMap::new(),
         }
     }

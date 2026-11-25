@@ -2,7 +2,7 @@ use super::{Completion, Shared};
 use infer_core::set::BoundedSet;
 use infer_core::{Error, Result, StateId};
 use infer_gpu_api::BatchLease;
-use infer_ir::ExecutionProgram;
+use infer_ir::{ExecutionProgram, FinishedState};
 use infer_spi::BackendProvider;
 use std::thread::{current, park_timeout};
 use std::{sync::Arc, sync::atomic::Ordering, sync::mpsc, time::Duration};
@@ -19,7 +19,8 @@ pub(super) enum Job {
         reserve: Option<StateId>,
         credit: super::ControlCredit,
     },
-    Release(StateId),
+    /// Release a state, keeping what the finished request asked for when the backend can.
+    Release(StateId, FinishedState),
 }
 struct Flight<T> {
     ticket: T,
@@ -250,9 +251,9 @@ impl<B: BackendProvider> Worker<B> {
                 }
                 let _ = reply.send(result);
             }
-            Job::Release(state) => {
+            Job::Release(state, kept) => {
                 let result = if self.states.contains(&state) {
-                    self.backend.release_state(state)
+                    self.backend.finish_state(state, kept)
                 } else {
                     Ok(())
                 };
