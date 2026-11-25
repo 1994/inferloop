@@ -253,9 +253,9 @@ fn nullable_tool_calls_from_sdk_history_are_accepted() {
 }
 
 #[test]
-fn replayed_reasoning_content_is_accepted_and_skipped() {
+fn replayed_reasoning_content_reaches_the_reasoning_slot() {
     // A client that replays the assistant message this API published sends `reasoning_content`
-    // back with it. It must deserialize, and it must not reach the template.
+    // back with it. It is the message's reasoning, kept out of its text.
     let mut request = chat(
         &json!([
             {"role":"user", "content":"hello"},
@@ -269,6 +269,7 @@ fn replayed_reasoning_content_is_accepted_and_skipped() {
     assert_eq!(messages[1].role, "assistant");
     assert_eq!(messages[1].content, "hi");
     assert!(!messages[1].content.contains("weigh"));
+    assert_eq!(messages[1].reasoning.as_deref(), Some("weigh the options"));
 
     // `null` is what a client echoes when a turn produced no reasoning.
     let mut absent = chat(

@@ -56,7 +56,7 @@
 
 assistant 消息可以带 `tool_calls`（`null` 按空列表处理），每项为 `{"id":..., "type":"function", "function":{"name":..., "arguments":...}}`，`arguments` 是该调用收到或产生的原始 JSON 文本。`tool` 消息必须带 `tool_call_id`，并关联到同一段历史中更早的一次 assistant 调用。id 重复、关联不存在的历史、或把 `tool_calls` / `tool_call_id` 放错 role 都返回 400。历史可以包含本次未声明的工具调用，本次声明集合只约束新产生的调用。
 
-assistant 消息可以回传此前响应中的 `reasoning_content`（`null` 按缺省处理）；它不会进入 prompt，模板没有 reasoning 历史槽位，下一轮思考由模型重新生成。把该字段放在其他 role 上返回 400。
+assistant 消息可以回传此前响应中的 `reasoning_content`（`null` 和空串按缺省处理）。它作为该消息的 reasoning 传给模板的 `reasoning_content` 槽位：Qwen3.5 的模板为最后一条 user 之后的 assistant 消息渲染它，Qwen3.8 默认渲染全部历史。模型因此在工具步之间保有自己的推理，prompt 也与它实际生成的内容一致，前缀缓存可以接上上一轮。把该字段放在其他 role 上返回 400。
 
 ### 严格工具调用
 
@@ -127,7 +127,7 @@ assistant 消息可以回传此前响应中的 `reasoning_content`（`null` 按�
 | message | `role` 为 user/assistant/system/developer；developer 按 system 处理；`content` 为字符串、`null` 或 part 列表 |
 | function_call | 需要 `call_id`、`name`、`arguments`；追加到前一条 assistant 消息，形成可重放的调用历史 |
 | function_call_output | 需要 `call_id` 与 `output`（字符串或文本 part 列表）；必须对应历史中更早的调用 |
-| reasoning | 接受并跳过；模型模板没有 reasoning 历史槽位，工具回传时不会重新渲染 |
+| reasoning | `content` 中的 `reasoning_text` 并入紧随其后的 assistant 轮（message 或 function_call），按模板的 reasoning 槽位渲染；`summary` 与 `encrypted_content` 不是模型生成的原文，接受但不进入 prompt |
 | item_reference 与内置工具 item | 501 |
 
 message 的 part 支持 `input_text`、`output_text`、`text` 与 `input_image`（URL 或 data URL，可带 `detail`）。`input_file`、`input_audio`、`input_video` 返回 501；`input_image.file_id` 也返回 501。媒体沿用 Chat 的部署能力与限制，非 user 消息携带媒体返回 400。
@@ -190,7 +190,7 @@ reasoning 使用 `response.reasoning_text.delta` 与 `response.reasoning_text.do
 - 没有 `n`、`messages`、`response_format`、`logprobs`；对应能力使用 `input`、`text.format`（当前仅 text）与 typed output。
 - 服务端存储默认关闭；启用后可 `store`、`previous_response_id`、GET 和 cancel。未启用时历史仍由调用方把上一次的 `output` item 回传给下一次 `input`。
 - 只支持 function 工具。web search、file search、MCP、computer use、code interpreter、image generation 返回 501。
-- reasoning item 可以在 input 中回传，但不会进入 prompt；模板没有 reasoning 历史槽位。
+- reasoning item 可以在 input 中回传，其 `reasoning_text` 进入随后的 assistant 轮，见上表。
 - 存储扩展在 `infer-spi`，不是 wire protocol 扩展；外部实现只需实现 `ResponseStore`，无需改前端协议。
 
 ## 决策

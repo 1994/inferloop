@@ -287,6 +287,10 @@ impl GenerationRequest {
                     "only an assistant message may carry reasoning_content",
                 ));
             }
+            history.reasoning = message
+                .reasoning_content
+                .clone()
+                .filter(|reasoning| !reasoning.is_empty());
             if !message.tool_calls.is_empty() && message.role != "assistant" {
                 return Err(Error::invalid(
                     "only an assistant message may carry tool_calls",
@@ -375,8 +379,8 @@ pub(super) struct WireMessage {
     pub tool_call_id: Option<String>,
     /// Reasoning text this service published for an earlier assistant turn.
     ///
-    /// Clients replay it with the assistant message. Templates have no reasoning-history slot,
-    /// so it is accepted for a full output round trip and skipped.
+    /// Clients replay it with the assistant message, and it reaches the template's reasoning
+    /// slot, so the prompt shows the model the reasoning it generated.
     #[serde(default)]
     pub reasoning_content: Option<String>,
 }

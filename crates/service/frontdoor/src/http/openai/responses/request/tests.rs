@@ -85,19 +85,66 @@ fn output_message_items_round_trip_with_their_content_fields() {
 }
 
 #[test]
-fn a_reasoning_item_is_accepted_for_a_full_output_round_trip() {
+fn a_reasoning_item_opens_the_assistant_turn_it_preceded() {
+    // A full output round trip: reasoning, then the call it led to, then the call's result.
     let mut prepared = prepared(json!({
         "model":"1",
         "input":[
             {"role":"user","content":"hello"},
             {"type":"reasoning","id":"rs_1","summary":[],"content":[
-                {"type":"reasoning_text","text":"thinking"}
-            ]}
+                {"type":"reasoning_text","text":"look it up"}
+            ]},
+            {"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},
+            {"type":"function_call_output","call_id":"call_1","output":"found"}
         ]
     }));
     let (messages, _) = prepared.generation.chat_messages().unwrap();
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].content, "hello");
+    let roles: Vec<&str> = messages
+        .iter()
+        .map(|message| message.role.as_str())
+        .collect();
+    assert_eq!(roles, ["user", "assistant", "tool"]);
+    assert_eq!(messages[1].reasoning.as_deref(), Some("look it up"));
+    assert_eq!(messages[1].tool_calls.len(), 1);
+    assert_eq!(messages[1].content, "");
+}
+
+#[test]
+fn reasoning_then_a_message_is_one_assistant_turn() {
+    let mut prepared = prepared(json!({
+        "model":"1",
+        "input":[
+            {"role":"user","content":"hello"},
+            {"type":"reasoning","id":"rs_1","summary":[],"content":[
+                {"type":"reasoning_text","text":"greet back"}
+            ]},
+            {"type":"message","id":"msg_1","status":"completed","role":"assistant",
+             "content":[{"type":"output_text","text":"hi","annotations":[],"logprobs":[]}]},
+            {"role":"user","content":"again"}
+        ]
+    }));
+    let (messages, _) = prepared.generation.chat_messages().unwrap();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[1].content, "hi");
+    assert_eq!(messages[1].reasoning.as_deref(), Some("greet back"));
+}
+
+#[test]
+fn only_generated_reasoning_text_is_replayed() {
+    // A summary or encrypted content is not what the model generated, so it stays out.
+    let mut prepared = prepared(json!({
+        "model":"1",
+        "input":[
+            {"role":"user","content":"hello"},
+            {"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"short"}],
+             "encrypted_content":"opaque"},
+            {"type":"message","id":"msg_1","status":"completed","role":"assistant",
+             "content":[{"type":"output_text","text":"hi","annotations":[],"logprobs":[]}]}
+        ]
+    }));
+    let (messages, _) = prepared.generation.chat_messages().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[1].reasoning, None);
 }
 
 #[test]

@@ -71,7 +71,7 @@ hydrate ─▶ round ─▶ (CallEnd 立即派发) ─▶ Finished ─▶ decide
                                                               └─ Incomplete(reason) ─▶ 上限或截断
 ```
 
-1. **hydrate。** 读取 `previous_response_id` 对应的记录，合并历史。若记录带有引擎会话提示且引擎仍持有对应状态，本轮走续接；否则按完整历史编码，结果相同。
+1. **hydrate。** 读取 `previous_response_id` 对应的记录，合并历史，按模板完整渲染。是否接上引擎状态只取决于前缀缓存命中，见"有状态逻辑"；结果与冷启动相同。
 2. **round。** 调用 `Upstream::generate`，接收 typed 事件。中间轮次的文本不 detokenize 给客户端，只写入账本。
 3. **CallEnd 立即派发。** engine 归属的调用在参数闭合时立即提交到工具池，不等 EOS；client 归属的调用只登记。工具名必须属于本次声明的工具集，否则这一轮失败，不执行。
 4. **decide。** 生成结束后按调用顺序收集结果：
@@ -87,56 +87,60 @@ hydrate ─▶ round ─▶ (CallEnd 立即派发) ─▶ Finished ─▶ decide
 
 ## 观测路径
 
-- loop 只向 `ledger` 追加记录：生成的 token ID、调用开始与结束、工具结果字节。这是 O(1) 的追加，不做 detokenize、格式化或序列化。
-- 读者持有游标，在独立的有界 CPU 池里 detokenize 和编码事件：
+- **一个序号空间。** SSE 的 `sequence_number`、后台回放的事件序号、`RecordStore` 中该响应记录的日志序号，三者是同一个序号。
+- **进行中的响应** 在内存里有一个有界的环，loop 只做 O(1) 追加，读者按游标读取。
+- **每轮结束和终态时** 把这一段批量追加到存储日志，终态事件在终态快照写入之后发出。后加入的读者（后台 + 流式）先从存储日志读到最新已落盘的序号，再切到内存环继续，不会漏也不会重复。
+- **持久化的粒度是轮，不是 token**，存储写入次数与轮数成正比。
+- 读者在独立的有界 CPU 池里 detokenize 和编码事件，覆盖三类使用方：
   - 前台 SSE：一个 response 生命周期跨越多轮，`sequence_number` 单调；
   - background + stream：补上目前返回 501 的路径，通过 `ResponseStore::append_event` / `events(after)` 回放，后加入的读者从游标 0 开始；
   - 只等最终结果的客户端：不创建读者，账本只在持久化时使用。
 - 读者队列有界。满了就丢弃这段展示事件并标记 gap，之后从账本补齐；账本本身完整，所以只损失实时性。账本也有字节上限，超限按资源错误结束请求，不静默截断。
-- 每轮结束时把该轮的 item 写入 store（background 运行时可以通过 GET 看到进度）。终态事件在 terminal 快照写入之后才发出。
 
-## 引擎接口
+## 有状态逻辑：跨轮次的连续性
 
-```rust
-/// Submits one model round. Implemented by frontdoor over the runtime; tests use a mock.
-pub trait Upstream: Send + Sync {
-    /// # Errors
-    /// Returns admission, encoding, or capacity errors before any token is produced.
-    fn generate(&self, round: Round<'_>) -> Result<RoundStream>;
-}
+agent 的每一轮都是"上一轮的全部上下文 + 一点新内容"。体验好坏几乎完全取决于这一点：新的一轮能否接着上一轮的引擎状态，只计算新增的部分。A0 测得，现在 4096 以下的上下文每轮重算 68–77%。
 
-pub struct Round<'a> {
-    pub items: &'a [Item],
-    pub tools: &'a ToolSet,
-    pub options: &'a GenerationOptions,
-    /// Engine-side state the previous round left behind; absent on a cold start.
-    pub session: Option<SessionHint>,
-}
+### 原则：语义无状态，状态只是缓存命中
 
-pub enum RoundEvent {
-    Tokens(TokenSpan),
-    CallStart { index: CallIndex, name: ToolName },
-    CallArguments { index: CallIndex, delta: Box<str> },
-    CallEnd { index: CallIndex },
-    Finished(RoundFinish),
-}
+- **每一轮都按模板完整渲染整段历史**，引擎按 token 前缀匹配缓存。
+  - 结果与冷启动逐 token 一致，因为输入本来就相同；
+  - 缓存丢失只会变慢，不会变错。
+- **同一个机制服务三类使用方，不需要各自的通路**：
+  - 只发完整历史的无状态客户端（Chat Completions 一类 harness）；
+  - 用 `previous_response_id` 续接的客户端；
+  - 服务端工具 loop 的下一轮。
+- **命中的前提是渲染忠实**：重新渲染出的历史，必须等于模型上一轮实际看到并生成的 token。凡是让两者分叉的地方，既是缓存缺陷，也是语义缺陷，比如模型丢掉了自己上一步的推理。所以修复它们同时改善速度和质量。
 
-pub struct RoundFinish {
-    pub reason: FinishReason,
-    pub usage: RoundUsage, // input, cached, output tokens
-    /// Present when the engine retained state that a continuation can attach to.
-    pub session: Option<SessionHint>,
-}
-```
+旧方案主张"以引擎 token 账本为准拼接增量"，不采用。拼接会让模型看到与模板渲染不同的 prompt。Qwen3.5 的模板在新的 user 轮到来时剥掉旧 thinking，拼接会把它们留下，于是违反 A3 自己的验收条件（续接与冷启动逐 token 一致），还要多维护一条"账本 + 增量渲染"的通路。token 账本只用于诊断：记录续接时实际命中到哪个位置。
 
-- `SessionHint` 是 newtype，包含 owner、index、generation，由引擎签发。陈旧、外部或重复的提示一律拒绝，并退回完整编码，不报错。
-- 续接校验："重新渲染出的完整历史 token == 引擎账本 ++ 增量"。不一致时退回最长公共前缀。已知会导致不一致的情况：
-  - 当前模板在工具回传时跳过 reasoning item（见 [OpenAI 接口指南](../../guides/openai-api.md#输入-item)），而 KV 里有 thinking token；
-  - Qwen3 模板在最后一个 user 消息之前剥掉 assistant 的 thinking。
+### 让渲染忠实
 
-  因此续接时以引擎账本为准追加增量，而不是重新渲染整段历史；校验只用于判断能否续接。
-- 停止 token 采样后没有经过前向计算，增量必须从它开始。
-- 现有 `RuntimeHandle` 的提交、取消和背压语义不变；`Upstream` 在 frontdoor 内是对它的薄封装。
+| 分叉来源 | 现状 | 处理 |
+|---|---|---|
+| reasoning 不重放 | `ChatMessage` 没有 reasoning 字段：Chat 的 `reasoning_content` 被接受后丢弃，Responses 的 reasoning item 被跳过。两个出货模板（Qwen3.5、Qwen3.8）都读取 `message.reasoning_content`：前者为最后一条 user 之后的 assistant 消息渲染 `<think>…</think>`，后者默认保留全部历史的 thinking。现在模型在工具步之间丢掉自己的推理，渲染出的空 `<think>` 也和 KV 分叉 | `ChatMessage` 增加 reasoning，按模板约定传入；Chat 的 `reasoning_content` 和 Responses 的 reasoning item 都重放到对应的 assistant 消息上 |
+| 工具参数重新序列化 | 参数按生成的原文保存和回传，模板侧解析为对象再渲染 | 保持原文；一致性测试覆盖"解析 → 渲染"与生成 token 的对齐 |
+| 生成 token 不是规范切分 | 模型可能生成与重新 tokenize 不同的 token 序列 | 无法也不应强制。缓存在分叉点之前命中，命中位置进入指标 |
+| 模板按设计改写旧历史 | Qwen3.5 在新的 user 轮剥掉旧 thinking | 这是模型的训练格式，照做；代价是新 user 轮时重算上一轮的 assistant 与工具消息 |
+
+### 缓存断点：在每一轮的末尾留下可复用的状态
+
+前缀缓存现在只在 4096 的倍数和 `prefix_boundary` 处发布快照，decode 出的 token 从不进入缓存，请求结束时状态整体释放。两个断点覆盖一轮的全部内容：
+
+1. **prompt 末断点（C2）。** 多轮形态的请求（历史里有 assistant 或 tool 消息，或者声明了工具）把 `prefix_boundary` 设在渲染后 prompt 的末尾，引擎按页向下取整后在那里发布快照。下一轮只需重算这一轮的生成内容和新输入。这是引擎已有的能力，只需要 frontdoor 设置。代价是每个请求多一次快照发布，按 A0 和固定负载测量后决定是否对所有多轮请求开启。
+2. **decode 末快照（E1）。** 请求以 `tool_calls`（或部署声明的续接条件）结束时，在精确位置发布包含生成 token 的快照，尾部半页 COW。对 thinking 模型这是大头：一轮的 reasoning 常有数千 token，没有 E1 下一轮就要全部重算。停止 token 采样后没有经过前向计算，所以快照止于它之前，下一轮从它开始重算。
+
+断点只是"可以复用"的提示，复用仍然走现有的兼容性检查、身份匹配、LRU 和预算。不存在"必须命中"的路径。
+
+### 会话提示与保留（E2/E3）
+
+- **`previous_response_id` 链** 把"这一轮很可能马上续接"告诉引擎。引擎据此提高这条前缀的保留优先级；在 E2 中，长时间等待（审批、慢工具）的会话转到主机内存，续接时预取，不必淘汰重算。
+- **续接轮次在 scheduler 中按 TTFT 优先**（E3），不排在新请求后面。
+- 提示由引擎签发，带 owner、index、generation；陈旧、外部或重复的提示一律忽略，退回普通匹配，不报错。
+
+### 服务端工具 loop 复用同一机制
+
+`RoundUpstream`（A2a）在 frontdoor 的实现每一轮都完整渲染会话、正常准入一次生成。轮间的状态连续性完全来自上面的断点，loop 不持有任何引擎状态，也不需要专门的续接接口。同一请求内的多轮于是和多个请求的多轮走同一条路径、同一套验收。
 
 ## 工具
 
@@ -160,10 +164,14 @@ agentic crate 只依赖下面这些能力的契约，实现分别归各自的层
 
 | 编号 | 能力 | 归属 | 效果 |
 |---|---|---|---|
-| E1 | `finish=tool_calls` 时在精确位置发布快照，尾部半页 COW | state + runtime + backend | 现在 decode 出的 token 不进前缀缓存，快照只在 4096 对齐点，请求结束时调用 `release_state`；修复后每轮的重复 prefill 接近 0 |
-| E2 | `SessionHint`：parked 状态不占 slot，必要时转到主机内存，续接时预取 | ir + state + runtime + backend | 续接不需要全量 tokenize；长时间等待（审批、慢工具）的会话也不丢状态 |
+| C1 | 忠实重放：reasoning 进入模板，工具参数保持原文 | models + frontdoor | 模型在工具步之间保有自己的推理；渲染不再在本轮第一条 assistant 消息处与 KV 分叉 |
+| C2 | prompt 末断点：多轮请求在 prompt 末尾发布快照 | frontdoor（引擎已有 `prefix_boundary`） | 下一轮只重算本轮生成内容与新输入 |
+| E1 | decode 末快照：`finish=tool_calls` 时在精确位置发布含生成 token 的快照，尾部半页 COW | state + runtime + backend | thinking 模型不必每轮重算上一轮的 reasoning；配合 C1、C2，每轮重复 prefill 接近 0 |
+| E2 | `SessionHint`：链式续接提高保留优先级；parked 状态转到主机内存，续接时预取 | ir + state + runtime + backend | 长时间等待（审批、慢工具）的会话也不丢状态 |
 | E3 | 续接轮次在 scheduler 中优先 | scheduler | 同一任务的下一轮按 TTFT 处理，不排在新请求后面 |
 | E4 | 按 token ID 检测 CallStart / CallEnd，只在 CallEnd 时解码参数 | frontdoor upstream + models | 增量 detokenize 移出关键路径 |
+
+按体验收益排序：C1 与 C2 只在服务侧，先做并用 A0 测量；E1 需要引擎与设备验收，紧随其后；服务端工具 loop（A2b）复用同一机制，不依赖 E1。
 | E5 | 基于现有 KV fork 生成摘要；面向 agent 的推测解码（从上下文复制起草）；并行 COW 分支 | state + workloads + backend | 后期；各自另立方案 |
 
 工具耗时很短时序列可以不 park，直接留在 slot 里。是否 park 的阈值根据加载时测得的快照导出与绑定成本推导，不做成配置项。
@@ -175,7 +183,7 @@ agentic crate 只依赖下面这些能力的契约，实现分别归各自的层
 | A0 | agent 回放基准：`tools/bench/` 下回放录制的多轮 trace，工具用固定延迟的 mock | **已完成**：[agent-replay.py](../../../tools/bench/agent-replay.py) 与两条 trace，2B 上全部模式不到 3 分钟；首轮结果见下文 |
 | A1 | 建立 `infer-agentic`，迁移 Responses 编排，行为不变 | **已完成**：租约、链式校验、后台任务与取消移入 agentic，`Upstream` 首版只含 `complete`/`cancel`；frontdoor 现有 HTTP 测试不改动全部通过，agentic 用脚本化 upstream 覆盖生命周期；payload 字节不变 |
 | A2 | engine 工具 loop：`ToolExecutor` SPI、`RoundDecision`、上限、混合轮次、单一 SSE 生命周期、账本与 background 流式回放 | mock executor 覆盖：调用顺序回填、上限触发 `incomplete`、取消与断连回收、终态在持久化之后、未知工具拒绝、慢读者不影响 loop；OpenAI SDK 端到端跑通。拆为三步：**A2a 已完成**（`infer-spi` 的 `ToolExecutor`/`ToolSpec`，`infer-agentic` 的 `ToolLoop` 与 `RoundUpstream`：参数闭合即派发、进程级有界并发、调用顺序回填、轮数/工具次数/输出预算上限、超时与输出超限作为失败输出回传、drop 即取消）；A2b frontdoor 实现 `RoundUpstream` 并接入单一 SSE 生命周期；A2c 账本与 background 流式回放 |
-| A3 | E1 + E2 + E3 | A0 基准中每轮重复 prefill token 接近 0；2B 上 C1 每轮 TTFT 和 C16 agent 吞吐对比 A2 有提升；续接与冷启动输出逐 token 一致 |
+| A3 | 连续性：C1、C2（**已完成**，结果见下文），E1，然后 E2、E3 | C1/C2：A0 生成历史模式（thinking 开启）每轮重复 prefill 下降、单轮 TTFT 不回退；E1：重复 prefill 接近 0；全程续接与冷启动输出逐 token 一致；2B 上 C1 每轮 TTFT 与 C16 agent 吞吐提升 |
 | A4 | 审批流程、Conversations API（新增 `ConversationStore` SPI）、上下文策略 | 审批前后状态续接无重算；压缩只在策略触发时发生 |
 | A5 | MCP executor、记忆检索、E5 | 各自另立方案与验收 |
 
@@ -192,6 +200,19 @@ A0 首轮结果（2026 年 11 月 25 日，RTX 5090，Qwen3.5-2B，`6ebde549`，
 - 可复制占比（≥32 字符的上下文原文片段）在模型自己写工具参数和引用代码时达到 28–35%，支持把 copy-from-context 投机放在 E1 之后。
 - 2B 模型在生成历史模式下常偏离录制路径（先读文件、错误补丁、输出截断），录制历史模式用于跨构建对比，生成历史与链式模式用于验证引擎侧复用。
 
+C1 与 C2 的首轮结果（2026 年 11 月 25 日，RTX 5090，Qwen3.5-2B，release，基线为同一栈的上一步 ST3，两组交替运行，每组一个新进程；只取第一次重复，避免后续重复命中完全相同的 prompt 而夸大收益）：
+
+| 场景 | 重复 prefill / 输入 | 后续轮 TTFT | 首轮 TTFT |
+|---|---|---|---|
+| `coding-fix` 生成历史，thinking 关 | 68% → 14% | 中位 165 → 77 ms | 117 → 120 ms |
+| `coding-fix` 生成历史，thinking 开（effort medium） | 55% → 16% | 中位 139 → 75 ms | 101 → 101 ms |
+| `rust-review-long` 录制历史 | 19% → 0.2% | 均值 974 → 708 ms | 98 → 100 ms |
+| 8 条互不共享前缀的会话并发（录制历史，两轮交替） | — | p50 2224 → 1376 ms，p90 4188 → 3267 ms，p99 4343 → 3853 ms；总墙钟 19.2 → 15.0 s | p50 556 → 604 ms，p90 784 → 840 ms |
+
+- 剩下的 14–16% 是上一轮的生成内容，由 E1 覆盖；长会话剩余的时间主要是长前缀之后的 prefill 吞吐，单独 profile。
+- 并发下首轮 TTFT 高约 50 ms：每个请求多发布一个快照的代价，8 个首轮同时到达时更明显；每组只有 16 个首轮样本，差异尚未确认。换来的是之后每一轮少约 850 ms，以及总时长少 22%。
+- thinking 开启时两边都产生了 reasoning item；`usage` 的 `reasoning_tokens` 恒为 0，是已知的计数缺口，不代表 thinking 未开启。
+
 A1 是纯迁移，A2 只在 CPU 侧，可以先于 A3 合并。A3 需要设备验收，先在 2B 上做，27B 只做最终抽查；对比遵守[性能基线方案](../performance/baseline.md)。
 
 ## 测试
@@ -205,7 +226,7 @@ A1 是纯迁移，A2 只在 CPU 侧，可以先于 A3 合并。A3 需要设备�
 
 | 风险 | 处理 |
 |---|---|
-| 模板重渲染与 KV 不一致 | 续接以引擎账本为准，校验失败退回最长公共前缀；按模板和 tokenizer 指纹测试 |
+| 模板重渲染与 KV 不一致 | 让渲染忠实（C1），无法消除的分叉（非规范 token 切分、模板按设计改写旧历史）只降低命中，不影响正确性；命中位置进入指标 |
 | parked 会话占用显存 | 计入准入预算和资源报价；有数量、字节和 TTL 上限；内存紧张时先转主机内存再淘汰 |
 | 迁移破坏现有 Responses 行为 | A1 只迁移不改行为，以现有测试和 payload 字节一致作为门槛 |
 | 有副作用的工具无人审批 | 默认需要审批；只有部署方显式授权才自动执行 |

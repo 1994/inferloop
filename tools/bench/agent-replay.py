@@ -255,6 +255,8 @@ def replay(base, model, trace, args, sleep=None):
             "store": args.chain,
             "input": new_items if args.chain and previous_id else history,
         }
+        if args.reasoning_effort:
+            payload["reasoning"] = {"effort": args.reasoning_effort}
         if args.chain and previous_id:
             payload["previous_response_id"] = previous_id
         before = prefix_tokens_reused(base)
@@ -337,6 +339,9 @@ def parse_args(argv):
     parser.add_argument("--history", choices=("generated", "recorded"), default="generated")
     parser.add_argument("--chain", action="store_true", help="use previous_response_id chaining")
     parser.add_argument("--max-output-tokens", type=int, default=DEFAULT_MAX_OUTPUT_TOKENS)
+    parser.add_argument(
+        "--reasoning-effort", help="Responses reasoning.effort; enables thinking when set"
+    )
     parser.add_argument("--copy-span", type=int, default=DEFAULT_COPY_SPAN)
     parser.add_argument("--repeats", type=int, default=1, help="replays per trace")
     parser.add_argument("--output", type=Path, required=True, help="result JSON path")
@@ -360,6 +365,7 @@ def main(argv=None):
         "history": args.history,
         "chain": args.chain,
         "max_output_tokens": args.max_output_tokens,
+        "reasoning_effort": args.reasoning_effort,
         "summary": summarize(results),
         "results": results,
     }

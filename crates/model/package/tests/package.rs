@@ -541,3 +541,54 @@ fn qwen38_fallback_respects_package_values_and_explicit_greedy() {
     );
     remove_dir_all(root).unwrap();
 }
+
+/// The reasoning part of the shipped Qwen3.5 template: assistant turns after the last user
+/// message render their reasoning inside `<think>`, earlier ones drop it.
+const REASONING_TEMPLATE: &str = r#"{%- set ns = namespace(last_query_index=messages|length - 1) %}
+{%- for message in messages[::-1] %}{%- set index = (messages|length - 1) - loop.index0 %}
+{%- if message.role == "user" and ns.last_query_index == messages|length - 1 %}{%- set ns.last_query_index = index %}{%- endif %}{%- endfor %}
+{%- for message in messages %}{%- if message.role == "assistant" %}
+{%- set reasoning_content = '' %}{%- if message.reasoning_content is string %}{%- set reasoning_content = message.reasoning_content %}{%- endif %}
+{%- if loop.index0 > ns.last_query_index %}{{- '<|im_start|>assistant\n<think>\n' + reasoning_content|trim + '\n</think>\n\n' + message.content + '<|im_end|>\n' }}
+{%- else %}{{- '<|im_start|>assistant\n' + message.content + '<|im_end|>\n' }}{%- endif %}
+{%- else %}{{- '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>\n' }}{%- endif %}{%- endfor %}"#;
+
+#[test]
+fn replayed_reasoning_reaches_a_template_that_keeps_it() {
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-hybrid-tiny");
+    let package = temp();
+    for file in ["tokenizer.json", "tokenizer_config.json", "config.json"] {
+        write(package.join(file), read(fixture.join(file)).unwrap()).unwrap();
+    }
+    write(package.join("chat_template.jinja"), REASONING_TEMPLATE).unwrap();
+    let assets = TextAssets::open(&package, 4096).unwrap();
+    let mut earlier = ChatMessage::new("assistant", "done before");
+    earlier.reasoning = Some("old plan".to_owned());
+    let mut current = ChatMessage::new("assistant", "calling");
+    current.reasoning = Some("new plan".to_owned());
+    let messages = [
+        ChatMessage::new("user", "first"),
+        earlier,
+        ChatMessage::new("user", "second"),
+        current,
+    ];
+    let rendered = assets
+        .render_chat(&messages, &ChatOptions::default())
+        .unwrap();
+    assert!(
+        rendered.contains("<think>\nnew plan\n</think>"),
+        "{rendered}"
+    );
+    assert!(
+        !rendered.contains("old plan"),
+        "the template drops earlier turns' reasoning: {rendered}"
+    );
+    let mut misplaced = ChatMessage::new("user", "x");
+    misplaced.reasoning = Some("not mine".to_owned());
+    assert!(
+        assets
+            .render_chat(&[misplaced], &ChatOptions::default())
+            .is_err()
+    );
+}
