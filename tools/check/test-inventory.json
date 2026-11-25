@@ -138,6 +138,12 @@
       "src_near": 0,
       "tests": 8
     },
+    "storage-sql": {
+      "benches": 0,
+      "src_inline": 0,
+      "src_near": 0,
+      "tests": 7
+    },
     "workloads": {
       "benches": 0,
       "src_inline": 0,
@@ -200,6 +206,7 @@
     "CUDA/safe-run; short bounded context, extended slot groups, full output/cache bytes": 1,
     "actual 27B checkpoint, CUDA release and protected runner": 1,
     "actual 27B checkpoint, CUDA, release and protected runner": 1,
+    "needs a PostgreSQL server named by INFER_TEST_POSTGRES_URL": 3,
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
     "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
     "real CUDA checkpoint; INFER_TEST_MODEL, INFER_TEST_TRAJECTORIES, INFER_TEST_DRIFT_*": 1,
@@ -325,11 +332,11 @@
     }
   ],
   "totals": {
-    "all": 1418,
+    "all": 1425,
     "benches": 0,
     "src": 1112,
     "src_inline": 0,
     "src_near": 1112,
-    "tests": 306
+    "tests": 313
   }
 }

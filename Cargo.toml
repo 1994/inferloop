@@ -22,6 +22,7 @@ members = [
     "crates/service/media",
     "crates/service/agentic",
     "crates/service/storage",
+    "crates/service/storage-sql",
     "crates/service/frontdoor",
     "crates/service/agent",
     "crates/service/cli",
@@ -54,6 +55,7 @@ default-members = [
     "crates/service/media",
     "crates/service/agentic",
     "crates/service/storage",
+    "crates/service/storage-sql",
     "crates/service/frontdoor",
     "crates/service/agent",
     "crates/service/cli",
@@ -99,6 +101,14 @@ axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 futures-util = "0.3"
 futures-channel = "0.3"
+bytes = "1"
+# SQLite is compiled in, so the SQL record store needs no system library.
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+# 0.7.18 and postgres-protocol 0.6.12 fix RUSTSEC-2026-0178, -0179 and -0180.
+tokio-postgres = "0.7.18"
+deadpool-postgres = { version = "0.14.2", default-features = false }
+tokio-postgres-rustls = "0.14.0"
+rustls-native-certs = "0.8"
 mimalloc = { version = "0.1.52", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
