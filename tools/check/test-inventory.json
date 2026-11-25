@@ -57,7 +57,7 @@
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
-      "src_near": 173,
+      "src_near": 175,
       "tests": 13
     },
     "ir": {
@@ -94,7 +94,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 166,
-      "tests": 44
+      "tests": 45
     },
     "quality": {
       "benches": 0,
@@ -332,11 +332,11 @@
     }
   ],
   "totals": {
-    "all": 1432,
+    "all": 1435,
     "benches": 0,
-    "src": 1116,
+    "src": 1118,
     "src_inline": 0,
-    "src_near": 1116,
-    "tests": 316
+    "src_near": 1118,
+    "tests": 317
   }
 }

@@ -530,7 +530,7 @@ fn push_item(item: &Value, index: usize, messages: &mut Vec<WireMessage>) -> Res
             "message" => push_message(object, index, messages),
             "function_call" => push_function_call(object, index, messages),
             "function_call_output" => push_function_call_output(object, index, messages),
-            "reasoning" => check_reasoning(object, index),
+            "reasoning" => push_reasoning(object, index, messages),
             "item_reference" => Err(Error::unsupported(
                 "item_reference needs server-side response storage",
             )),
@@ -564,7 +564,63 @@ fn push_message(
         }
     };
     let content = message_content(object.get("content"), index)?;
+    // Reasoning replayed just before belongs to this assistant message.
+    if role == "assistant"
+        && let Some(last) = messages
+            .last_mut()
+            .filter(|last| holds_only_reasoning(last))
+    {
+        last.content = Some(content);
+        return Ok(());
+    }
     messages.push(message(role, content));
+    Ok(())
+}
+
+/// An assistant message started by a reasoning item and not yet given content or calls.
+fn holds_only_reasoning(message: &WireMessage) -> bool {
+    message.role == "assistant"
+        && message.reasoning_content.is_some()
+        && message.tool_calls.is_empty()
+        && message
+            .content
+            .as_ref()
+            .is_none_or(|content| content.as_str().is_some_and(str::is_empty))
+}
+
+/// Replay a reasoning item onto the assistant turn that follows it.
+///
+/// Only `reasoning_text` content is what the model generated; a summary or encrypted content is
+/// not, so it is accepted and left out of the prompt.
+fn push_reasoning(
+    object: &Map<String, Value>,
+    index: usize,
+    messages: &mut Vec<WireMessage>,
+) -> Result<()> {
+    check_reasoning(object, index)?;
+    let text: String = object
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("reasoning_text"))
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect();
+    if text.is_empty() {
+        return Ok(());
+    }
+    if let Some(last) = messages
+        .last_mut()
+        .filter(|last| holds_only_reasoning(last))
+    {
+        last.reasoning_content
+            .get_or_insert_default()
+            .push_str(&text);
+        return Ok(());
+    }
+    let mut turn = message("assistant", Value::String(String::new()));
+    turn.reasoning_content = Some(text);
+    messages.push(turn);
     Ok(())
 }
 

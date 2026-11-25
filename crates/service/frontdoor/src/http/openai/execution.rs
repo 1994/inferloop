@@ -66,6 +66,7 @@ impl Encoding {
         downloads: Vec<ResolvedMedia>,
     ) -> infer_core::Result<(CanonicalRequest, Option<infer_spi::ConstraintHandle>)> {
         context.check()?;
+        let chat = self.messages.is_some();
         let (tokens, media) = if let Some(messages) = self.messages {
             let rendered = self.assets.render_chat(
                 &messages,
@@ -119,6 +120,7 @@ impl Encoding {
             })
             .transpose()?;
         context.check()?;
+        let prefix_boundary = conversation_breakpoint(chat, media.is_empty(), tokens.len());
         Ok((
             CanonicalRequest {
                 id: self.id,
@@ -133,12 +135,23 @@ impl Encoding {
                 },
                 qos: infer_ir::Qos::default(),
                 sampling: self.sampling,
-                prefix_boundary: None,
+                prefix_boundary,
                 extensions: BTreeMap::new(),
             },
             constraint,
         ))
     }
+}
+
+/// Where a chat prompt should leave a reusable snapshot: at its end, so the next turn of the
+/// conversation (this prompt, the reply, and new input) recomputes only the reply and the new
+/// input. The engine rounds the position down to a page and keeps the snapshot only while the
+/// prefix cache has room, so a conversation that never continues costs one snapshot publish.
+///
+/// Media prompts are left alone: their placeholder tokens are the same for different images.
+fn conversation_breakpoint(chat: bool, text_only: bool, tokens: usize) -> Option<usize> {
+    // The boundary must fall strictly inside the prompt.
+    (chat && text_only && tokens > 1).then(|| tokens - 1)
 }
 
 /// Parse and validate chat media before an identity is consumed.

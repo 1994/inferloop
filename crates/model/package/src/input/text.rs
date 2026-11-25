@@ -37,6 +37,12 @@ pub struct ChatMessage {
     /// Identifier associating a `tool` result with the assistant call it answers.
     #[serde(default)]
     pub tool_call_id: Option<String>,
+    /// The reasoning an assistant message was generated with. Templates that keep reasoning in
+    /// history (both shipped Qwen templates do, for the current turn or all of it) render it, so
+    /// the model keeps its own chain of thought between tool steps and the prompt matches what
+    /// it generated, which the prefix cache needs.
+    #[serde(default)]
+    pub reasoning: Option<String>,
 }
 impl ChatMessage {
     /// A message carrying text only, which is the common case for callers that do not use tools.
@@ -47,6 +53,7 @@ impl ChatMessage {
             content: content.into(),
             tool_calls: Vec::new(),
             tool_call_id: None,
+            reasoning: None,
         }
     }
 }
@@ -75,12 +82,21 @@ fn template_messages(messages: &[ChatMessage]) -> Result<serde_json::Value> {
                 "function": {"name": call.name, "arguments": arguments},
             }));
         }
-        out.push(serde_json::json!({
+        let mut view = serde_json::json!({
             "role": message.role,
             "content": message.content,
             "tool_calls": calls,
             "tool_call_id": message.tool_call_id,
-        }));
+        });
+        // Absent rather than null: templates test `reasoning_content is string` and otherwise
+        // recover reasoning from the content, which is what they do without history.
+        if let (Some(reasoning), Some(fields)) = (&message.reasoning, view.as_object_mut()) {
+            fields.insert(
+                "reasoning_content".to_owned(),
+                serde_json::Value::String(reasoning.clone()),
+            );
+        }
+        out.push(view);
     }
     Ok(serde_json::Value::Array(out))
 }
@@ -315,6 +331,7 @@ impl TextAssets {
                 sum.checked_add(m.content.len())
                     .and_then(|n| n.checked_add(calls))
                     .and_then(|n| n.checked_add(m.tool_call_id.as_ref().map_or(0, String::len)))
+                    .and_then(|n| n.checked_add(m.reasoning.as_ref().map_or(0, String::len)))
             })
             .ok_or_else(|| Error::invalid("chat length overflow"))?;
         if messages.is_empty()
@@ -326,6 +343,7 @@ impl TextAssets {
                     // result carries the identifier it answers.
                     || (!m.tool_calls.is_empty() && m.role != "assistant")
                     || (m.tool_call_id.is_some() && m.role != "tool")
+                    || (m.reasoning.is_some() && m.role != "assistant")
                     || m.tool_calls.len() > MAX_TOOL_CALLS
             })
         {
