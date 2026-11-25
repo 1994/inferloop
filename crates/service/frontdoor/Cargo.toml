@@ -21,6 +21,7 @@ path = "tests/output.rs"
 workspace = true
 
 [dependencies]
+infer-agentic.workspace = true
 infer-core.workspace = true
 infer-media-input.workspace = true
 infer-ir.workspace = true

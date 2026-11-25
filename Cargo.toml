@@ -20,6 +20,7 @@ members = [
     "crates/diagnostics/observe",
     "crates/diagnostics/quality",
     "crates/service/media",
+    "crates/service/agentic",
     "crates/service/frontdoor",
     "crates/service/agent",
     "crates/service/cli",
@@ -49,6 +50,7 @@ default-members = [
     "crates/diagnostics/observe",
     "crates/diagnostics/quality",
     "crates/service/media",
+    "crates/service/agentic",
     "crates/service/frontdoor",
     "crates/service/agent",
     "crates/service/cli",
@@ -138,6 +140,7 @@ infer-observe = { version = "=0.1.0", path = "crates/diagnostics/observe" }
 infer-quality = { version = "=0.1.0", path = "crates/diagnostics/quality" }
 
 # Services
+infer-agentic = { version = "=0.1.0", path = "crates/service/agentic" }
 infer-frontdoor = { version = "=0.1.0", path = "crates/service/frontdoor" }
 infer-agent = { version = "=0.1.0", path = "crates/service/agent" }
 

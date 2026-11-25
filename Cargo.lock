@@ -1453,6 +1453,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "infer-agentic"
+version = "0.1.0"
+dependencies = [
+ "infer-core",
+ "infer-spi",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "infer-backend-cuda"
 version = "0.1.0"
 dependencies = [
@@ -1607,6 +1617,7 @@ dependencies = [
  "crc32fast",
  "futures-util",
  "image",
+ "infer-agentic",
  "infer-core",
  "infer-ir",
  "infer-kernel-api",

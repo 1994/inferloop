@@ -12,6 +12,7 @@ mod state;
 mod stream;
 #[cfg(test)]
 mod tests;
+mod upstream;
 
 use super::execution;
 use super::ids;
@@ -23,11 +24,9 @@ use axum::{
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
-use infer_core::{Error, ErrorCode, RequestId};
-use infer_spi::{ResponseId, ResponseStatus, ResponseStore};
-use request::{PriorState, ResponsesRequest, StoreOptions};
-use state::{StoreLease, StoreSink};
-use std::sync::Arc;
+use infer_agentic::BackgroundStart;
+use request::{ResponsesRequest, StoreOptions};
+use upstream::{Admitted, TextUpstream};
 
 pub(super) async fn create(
     State(state): State<TextState>,
@@ -35,17 +34,16 @@ pub(super) async fn create(
     request: Request,
 ) -> ApiResult<Response> {
     let request = parse_json_body::<ResponsesRequest>(&state, request).await?;
-    let store = state.responses.store().cloned();
     let options = StoreOptions {
-        installed: store.is_some(),
-        capabilities: state.responses.capabilities().unwrap_or_default(),
+        installed: state.responses.has_store(),
+        capabilities: state.responses.capabilities(),
     };
-    let prior = load_prior(
-        store.as_ref(),
-        request.previous_response_id.as_deref(),
-        &request.model,
-    )
-    .await?;
+    let prior = state
+        .responses
+        .prior(request.previous_response_id.as_deref(), &request.model)
+        .await?
+        .map(|stored| state::prior_state(&stored))
+        .transpose()?;
     let prepared = request.prepare(options, prior)?;
     let request::Prepared {
         generation,
@@ -55,49 +53,27 @@ pub(super) async fn create(
     let is_stream = generation.stream == Some(true);
 
     if spec.background {
-        return start_background(state, headers, generation, spec, request_input, store).await;
+        return start_background(state, headers, generation, spec, request_input).await;
     }
 
     let generation = execution::prepare(&state, &headers, generation, true).await?;
     // A fresh UUID per response: a client that resumes a conversation across a restart
     // replays distinct ids instead of colliding with the previous life's `resp_<request>`.
     spec.response_id = Some(ids::response());
-    let mut lease = match store {
-        Some(store) if spec.store => Some(StoreLease::new(StoreSink::new(
-            store,
-            &generation,
-            &spec,
-            request_input,
-        )?)),
-        _ => None,
-    };
-    if let Some(lease) = &mut lease
-        && let Err(error) = lease.start().await
-    {
-        cancel_after_store_failure(&state, generation.request).await;
-        return Err(error.into());
-    }
-    if is_stream {
-        Ok(stream::stream(&state, generation, spec, lease))
+    let responses = state.responses.clone();
+    let upstream = TextUpstream { state };
+    let lease = if responses.has_store() && spec.store {
+        let retention = state::retention(&generation, &spec, request_input)?;
+        let initial = state::initial(&generation, &spec);
+        Some(responses.retain(&upstream, retention, &initial).await?)
     } else {
-        let value = match execute::generate_prepared(&state, generation, &spec).await {
-            Ok(value) => value,
-            Err(error) => {
-                if let Some(lease) = &mut lease
-                    && let Err(store_error) = lease.fail(&error).await
-                {
-                    tracing::error!(
-                        target: "infer::openai",
-                        error = %store_error,
-                        "failed to retain a failed response"
-                    );
-                }
-                return Err(error.into());
-            }
-        };
-        if let Some(lease) = &mut lease {
-            lease.finish(&value).await?;
-        }
+        None
+    };
+    if is_stream {
+        Ok(stream::stream(&upstream.state, generation, spec, lease))
+    } else {
+        let admitted = Admitted { generation, spec };
+        let value = responses.complete(&upstream, admitted, lease).await?;
         Ok(Json(value).into_response())
     }
 }
@@ -108,89 +84,33 @@ async fn start_background(
     generation: GenerationRequest,
     mut spec: request::Spec,
     request_input: Vec<u8>,
-    store: Option<Arc<dyn ResponseStore>>,
 ) -> ApiResult<Response> {
-    let store = store.ok_or_else(|| Error::invariant("background response has no store"))?;
-    let permit = state
-        .background_permits
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| {
-            Error::new(
-                ErrorCode::Capacity,
-                "background response capacity is exhausted",
-            )
-        })?;
-    let generation = execution::prepare(&state, &headers, generation, true).await?;
-    spec.response_id = Some(ids::response());
-    let mut lease = StoreLease::new(StoreSink::new(store, &generation, &spec, request_input)?);
-    let initial = match lease.start().await {
-        Ok(value) => value,
-        Err(error) => {
-            cancel_after_store_failure(&state, generation.request).await;
-            return Err(error.into());
-        }
-    };
-    let task_state = state.clone();
-    let task_spec = spec;
-    tokio::spawn(async move {
-        let _permit = permit;
-        let mut lease = lease;
-        match execute::generate_prepared(&task_state, generation, &task_spec).await {
-            Ok(value) => {
-                if let Err(error) = lease.finish(&value).await {
-                    tracing::error!(
-                        target: "infer::openai",
-                        error = %error,
-                        "failed to retain a completed background response"
-                    );
-                }
-            }
-            Err(error) => {
-                if let Err(store_error) = lease.fail(&error).await {
-                    tracing::error!(
-                        target: "infer::openai",
-                        error = %store_error,
-                        "failed to retain a failed background response"
-                    );
-                }
-            }
-        }
+    let responses = state.responses.clone();
+    // Boxed: admission's future is large and would otherwise be stored inline in the
+    // background start future. One allocation per background request.
+    let admit = Box::pin(async {
+        let generation = execution::prepare(&state, &headers, generation, true).await?;
+        spec.response_id = Some(ids::response());
+        let retention = state::retention(&generation, &spec, request_input)?;
+        let initial = state::initial(&generation, &spec);
+        ApiResult::Ok(BackgroundStart {
+            admitted: Admitted { generation, spec },
+            retention,
+            initial,
+        })
     });
-    Ok(Json(initial).into_response())
-}
-
-async fn load_prior(
-    store: Option<&Arc<dyn ResponseStore>>,
-    previous: Option<&str>,
-    model: &str,
-) -> ApiResult<Option<PriorState>> {
-    let Some(previous) = previous else {
-        return Ok(None);
+    let upstream = TextUpstream {
+        state: state.clone(),
     };
-    let store = store.ok_or_else(|| {
-        Error::unsupported("previous_response_id needs an installed response store")
-    })?;
-    let id = ResponseId::new(previous)?;
-    let stored = store
-        .get(&id)
-        .await?
-        .ok_or_else(|| Error::new(ErrorCode::NotFound, "response not found; see store policy"))?;
-    Ok(Some(state::prior_state(&stored, model)?))
+    let initial = responses.start_background(upstream, admit).await?;
+    Ok(Json(initial).into_response())
 }
 
 pub(super) async fn retrieve(
     State(state): State<TextState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<output::ResponseBody>> {
-    let store = state.responses.store().cloned().ok_or_else(|| {
-        Error::unsupported("response retrieval needs an installed response store")
-    })?;
-    let id = ResponseId::new(id)?;
-    let stored = store
-        .get(&id)
-        .await?
-        .ok_or_else(|| Error::new(ErrorCode::NotFound, "response not found"))?;
+    let stored = state.responses.retrieve(&id).await?;
     Ok(Json(state::retrieved(&stored)?))
 }
 
@@ -198,37 +118,8 @@ pub(super) async fn cancel(
     State(state): State<TextState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<output::ResponseBody>> {
-    let store = state.responses.store().cloned().ok_or_else(|| {
-        Error::unsupported("response cancellation needs an installed response store")
-    })?;
-    let id = ResponseId::new(id)?;
-    let stored = store
-        .get(&id)
-        .await?
-        .ok_or_else(|| Error::new(ErrorCode::NotFound, "response not found"))?;
-    if stored.status.is_terminal() {
-        return Err(Error::invalid("a terminal response cannot be cancelled").into());
-    }
-    let updated = store
-        .transition(
-            &id,
-            &[ResponseStatus::Queued, ResponseStatus::InProgress],
-            ResponseStatus::Cancelled,
-        )
-        .await?;
-    if let Err(error) = state.handle.cancel(updated.request_id).await {
-        tracing::debug!(
-            target: "infer::openai",
-            error = %error,
-            "response was marked cancelled after generation had already stopped"
-        );
-    }
+    let responses = state.responses.clone();
+    let upstream = TextUpstream { state };
+    let updated = responses.cancel(&upstream, &id).await?;
     Ok(Json(state::retrieved(&updated)?))
-}
-
-/// Best effort: the store failure is what the caller reports, so a cancel failure is only logged.
-async fn cancel_after_store_failure(state: &TextState, request: RequestId) {
-    if let Err(error) = state.handle.cancel(request).await {
-        tracing::warn!(target: "infer::openai", %error, "generation cancel after a store failure failed");
-    }
 }

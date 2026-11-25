@@ -24,7 +24,8 @@
 | `crates/diagnostics/observe` | `infer-observe` | 指标、trace、事件、源码映射与诊断视图 |
 | `crates/diagnostics/quality` | `infer-quality` | golden、进展检测、校准与性能测量 |
 | `crates/service/media` | `infer-media-input` | 可复用的多模态来源读取和媒体解码 |
-| `crates/service/frontdoor` | `infer-frontdoor` | 输入准备、单所有者 actor、HTTP/SSE、Responses 状态编排与参考 store |
+| `crates/service/agentic` | `infer-agentic` | Responses 生命周期编排（store 租约、链式校验、后台任务、取消）与参考 store；不依赖 HTTP 与 backend |
+| `crates/service/frontdoor` | `infer-frontdoor` | 输入准备、单所有者 actor、HTTP/SSE 与 Responses 线格式；通过 `Upstream` 把已准入的生成交给 agentic |
 | `crates/service/agent` | `infer-agent` | 诊断工具、证据查询、实验与建议 |
 | `crates/service/cli` | `infer-cli` | 参数解析、命令分发、backend 选择与运行支持 |
 | `crates/testing/cpu/reference-ops` | `infer-reference-ops` | 标量参考算子：设备 kernel 的独立数值对照基准 |
@@ -83,7 +84,7 @@ prefill / decode 适配保留在 `runtime/src/stages`，runner 管理 backend �
 - `state/src/logical`：reservation、prefix、lifecycle、inspection；`blocks` / `cache` / `kv` 保持独立。
 - `metal/src/executor`：loading、setup、state、prefix、forward、submission、execution、completion、checkpoint；`provider` 汇集 SPI 适配。
 - `spi/src`：按 provider、model、workload、scheduling、state、backend、kernel、protocol、observer、responses 与扩展合约拆分。
-- `frontdoor/src/responses_store.rs`：有界进程内 Responses 参考 store；协议状态编排在 `http/openai/responses`，契约见 [Responses 状态与扩展 SPI](responses-state.md)。
+- `agentic/src`：`responses` 负责生命周期，`persist` 负责条件写与断连租约，`store` 是有界进程内参考 store；frontdoor 的 `http/openai/responses` 只保留线格式和 `Upstream` 实现。契约见 [Responses 状态与扩展 SPI](responses-state.md)，方案见 [Agentic 服务层](../plans/serving/agentic.md)。
 - `frontdoor/src/actor`：启动、驱动、命令、准入与交付；`http` 按 native、text、protocol、observability、server、error 拆分。
 - `cli/src/commands`：按命令领域组织；`support` 按 engine、JSON、fixtures、execution、server、agent 组织。
 

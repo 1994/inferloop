@@ -10,11 +10,11 @@ use super::output::{
     self, IncompleteDetails, ResponseBody, ResponseErrorBody, ResponseItem, Snapshot, Usage,
 };
 use super::request::Spec;
-use super::state::StoreLease;
 use crate::cpu::CpuPool;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::stream::unfold;
+use infer_agentic::StoreLease;
 use infer_core::{Error, ErrorCode, RequestId};
 use infer_models::{OutputStreamParser, StreamEvent, TextStreamDecoder};
 use infer_runtime::EngineOutput;
@@ -83,7 +83,7 @@ struct Stream {
     reasoning: Option<OpenReasoning>,
     call: Option<OpenCall>,
     /// Terminal response persistence, when the request asked to store its result.
-    lease: Option<StoreLease>,
+    lease: Option<StoreLease<ResponseBody>>,
     /// Output index the next item receives.
     next_index: usize,
     /// Calls published so far, which is also their `call_id` ordinal.
@@ -599,7 +599,7 @@ pub(super) fn stream(
     state: &TextState,
     prepared: GenerationPrepared,
     spec: Spec,
-    lease: Option<StoreLease>,
+    lease: Option<StoreLease<ResponseBody>>,
 ) -> Response {
     let mut stream = Stream {
         request: prepared.request,

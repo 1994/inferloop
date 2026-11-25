@@ -1,11 +1,12 @@
 # Responses 状态与扩展 SPI
 
-`POST /v1/responses` 的有状态能力由 `infer-spi` 的 `ResponseStore` 扩展点提供。引擎不把 response 存储、后台任务或取消策略写进协议层；frontdoor 负责 OpenAI 线格式与生命周期编排，外部实现负责持久化、原子状态迁移和跨进程共享。
+`POST /v1/responses` 的有状态能力由 `infer-spi` 的 `ResponseStore` 扩展点提供。引擎不把 response 存储、后台任务或取消策略写进协议层；`infer-agentic` 负责生命周期编排（租约、链式校验、后台任务、取消），frontdoor 只负责 OpenAI 线格式，外部实现负责持久化、原子状态迁移和跨进程共享。
 
 ## 分层
 
 ```text
-frontdoor /v1/responses
+frontdoor /v1/responses           线格式；ResponseBody 实现 ResponseDocument，TextUpstream 实现 Upstream
+  → infer_agentic::Responses        prior / retain / complete / spawn_background / retrieve / cancel
   → infer_spi::ResponseStore        get / put / delete / transition / events
   → 调用方安装的 Arc<dyn ResponseStore>
        ├─ InMemoryResponseStore    参考实现，进程内、有界
@@ -97,7 +98,7 @@ queued ──→ in_progress ──→ completed
 
 ## 参考实现与边界
 
-`InMemoryResponseStore` 是 frontdoor 提供的参考后端，默认关闭，通过 `--enable-response-store` 安装：
+`InMemoryResponseStore` 是 `infer-agentic` 提供的参考后端（frontdoor 为兼容继续重新导出），默认关闭，通过 `--enable-response-store` 安装：
 
 | 限制 | 默认 |
 |---|---|
