@@ -1,6 +1,6 @@
 # Agentic 服务层方案
 
-状态：A1 已实施（crate 建立与 Responses 生命周期迁移），A0 基准已建立并完成首轮测量，A2 及之后未开始。源码基点 `44b5a257`，日期 2026 年 11 月 24 日。参考 [vllm-project/agentic-api](https://github.com/vllm-project/agentic-api/tree/41a0fc23275883786fc512e6192dbf1f8b3d1f01)（固定 `41a0fc2`，PyPI `0.10.0` 同期），只借鉴机制，不照搬参数集合与默认值。排期见[路线图](../README.md) S4；现有 Responses 状态契约见 [Responses 状态与扩展 SPI](../../architecture/responses-state.md)，工具协议与严格约束见 [Agent 工具调用与服务配置方案](agent-api.md)。
+状态：A1 已实施（crate 建立与 Responses 生命周期迁移），A0 基准已建立并完成首轮测量，A2a（工具 SPI 与 loop 核心）已实施，A2b 起未开始。源码基点 `44b5a257`，日期 2026 年 11 月 24 日。参考 [vllm-project/agentic-api](https://github.com/vllm-project/agentic-api/tree/41a0fc23275883786fc512e6192dbf1f8b3d1f01)（固定 `41a0fc2`，PyPI `0.10.0` 同期），只借鉴机制，不照搬参数集合与默认值。排期见[路线图](../README.md) S4；现有 Responses 状态契约见 [Responses 状态与扩展 SPI](../../architecture/responses-state.md)，工具协议与严格约束见 [Agent 工具调用与服务配置方案](agent-api.md)。
 
 ## 目标
 
@@ -174,7 +174,7 @@ agentic crate 只依赖下面这些能力的契约，实现分别归各自的层
 |---|---|---|
 | A0 | agent 回放基准：`tools/bench/` 下回放录制的多轮 trace，工具用固定延迟的 mock | **已完成**：[agent-replay.py](../../../tools/bench/agent-replay.py) 与两条 trace，2B 上全部模式不到 3 分钟；首轮结果见下文 |
 | A1 | 建立 `infer-agentic`，迁移 Responses 编排，行为不变 | **已完成**：租约、链式校验、后台任务与取消移入 agentic，`Upstream` 首版只含 `complete`/`cancel`；frontdoor 现有 HTTP 测试不改动全部通过，agentic 用脚本化 upstream 覆盖生命周期；payload 字节不变 |
-| A2 | engine 工具 loop：`ToolExecutor` SPI、`RoundDecision`、上限、混合轮次、单一 SSE 生命周期、账本与 background 流式回放 | mock executor 覆盖：调用顺序回填、上限触发 `incomplete`、取消与断连回收、终态在持久化之后、未知工具拒绝、慢读者不影响 loop；OpenAI SDK 端到端跑通 |
+| A2 | engine 工具 loop：`ToolExecutor` SPI、`RoundDecision`、上限、混合轮次、单一 SSE 生命周期、账本与 background 流式回放 | mock executor 覆盖：调用顺序回填、上限触发 `incomplete`、取消与断连回收、终态在持久化之后、未知工具拒绝、慢读者不影响 loop；OpenAI SDK 端到端跑通。拆为三步：**A2a 已完成**（`infer-spi` 的 `ToolExecutor`/`ToolSpec`，`infer-agentic` 的 `ToolLoop` 与 `RoundUpstream`：参数闭合即派发、进程级有界并发、调用顺序回填、轮数/工具次数/输出预算上限、超时与输出超限作为失败输出回传、drop 即取消）；A2b frontdoor 实现 `RoundUpstream` 并接入单一 SSE 生命周期；A2c 账本与 background 流式回放 |
 | A3 | E1 + E2 + E3 | A0 基准中每轮重复 prefill token 接近 0；2B 上 C1 每轮 TTFT 和 C16 agent 吞吐对比 A2 有提升；续接与冷启动输出逐 token 一致 |
 | A4 | 审批流程、Conversations API（新增 `ConversationStore` SPI）、上下文策略 | 审批前后状态续接无重算；压缩只在策略触发时发生 |
 | A5 | MCP executor、记忆检索、E5 | 各自另立方案与验收 |

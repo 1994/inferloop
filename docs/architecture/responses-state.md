@@ -28,7 +28,8 @@ frontdoor /v1/responses           线格式；ResponseBody 实现 ResponseDocume
 | `ResponseEvent` | 后台流事件序号与不透明 SSE payload（预留） |
 | `ResponseStoreCapabilities` | retrieve/chaining/background/cancel/event replay、持久/共享、单记录字节上限 |
 | `ResponseStore` | 异步、对象安全的存储与原子迁移契约 |
-| `ResponsesExtensions` | 安装一个 `Arc<dyn ResponseStore>` 的扩展集合 |
+| `ResponsesExtensions` | 安装一个 `Arc<dyn ResponseStore>` 与可选 `Arc<dyn ToolExecutor>` 的扩展集合 |
+| `ToolExecutor` / `ToolSpec` / `ToolName` | engine 归属工具：名称、参数 schema（JSON 文本）、效果类别、超时与输出字节上限；返回装箱 future，drop 即取消，失败以 `ToolOutput::Failed` 回传模型。`validate` 拒绝重名和 `SideEffect`（审批流程未实现） |
 
 `StoredResponse::validate` 只校验类型化元数据：活动状态不能带 terminal 字段，`completed` 需要 `completed_at`，`incomplete` 需要原因，`failed` 需要错误，payload 版本必须匹配。payload 内容由 frontdoor 校验。
 

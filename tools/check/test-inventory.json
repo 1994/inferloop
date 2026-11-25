@@ -10,7 +10,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 12,
-      "tests": 8
+      "tests": 20
     },
     "api": {
       "benches": 0,
@@ -124,7 +124,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 9,
-      "tests": 0
+      "tests": 4
     },
     "state": {
       "benches": 0,
@@ -319,11 +319,11 @@
     }
   ],
   "totals": {
-    "all": 1406,
+    "all": 1422,
     "benches": 0,
     "src": 1124,
     "src_inline": 0,
     "src_near": 1124,
-    "tests": 282
+    "tests": 298
   }
 }
