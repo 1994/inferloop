@@ -2,7 +2,7 @@
 
 `infer-agent` 为 Coding Agent 提供引擎诊断、控制与实验能力，自身不调用外部语言模型。依赖方向为 CLI → Agent → Runtime / SPI，核心不反向依赖 Agent。
 
-模型生成的工具调用属于文本服务协议。当前尚无输出 tool parser 或完整 OpenAI 工具闭环；这项工作见 [Agent 工具调用与服务配置方案](../plans/serving/agent-api.md)，不能用本页的诊断命令注册代替。
+模型生成的工具调用属于文本服务协议。当前尚无输出 tool parser 或完整 OpenAI 工具闭环；这项工作见 [Agent 工具调用与服务配置方案](../plans/serving/agent-api.md)，不能用本页的诊断命令注册代替。服务端工具循环与会话属于计划中的 `infer-agentic`（见 [Agentic 服务层方案](../plans/serving/agentic.md)），与本 crate 无关。
 
 ## 分层
 

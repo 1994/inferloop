@@ -40,7 +40,7 @@
 
 - 后台流式 `background=true, stream=true` 返回 501；SPI 已预留事件读写，后续接事件回放路由。
 - `conversation` 仍 501；Conversations API 未实现。
-- 内置工具（web search、file search、MCP、code interpreter）与其执行器未进入本项；它们属于独立的工具扩展面，不能用宽松反序列化假装支持。
+- 内置工具（web search、file search、MCP、code interpreter）与其执行器未进入本项；它们属于独立的工具扩展面，不能用宽松反序列化假装支持；方案见 [Agentic 服务层](agentic.md)。
 - Redis/Postgres 等生产后端、SDK crate、认证/多租户与运维配置不在本仓库内实现。
 - 多副本取消语义：共享 store 可以共享读取/链式上下文，但 `RuntimeHandle::cancel` 只作用于本进程；跨副本取消需要后续控制面或分布式任务归属。
 
