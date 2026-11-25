@@ -6,6 +6,11 @@ use crate::{
     support::run_requests, support::run_to_idle, support::selected_engine, support::write_json,
 };
 
+mod storage;
+pub use storage::StorageBinding;
+#[cfg(native_backend)]
+use storage::locations as storage_locations;
+
 mod options;
 pub use options::{
     AgentOptions, BenchmarkOptions, CompareOptions, ImageDecoder, InspectModelOptions,

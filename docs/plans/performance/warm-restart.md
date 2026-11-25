@@ -23,7 +23,7 @@
 
 1. **kernel 身份缓存**（`infer-cuda-kernels` 的 `tile::identities`）：从 L1 key 映射到 L2 key，追加写到 `$XDG_CACHE_HOME/infer-cuda/kernel-identities/<hash>.identities`。L1 key 覆盖 module、function、generics、布局、编译选项、设备和编译器身份，但不覆盖 kernel 链接进来的 helper 模块，所以只对同一份构建成立。因此 hash 包含可执行文件的路径、大小、mtime，以及 backend 传入的设备与驱动身份；重新构建会换一个新文件，目录里最多保留 16 个。损坏的行会被忽略，写入失败只会让下一个进程重新计算一次。
 2. **E4M3 量化改为位运算**：按 round-to-nearest-even 舍入、饱和到 ±448，NaN 也饱和，语义与原来逐值一致。测试把旧的码表搜索作为独立参考，覆盖所有码值、中点及其相邻 ulp、特殊值，以及按 4099 步长扫过全部 f32。27B 草稿头 6.6 s → 1.4 s。
-3. **准备键剔除只影响服务的参数**：`--listen`、`--served-model-name`、`--enable-response-store` 不再进入准备戳的键，其余参数（包括没登记的）照旧参与。
+3. **准备键剔除只影响服务的参数**：`--listen`、`--served-model-name`、`--enable-response-store`、`--storage` 不再进入准备戳的键，其余参数（包括没登记的）照旧参与。
 
 热启动时的调优选择与改动前一致：27B 两次都是 3251/3252 次 table-cache 命中，且没有新的搜索或回退。27B 贪心请求输出正确（17×23=391，MTP 2）。
 

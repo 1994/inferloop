@@ -1,6 +1,6 @@
 # 存储层方案
 
-状态：ST1、ST2 已实施（记录原语、Responses 适配、内存后端、SQL 记录存储与一致性测试），ST3 起未开始。源码基点 `44b5a257`，日期 2026 年 11 月 25 日。取代 PR #313 中"每个数据库各实现一遍 `ResponseStore`"的结构：#313 的 SQLite/PostgreSQL 驱动代码、一致性测试与 CLI 入口按本方案重组后保留。排期见[路线图](../README.md) E3。
+状态：ST1–ST3 已实施（记录原语、Responses 适配、内存与 SQL 记录存储、一致性测试、按 scheme 选后端与 `--storage`），ST4 起未开始。源码基点 `44b5a257`，日期 2026 年 11 月 25 日。取代 PR #313 中"每个数据库各实现一遍 `ResponseStore`"的结构：#313 的 SQLite/PostgreSQL 驱动代码、一致性测试与 CLI 入口按本方案重组后保留。排期见[路线图](../README.md) E3。
 
 ## 问题
 
@@ -221,30 +221,47 @@ pub trait StateArchive: Send + Sync {
 
 ## 部署配置
 
-使用方拿到的只是领域句柄，配置只在部署层出现：
+使用方拿到的只是领域句柄，存储位置只在部署层出现。已实施的部分（ST3）：
 
-```toml
-[storage.backends]
-main = { url = "postgres://infer@db.internal/infer", password_file = "/run/secrets/pg" }
-nvme = { url = "file:///nvme/infer" }
-seed = { url = "file:///opt/infer-seed", read_only = true }
-
-[storage.domains]
-responses = "main"
-state = { blobs = ["nvme", "seed"], index = "nvme" }   # 列表即分层，上层在前
+```text
+--storage responses=memory
+--storage responses=sqlite:/var/lib/infer/state.db
+--storage responses=postgres://infer:…@db.internal/infer
 ```
 
-CLI 简写：`--storage responses=postgres://… --storage state=file:///nvme/infer`。`--response-store` 和 `--enable-response-store` 保留为 `responses=` 的别名。
+- **`StorageLocation`** 是"scheme + 后端自己读的部分"。`Display` 和 `Debug` 隐藏 URL 里的密码；只有打开它的后端通过 `expose()` 读取完整文本。
+- **`RecordBackends`** 按 scheme 选打开器（`RecordOpener`）：
+  - `infer-storage` 内置 `memory`；
+  - `infer-storage-sql::register` 加上 `sqlite`、`postgres`、`postgresql`；
+  - SDK 使用方注册自己的 scheme（比如 `mysql`），所有建立在记录原语上的领域立即可用；
+  - 未注册的 scheme 启动失败，报错里列出可用的 scheme。直接实现领域 trait 的旧方式继续可用。
+- **CLI**：`--storage DOMAIN=LOCATION` 可重复，未知领域直接报错，同一领域给两次也报错；`--enable-response-store` 等同 `--storage responses=memory`。
+  - 位置在加载模型之前解析，写错几毫秒就失败；
+  - 后端在模型加载之后打开，调优子进程永远不打开存储；
+  - `--storage` 属于不影响调优的参数，换存储不会让调优准备失效，连接串也不会进入准备键。
+- **读回**：存储打开后输出一条结构化事件 `storage ready`，字段是领域、脱敏后的位置、`durable`、`shared`。运行时读回端点 `/native/v1/runtime` 返回的是引擎的 `RuntimeInspection`，存储属于服务层，不往引擎结构里塞。
+- **凭据**：URL 里的密码不进入 `Debug`、日志、调优准备键或指标标签。PostgreSQL 的 TLS 默认是 `prefer` 并校验证书；需要强制加密时用 `sslmode=require`。
 
-- **`StorageProfile`** 按 URI scheme 查已注册的工厂，构造后端实例（同名实例只建一次、可被多个领域共用），套上组合体，再按领域要求校验能力：
-  - 多副本 Responses 要求 `shared`；
-  - state 的段存储要求支持范围读；
-  - 只读层不能当最上层的可写层。
+**有意推迟到第二个领域（ST5 的 `StateArchive`）出现时再做**，那时它们才有使用方：
 
-  校验失败就启动失败。
-- **扩展。** 内置工厂注册 `memory`、`file`、`sqlite`、`postgres`、`mysql`；SDK 使用方在构建服务时注册自己的 scheme。直接实现领域 trait 的旧方式继续可用。
-- **凭据。** 优先从 `password_file` 读；URL 里的密码也可以用，但不进入 `Debug`、日志、调优准备键或指标标签。远程连接默认要求 TLS，明文需要显式 `sslmode=disable`。
-- **生效配置可读回。** 每个领域实际选用的后端、组合层和能力出现在 `/native/v1/runtime`，凭据除外。
+- **命名后端实例与配置文件。** 例如：
+
+  ```toml
+  [storage.backends]
+  main = { url = "postgres://infer@db.internal/infer", password_file = "/run/secrets/pg" }
+  nvme = { url = "file:///nvme/infer" }
+  seed = { url = "file:///opt/infer-seed", read_only = true }
+
+  [storage.domains]
+  responses = "main"
+  state = { blobs = ["nvme", "seed"], index = "nvme" }   # 列表即分层，上层在前
+  ```
+
+  这里同名实例只构造一次，可以被多个领域共用；组合体（`Tiered`、`ReadOnly`）按列表套上；密码可以从 `password_file` 读取。
+- **按领域要求校验能力**：state 的段存储要求支持范围读、只读层不能当最上层；多副本部署的 Responses 要求 `shared`，这需要部署声明副本数。
+- **专门的存储读回端点**，以及 `password_file`。
+
+现在只有一个领域、一种原语，提前做这些就是没有使用方的配置面。`RecordBackends` 和 `StorageLocation` 已经是它们的基础，到时只需加一层"命名实例 → 领域"的映射。
 
 ## 后端
 
@@ -311,7 +328,7 @@ SQL 家族的表结构是通用的 `infer_records(namespace, id, version, state,
 |---|---|---|
 | ST1 | `infer-spi` 加 `RecordStore` 原语；`infer-storage` 加 `RecordResponseStore`、`MemoryRecordStore`；`infer-storage-conformance` 记录与 Responses 套件；`InMemoryResponseStore` 拆为两层 | **已完成**：现有 Responses、agentic、frontdoor 测试通过（只改 store 的构造）；两套一致性测试与内存后端的淘汰规则测试通过 |
 | ST2 | #313 重组为 `infer-storage-sql`：通用表、迁移、SQLite actor、PostgreSQL 连接池加 TLS | **已完成**：`SqlRecordStore<D>` 只实现一次记录语义，SQLite 与 PostgreSQL 各自只提供方言与执行；两套一致性测试在 SQLite 与 PostgreSQL 17 上通过；端到端重启取回随 ST3 的 CLI 入口验收 |
-| ST3 | `StorageProfile`、scheme 注册、`--storage` 与旧参数别名、能力校验、生效配置读回 | 错误配置启动失败并给出原因；凭据不出现在任何输出 |
+| ST3 | `StorageLocation`、`RecordBackends` 与 scheme 注册、`--storage` 与旧参数别名、启动读回 | **已完成**：错误位置与未知领域在加载模型前失败；凭据不出现在任何输出；SQLite 与 PostgreSQL 端到端重启后取回与链式续接。命名实例、配置文件与能力校验推迟到 ST5（第二个领域）|
 | ST4 | `BlobStore` 原语进入 SPI；file 后端（Record + Blob）与 `Tiered`/`ReadOnly` 组合 | 一致性测试与崩溃测试通过 |
 | ST5 | `StateArchive` 与 `BlobStateArchive`；engine 接入（IO 池、PrefixCache 归档层、恢复/重算决策），与 agentic E2 一起做 | 恢复与重算的完整 token 序列一致；归档命中的 TTFT 低于重算；spill 不使 decode TPOT 回退；需要设备窗口 |
 | ST6 | MySQL；对象存储与 Redis 按需求排期 | 同一套一致性测试 |

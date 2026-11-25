@@ -2,15 +2,20 @@
  "configurations": [
   {
    "backend": "cuda",
-   "crates": 292,
+   "crates": 329,
    "duplicates": {
     "base64": [
      "0.13.1",
+     "0.22.1",
      "0.23.1"
     ],
     "block-buffer": [
      "0.10.4",
      "0.12.1"
+    ],
+    "const-oid": [
+     "0.10.3",
+     "0.9.6"
     ],
     "cpufeatures": [
      "0.2.17",
@@ -23,6 +28,10 @@
     "digest": [
      "0.10.7",
      "0.11.3"
+    ],
+    "fallible-iterator": [
+     "0.2.0",
+     "0.3.0"
     ],
     "foldhash": [
      "0.1.5",
@@ -54,6 +63,14 @@
      "0.36.7",
      "0.39.1"
     ],
+    "rand": [
+     "0.10.4",
+     "0.9.5"
+    ],
+    "rand_core": [
+     "0.10.1",
+     "0.9.5"
+    ],
     "rustc-hash": [
      "1.1.0",
      "2.1.3"
@@ -79,7 +96,7 @@
      "2.0.21"
     ]
    },
-   "edges": 978,
+   "edges": 1080,
    "features": [
     "cuda"
    ],
@@ -88,15 +105,24 @@
   },
   {
    "backend": "metal",
-   "crates": 264,
+   "crates": 307,
    "duplicates": {
     "base64": [
      "0.13.1",
+     "0.22.1",
      "0.23.1"
+    ],
+    "const-oid": [
+     "0.10.3",
+     "0.9.6"
     ],
     "core-foundation": [
      "0.10.1",
      "0.9.4"
+    ],
+    "fallible-iterator": [
+     "0.2.0",
+     "0.3.0"
     ],
     "getrandom": [
      "0.2.17",
@@ -107,17 +133,25 @@
      "0.8.9",
      "0.9.1"
     ],
+    "rand": [
+     "0.10.4",
+     "0.9.5"
+    ],
+    "rand_core": [
+     "0.10.1",
+     "0.9.5"
+    ],
     "syn": [
      "2.0.119",
      "3.0.10"
     ]
    },
-   "edges": 712,
+   "edges": 824,
    "features": [],
    "name": "macos-metal",
    "target": "aarch64-apple-darwin"
   }
  ],
- "lockfile_sha256": "b8b22f853a6326ab54ca69d3e46d976b2eb4efe2ff423fe7d2ea3919713ccde4",
+ "lockfile_sha256": "3aebc42844b13a2342fbfca792625911f63e20541c58a4b405fd0751b9de858d",
  "schema": 1
 }

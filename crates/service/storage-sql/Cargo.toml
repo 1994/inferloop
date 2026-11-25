@@ -18,6 +18,7 @@ bytes.workspace = true
 deadpool-postgres.workspace = true
 infer-core.workspace = true
 infer-spi.workspace = true
+infer-storage.workspace = true
 rusqlite.workspace = true
 rustls.workspace = true
 rustls-native-certs.workspace = true
@@ -27,5 +28,4 @@ tokio-postgres-rustls.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-infer-storage.workspace = true
 infer-storage-conformance.workspace = true

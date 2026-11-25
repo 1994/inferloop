@@ -31,9 +31,14 @@ pub struct ServeOptions {
     pub image_decoder: ImageDecoder,
     /// Retain Responses state in process for `store`, `previous_response_id`, retrieval,
     /// background jobs and cancellation. Off by default; state is lost on restart and is not
-    /// shared by replicas.
+    /// shared by replicas. Same as `--storage responses=memory`.
     #[arg(long)]
     pub enable_response_store: bool,
+    /// Where a domain keeps its state, as DOMAIN=LOCATION: `responses=memory`,
+    /// `responses=sqlite:PATH` (kept across restarts) or `responses=postgres://...` (shared by
+    /// replicas). Repeat for other domains.
+    #[arg(long = "storage", value_name = "DOMAIN=LOCATION")]
+    pub storage: Vec<super::StorageBinding>,
     #[arg(long, default_value_t = 0, hide = true)]
     pub host_memory_mib: u64,
 }

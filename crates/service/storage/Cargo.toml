@@ -10,6 +10,10 @@ autotests = false
 name = "memory"
 path = "tests/memory.rs"
 
+[[test]]
+name = "backends"
+path = "tests/backends.rs"
+
 [lints]
 workspace = true
 
