@@ -24,7 +24,7 @@ members = [
     "crates/service/storage",
     "crates/service/storage-sql",
     "crates/service/frontdoor",
-    "crates/service/agent",
+    "crates/diagnostics/agent",
     "crates/service/cli",
     "crates/testing/cpu/reference-ops",
     "crates/testing/cpu/support",
@@ -57,7 +57,7 @@ default-members = [
     "crates/service/storage",
     "crates/service/storage-sql",
     "crates/service/frontdoor",
-    "crates/service/agent",
+    "crates/diagnostics/agent",
     "crates/service/cli",
     # Development tool, not part of the default product build set.
     "tools/bench/cpu",
@@ -158,7 +158,7 @@ infer-storage = { version = "=0.1.0", path = "crates/service/storage" }
 infer-storage-sql = { version = "=0.1.0", path = "crates/service/storage-sql" }
 infer-storage-conformance = { version = "=0.1.0", path = "crates/testing/storage/conformance" }
 infer-frontdoor = { version = "=0.1.0", path = "crates/service/frontdoor" }
-infer-agent = { version = "=0.1.0", path = "crates/service/agent" }
+infer-agent = { version = "=0.1.0", path = "crates/diagnostics/agent" }
 
 # Opt-in CPU references
 infer-reference-ops = { version = "=0.1.0", path = "crates/testing/cpu/reference-ops" }
