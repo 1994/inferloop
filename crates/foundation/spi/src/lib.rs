@@ -6,6 +6,7 @@ pub use generation::{GenerationPolicy, GenerationPreset, GreedyPreset};
 mod planning;
 mod resource;
 mod responses;
+mod tools;
 pub use planning::DecisionStorage;
 pub use resource::{
     ResourceAbandon, ResourceCommand, ResourcePool, ResourceReply, ResourceResponder,
@@ -15,6 +16,10 @@ pub use responses::{
     IncompleteReason, RESPONSES_PAYLOAD_VERSION, RESPONSES_SPI_VERSION, ResponseError,
     ResponseEvent, ResponseFuture, ResponseId, ResponseStatus, ResponseStore,
     ResponseStoreCapabilities, ResponseUsage, ResponsesExtensions, StoredResponse, WriteCondition,
+};
+pub use tools::{
+    TOOLS_SPI_VERSION, ToolEffect, ToolExecutor, ToolFuture, ToolInvocation, ToolName, ToolOutput,
+    ToolSpec,
 };
 
 pub const SPI_VERSION: u32 = 1;

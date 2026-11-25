@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+autotests = false
+
+[[test]]
+name = "tools"
+path = "tests/tools.rs"
 
 [lints]
 workspace = true

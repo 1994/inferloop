@@ -10,8 +10,10 @@
 //! engine depending on that runtime. The frontdoor calls these methods from its bounded service
 //! tasks; implementations must honour cancellation by dropping the returned future and must not
 //! spawn unbounded background work of their own.
+use crate::tools::{TOOLS_SPI_VERSION, ToolEffect, ToolExecutor};
 use infer_core::{Error, RequestId, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -434,6 +436,7 @@ pub trait ResponseStore: Send + Sync {
 #[derive(Clone, Default)]
 pub struct ResponsesExtensions {
     store: Option<Arc<dyn ResponseStore>>,
+    tools: Option<Arc<dyn ToolExecutor>>,
 }
 
 impl ResponsesExtensions {
@@ -448,6 +451,19 @@ impl ResponsesExtensions {
     pub fn with_store(mut self, store: Arc<dyn ResponseStore>) -> Self {
         self.store = Some(store);
         self
+    }
+
+    /// Install the executor for engine-owned tools.
+    #[must_use]
+    pub fn with_tools(mut self, tools: Arc<dyn ToolExecutor>) -> Self {
+        self.tools = Some(tools);
+        self
+    }
+
+    /// The installed tool executor, if any.
+    #[must_use]
+    pub fn tools(&self) -> Option<&Arc<dyn ToolExecutor>> {
+        self.tools.as_ref()
     }
 
     /// The installed store, if any.
@@ -471,9 +487,14 @@ impl ResponsesExtensions {
     /// Validate the installed extension against this contract version.
     ///
     /// # Errors
-    /// Returns an unsupported error for a store built against a different contract version, or an
-    /// invalid-input error for capabilities that cannot serve the routes they advertise.
+    /// Returns an unsupported error for a store or tool executor built against a different
+    /// contract version or for a side-effect tool (approval is not supported yet), and an
+    /// invalid-input error for store capabilities that cannot serve the routes they advertise or
+    /// for duplicate tool names.
     pub fn validate(&self) -> Result<()> {
+        if let Some(tools) = &self.tools {
+            validate_tools(tools.as_ref())?;
+        }
         let Some(store) = &self.store else {
             return Ok(());
         };
@@ -503,12 +524,38 @@ impl ResponsesExtensions {
     }
 }
 
+fn validate_tools(executor: &dyn ToolExecutor) -> Result<()> {
+    if executor.spi_version() != TOOLS_SPI_VERSION {
+        return Err(Error::unsupported(format!(
+            "tool executor SPI version {} is not {TOOLS_SPI_VERSION}",
+            executor.spi_version()
+        )));
+    }
+    let mut names = BTreeSet::new();
+    for spec in executor.tools() {
+        if !names.insert(spec.name()) {
+            return Err(Error::invalid(format!(
+                "tool executor declares {} twice",
+                spec.name()
+            )));
+        }
+        if spec.effect() == ToolEffect::SideEffect {
+            return Err(Error::unsupported(format!(
+                "side-effect tool {} needs an approval flow, which is not supported yet",
+                spec.name()
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl fmt::Debug for ResponsesExtensions {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ResponsesExtensions")
             .field("enabled", &self.is_enabled())
             .field("capabilities", &self.capabilities())
+            .field("tools", &self.tools().map(|tools| tools.tools().len()))
             .finish()
     }
 }

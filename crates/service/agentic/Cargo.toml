@@ -10,6 +10,10 @@ autotests = false
 name = "responses"
 path = "tests/responses.rs"
 
+[[test]]
+name = "tool_loop"
+path = "tests/tool_loop.rs"
+
 [lints]
 workspace = true
 
