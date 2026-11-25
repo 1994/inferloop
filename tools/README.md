@@ -23,6 +23,7 @@
 | `bench` / `attention` | [attention.sh](bench/attention.sh) | 原生 attention 与 Candle 的独立数值、性能门禁 |
 | `bench` | [check-cuda-service.py](bench/check-cuda-service.py)、[mtp-ab.py](bench/mtp-ab.py) | CUDA 服务与 MTP A/B 验证；参数见 `--help` |
 | `bench` | [serve-workloads.py](bench/serve-workloads.py)、[serve-cases.py](bench/serve-cases.py) | 生成共同 token 输入与选取局部场景；每个用例声明并发 slot，采集端据此校验完整矩阵 |
+| `bench` | [agent-replay.py](bench/agent-replay.py)、[agent-traces/](bench/agent-traces) | 对已有服务回放多轮 agent trace（工具为固定延迟 mock）：逐轮统计排队+prefill、decode、工具等待、重复 prefill token、thinking 占比与可从上下文复制的输出占比；按 trace 串行运行，不启动服务 |
 | `bench` | [serve-image-load.py](bench/serve-image-load.py) | 对已有 HTTP 服务采集单图及多图闭环负载，记录失败请求、响应延迟和可选遥测；不启动服务 |
 | `bench` | [experiment-checklist.py](bench/experiment-checklist.py) | 实验清单：`--init` 由 workload 与模型制品生成 profile，`--check` 校验一次运行，`--compare` 输出两边配置对照表 |
 | `bench` | [model-probe.py](bench/model-probe.py) | 用微型随机权重走真实服务路径：每种几何要么能服务且短输出在小并发下批不变，要么加载期被拒绝；不证明数值正确，也不证明长输出批不变 |
