@@ -1,6 +1,6 @@
 # Agentic 服务层方案
 
-状态：A1 已实施（crate 建立与 Responses 生命周期迁移），A0、A2 及之后未开始。源码基点 `44b5a257`，日期 2026 年 11 月 24 日。参考 [vllm-project/agentic-api](https://github.com/vllm-project/agentic-api/tree/41a0fc23275883786fc512e6192dbf1f8b3d1f01)（固定 `41a0fc2`，PyPI `0.10.0` 同期），只借鉴机制，不照搬参数集合与默认值。排期见[路线图](../README.md) S4；现有 Responses 状态契约见 [Responses 状态与扩展 SPI](../../architecture/responses-state.md)，工具协议与严格约束见 [Agent 工具调用与服务配置方案](agent-api.md)。
+状态：A1 已实施（crate 建立与 Responses 生命周期迁移），A0 基准已建立并完成首轮测量，A2 及之后未开始。源码基点 `44b5a257`，日期 2026 年 11 月 24 日。参考 [vllm-project/agentic-api](https://github.com/vllm-project/agentic-api/tree/41a0fc23275883786fc512e6192dbf1f8b3d1f01)（固定 `41a0fc2`，PyPI `0.10.0` 同期），只借鉴机制，不照搬参数集合与默认值。排期见[路线图](../README.md) S4；现有 Responses 状态契约见 [Responses 状态与扩展 SPI](../../architecture/responses-state.md)，工具协议与严格约束见 [Agent 工具调用与服务配置方案](agent-api.md)。
 
 ## 目标
 
@@ -172,12 +172,25 @@ agentic crate 只依赖下面这些能力的契约，实现分别归各自的层
 
 | 阶段 | 内容 | 完成标准 |
 |---|---|---|
-| A0 | agent 回放基准：`tools/bench/` 下回放录制的多轮 trace，工具用固定延迟的 mock | 按阶段统计 decode、prefill、重算、工具等待和开销；统计 thinking 占比和可从上下文复制的 token 占比；2B 上可在 30 分钟内跑完 |
+| A0 | agent 回放基准：`tools/bench/` 下回放录制的多轮 trace，工具用固定延迟的 mock | **已完成**：[agent-replay.py](../../../tools/bench/agent-replay.py) 与两条 trace，2B 上全部模式不到 3 分钟；首轮结果见下文 |
 | A1 | 建立 `infer-agentic`，迁移 Responses 编排，行为不变 | **已完成**：租约、链式校验、后台任务与取消移入 agentic，`Upstream` 首版只含 `complete`/`cancel`；frontdoor 现有 HTTP 测试不改动全部通过，agentic 用脚本化 upstream 覆盖生命周期；payload 字节不变 |
 | A2 | engine 工具 loop：`ToolExecutor` SPI、`RoundDecision`、上限、混合轮次、单一 SSE 生命周期、账本与 background 流式回放 | mock executor 覆盖：调用顺序回填、上限触发 `incomplete`、取消与断连回收、终态在持久化之后、未知工具拒绝、慢读者不影响 loop；OpenAI SDK 端到端跑通 |
 | A3 | E1 + E2 + E3 | A0 基准中每轮重复 prefill token 接近 0；2B 上 C1 每轮 TTFT 和 C16 agent 吞吐对比 A2 有提升；续接与冷启动输出逐 token 一致 |
 | A4 | 审批流程、Conversations API（新增 `ConversationStore` SPI）、上下文策略 | 审批前后状态续接无重算；压缩只在策略触发时发生 |
 | A5 | MCP executor、记忆检索、E5 | 各自另立方案与验收 |
+
+A0 首轮结果（2026 年 11 月 25 日，RTX 5090，Qwen3.5-2B，`6ebde549`，每条 trace 重复 3 次，温度 0，thinking 关闭）：
+
+| trace | 上下文 | 排队+prefill | decode | 工具等待 | prefix 复用 / 输入 | 重复 prefill / 输入 | 可复制输出 |
+|---|---|---|---|---|---|---|---|
+| `coding-fix`（录制历史） | ≤2.0k | 9.6% | 56% | 34% | 0 | 77% | 5% |
+| `coding-fix`（模型生成历史） | ≤2.4k | 7.7% | 70% | 22% | 0 | 68% | 28% |
+| `rust-review-long`（录制历史） | ≤15.5k | 55% | 43% | 1% | 65% | 9% | 35% |
+
+- 4096 粒度以下的上下文完全不复用，链式 `previous_response_id` 与每轮全量重发结果相同；E1 对短会话把重复 prefill 从约 70% 降到接近 0，但短会话 prefill 只占墙钟 8–10%。
+- 长会话 prefill 占一半以上墙钟，其中重复部分只占输入的 9%；更大的瓶颈是长前缀之后的 prefill 吞吐：12k 前缀后新增 3.2k token 用时约 1.06 s（约 3k token/s），无前缀时 2.7k token 约 0.32 s。这一项应在 A3 之前单独 profile。
+- 可复制占比（≥32 字符的上下文原文片段）在模型自己写工具参数和引用代码时达到 28–35%，支持把 copy-from-context 投机放在 E1 之后。
+- 2B 模型在生成历史模式下常偏离录制路径（先读文件、错误补丁、输出截断），录制历史模式用于跨构建对比，生成历史与链式模式用于验证引擎侧复用。
 
 A1 是纯迁移，A2 只在 CPU 侧，可以先于 A3 合并。A3 需要设备验收，先在 2B 上做，27B 只做最终抽查；对比遵守[性能基线方案](../performance/baseline.md)。
 
