@@ -1,6 +1,6 @@
 # 存储层方案
 
-状态：方案，未实施。源码基点 `44b5a257`，日期 2026 年 11 月 25 日。取代 PR #313 中"每个数据库各实现一遍 `ResponseStore`"的结构：#313 的 SQLite/PostgreSQL 驱动代码、一致性测试与 CLI 入口按本方案重组后保留。排期见[路线图](../README.md) E3。
+状态：ST1 已实施（记录原语、Responses 适配、内存后端与一致性测试），ST2 起未开始。源码基点 `44b5a257`，日期 2026 年 11 月 25 日。取代 PR #313 中"每个数据库各实现一遍 `ResponseStore`"的结构：#313 的 SQLite/PostgreSQL 驱动代码、一致性测试与 CLI 入口按本方案重组后保留。排期见[路线图](../README.md) E3。
 
 ## 问题
 
@@ -43,7 +43,7 @@
 (语义各一份)        └────────┬───────┘                    ┌────┴────┐
 存储原语                  RecordStore                     BlobStore  RecordStore   ── infer-spi
 (按访问模式)               │                               │
-组合体          Namespaced · Instrumented · Encrypted      Tiered · ReadOnly · Instrumented
+组合体          Instrumented · Encrypted                   Tiered · ReadOnly · Instrumented
                            │                               │
 后端            memory · file · SQLite · PostgreSQL ·      memory · file · 对象存储
                 MySQL · Redis …                            (opendal 等，后续)
@@ -57,52 +57,63 @@
 - **crate 划分。**
   - `infer-storage`（service 组）：领域适配、memory 与 file 后端、组合体、`StorageProfile` 与 scheme 注册。不依赖任何数据库驱动。
   - `infer-storage-sql`（service 组）：SQL 家族的 `RecordStore`。内部共用一层 `SqlDatabase`/方言，SQLite、PostgreSQL、MySQL 各自只做驱动映射。#313 的 `infer-response-store` 改名并入这里。
-  - `crates/testing/storage-conformance`（dev-only）：原语与领域的一致性测试套件，第三方后端也可以依赖它。
+  - `crates/testing/storage/conformance`（`infer-storage-conformance`，dev-only）：原语与领域的一致性测试套件，第三方后端也可以依赖它。
   - 以后的对象存储、Redis 等驱动较重的后端各自成 crate，部署按需链接。
 - **为什么领域适配放在 `infer-storage`，而不是 `infer-agentic`。** Responses 的生命周期编排（租约、链式校验、后台任务）留在 agentic；"一个响应记录怎样编码、状态迁移怎样映射到条件写"是存储语义，和 ConversationStore、StateArchive 的适配放在一起，可以共用编码、重试和过期规则。
 
 ## 存储原语一：`RecordStore`
 
-带版本的记录，加每个 key 一条追加日志。
+带版本的记录，加每个 key 一条追加日志。已实施，见 `crates/foundation/spi/src/records.rs`。
 
 ```rust
-/// Durable keyed records with optimistic versions and one append-only log per key.
 pub trait RecordStore: Send + Sync {
     fn capabilities(&self) -> RecordCapabilities;
-    fn get<'a>(&'a self, key: &'a RecordKey) -> StoreFuture<'a, Option<Record>>;
-    fn put<'a>(&'a self, key: &'a RecordKey, write: RecordWrite<'a>) -> StoreFuture<'a, PutOutcome>;
-    fn delete<'a>(&'a self, key: &'a RecordKey, condition: Precondition) -> StoreFuture<'a, bool>;
-    fn append<'a>(&'a self, key: &'a RecordKey, entry: LogEntry<'a>, limit: LogLimit)
-        -> StoreFuture<'a, ()>;
-    fn read_log<'a>(&'a self, key: &'a RecordKey, after: Option<LogSequence>, limit: usize)
-        -> StoreFuture<'a, Vec<OwnedLogEntry>>;
+    fn get<'a>(&'a self, key: &'a RecordKey) -> RecordFuture<'a, Option<Record>>;
+    fn put<'a>(&'a self, key: &'a RecordKey, write: RecordWrite<'a>) -> RecordFuture<'a, PutOutcome>;
+    fn delete<'a>(&'a self, key: &'a RecordKey) -> RecordFuture<'a, ()>;
+    fn append<'a>(&'a self, key: &'a RecordKey, sequence: u64, value: &'a [u8], max_entries: usize)
+        -> RecordFuture<'a, ()>;
+    fn log<'a>(&'a self, key: &'a RecordKey, after: Option<u64>) -> RecordFuture<'a, Vec<LogRecord>>;
 }
 
-pub struct RecordKey { namespace: Namespace, id: RecordId }   // 校验过的有界 ASCII
-pub struct Record { version: Version, state: RecordState, expiry: Expiry, value: Vec<u8> }
-pub struct RecordWrite<'a> { value: &'a [u8], state: RecordState, expiry: Expiry, condition: Precondition }
-pub enum Precondition { Any, Absent, Version(Version), StateNotIn(StateSet), StateIn(StateSet) }
-pub enum PutOutcome { Written(Version), Rejected { current: Option<(Version, RecordState)> } }
-pub enum Expiry { Never, At(UnixMillis) }
+pub struct RecordWrite<'a> { value: &'a [u8], state: RecordState, retention: Retention, condition: Precondition }
+pub enum Precondition { Any, Absent, Version(Version), StateNotIn(StateSet) }
+pub enum Retention { Pinned, Disposable(Option<UnixMillis>) }
+pub enum PutOutcome { Written(Version), Rejected(Option<(Version, RecordState)>) }
 ```
 
-**语义**
+每个元素都有一个具体的使用方，没有使用方的变体（`StateIn`、带条件的删除、日志分页）不进入契约。
 
 - **单 key 线性一致，没有跨 key 事务。** 盘点下来，所有领域操作都能落成"一个 key 上的条件写"加"该 key 日志上的追加"。不要求跨 key 事务，原语就能映射到 SQL、Redis（WATCH/Lua）、单进程文件（锁 + WAL）、DynamoDB 一类 KV，以及支持条件 PUT 的对象存储。
-- **`Version`** 由 store 分配，每个 key 单调递增，删除后重建从新的序列开始，不复用旧版本号。
-- **`RecordState`** 是领域定义的小整数标签，比如 Responses 的状态枚举。store 不理解它的含义，只用它判断条件。`StateNotIn(终态集合)` 让"终态快照不覆盖已取消或已完成的记录"这类常见写入在 SQL 上一条语句完成。不支持状态谓词的后端（比如只有 ETag 条件写的对象存储）在 `capabilities` 里声明，由 trait 的默认方法退化成"读版本 → 按版本条件写 → 冲突重试"。重试次数有上限，是命名常量；同一 key 的竞争方只有所有者和取消者，上限很小。
-- **过期由写入方给出时间点**，store 只负责：过期记录对读不可见，并连同日志删除。"活动记录不过期、终态记录最后一次写入后 TTL 过期"这条 Responses 规则放在适配层，按状态选 `Expiry`，store 不用知道。时间点用写入方时钟，TTL 是小时级，副本间秒级时钟偏差不影响语义；文档写明这一点，不引入服务端时钟。
-- **日志** 附属于记录：
-  - 序号严格递增，超出 `LogLimit` 返回 capacity；
-  - 记录不存在或已过期时追加返回 not-found；
-  - 替换记录（新版本）保留日志，删除和过期才连同日志移除。这条修正了 #313 发现的参考 store 缺陷。
-- **值不透明。** store 不解析 value。领域适配层用带版本号的信封编码，信封格式见"领域适配"。
+- **`RecordKey` = 命名空间 + id。**
+  - 命名空间由领域固定（`responses`），不由部署配置，所以不需要额外的 `Namespaced` 组合体。
+  - 多个部署共用一个数据库时，用后端自己的配置隔离（表前缀或 schema）。
+  - 租户隔离属于领域语义，由领域适配编进 id（`StateArchive` 按租户划分前缀）。
+- **`Version` 在整个 store 内单调递增，从不复用。** 删除后重建的记录拿到更新的版本，所以持有旧版本的条件写不会误中重建的记录（没有 ABA）。SQL 后端用一个序列，内存后端用一个计数器。
+- **`RecordState` 是领域给记录的小整数标签**，store 不解释它的含义。它不能用版本号代替：
+  - "终态快照不覆盖已取消的记录"要允许中间发生过不改变状态的写入（比如 queued→in_progress 的迁移）；
+  - 版本条件会把这些写入也当成冲突，状态条件不会。
 
-**能力声明**：`durable`、`shared`（多副本可共享）、`state_predicates`、`max_value_bytes`、`max_log_entries`。部署层按领域要求校验，比如多副本部署的 Responses 要求 `shared`；不满足就启动失败，不静默降级。
+  `StateNotIn` 让这类写入在 SQL 上一条语句完成。不支持状态谓词的后端在能力里声明，调用方改用 `put_by_version`："读版本 → 按版本写，记录不存在时用 `Absent` 写 → 冲突重试"，重试上限是命名常量。`Absent` 正是因为这条退化路径才必须存在：用 `Any` 写不存在的记录，会覆盖在读和写之间并发创建的记录。一致性测试逐项比较原生谓词与退化路径的结果，两者必须相同。
+- **`Retention` 是数据的耐久等级，由领域按每次写入选择。** 它把三件事统一成一个概念：
+  - TTL：`Disposable(Some(t))` 在 t 之后不可见、被删除；
+  - 有界 store 的淘汰：只淘汰 `Disposable`，按最近使用；
+  - 必须保留的数据：`Pinned` 永不过期、永不被淘汰。
+
+  过期和"能否被提前丢弃"不能用一个字段表达。内存参考 store 在 `ttl=None` 时，终态记录不过期但仍可按 LRU 淘汰，`Disposable(None)` 正好表达这种情况。持久数据库在能力里声明 `evicts_disposable: false`，只看到期时间。
+- **到期时间由写入方给出**，store 只负责：到期记录对读不可见，并连同日志删除。时间点用写入方时钟，TTL 是小时级，副本间秒级的时钟偏差不改变语义。
+- **日志** 附属于记录：
+  - 序号严格递增，超出调用方给的上限返回 capacity；
+  - 记录不存在或已过期时追加返回 not-found；
+  - 替换记录保留日志，删除和过期才连同日志移除。这条修正了 #313 发现的参考 store 缺陷：后台响应的终态快照会抹掉已产生的事件。
+- **拒绝不是错误。** 条件不满足是预期结果，返回 `PutOutcome::Rejected`，并带上当前版本和状态，调用方不必再读一次。错误只表示存储失败或超限。
+- **值不透明。** store 不解析 value，领域适配层用带版本号的信封编码。
+
+**能力声明**（`RecordCapabilities`）：`durable`、`shared`（多副本可共享）、`evicts_disposable`、`state_predicates`、`max_value_bytes`。部署层按领域要求校验，比如多副本部署的 Responses 要求 `shared`；不满足就启动失败，不静默降级。
 
 ## 存储原语二：`BlobStore`
 
-不可变大对象。
+不可变大对象。它在 ST4/ST5 与第一个使用方（`StateArchive`）一起实现，先不进入 SPI：没有使用方的 trait 无法验证它的契约是否合适。
 
 ```rust
 /// Immutable large objects written once and read by range into caller-owned host buffers.
@@ -135,7 +146,7 @@ pub trait BlobWriter: Send {
 
 ### `ResponseStore`（已有，接口不变）
 
-`RecordResponseStore<R: RecordStore>` 实现一次：
+`RecordResponseStore` 实现一次（`crates/service/storage/src/responses.rs`）。它持有 `Arc<dyn RecordStore>` 而不是泛型参数：部署在运行时按配置组合异构后端，每次存储操作一次动态分发，相比 IO 可以忽略。
 
 | `ResponseStore` 操作 | 映射 | 往返 |
 |---|---|---|
@@ -148,9 +159,9 @@ pub trait BlobWriter: Send {
 
 迁移操作只出现在取消和后台任务上，多一次往返可以接受；每个存储请求的两次快照写入都是一次往返。
 
-信封编码：`[格式版本 u16][元数据长度 u32][元数据][request_input][response]`。元数据是 `StoredResponse` 除两个 payload 之外的字段，用 serde 编码；两个 payload 原样拼接，不做 base64，也不二次 JSON 转义。格式版本独立于 `RESPONSES_PAYLOAD_VERSION`：前者是存储编码，后者是 frontdoor 的线格式。
+信封编码：`[格式版本 u16][元数据长度 u32][元数据 JSON][request_input 长度 u32][request_input][response]`，小端序。元数据是 `StoredResponse` 除两个 payload 之外的字段，用 serde JSON 编码，只有几百字节，人工查库时可读；两个 payload 原样拼接，不做 base64，也不二次 JSON 转义。格式版本独立于 `RESPONSES_PAYLOAD_VERSION`：前者是存储编码，后者是 frontdoor 的线格式。
 
-现有的 `InMemoryResponseStore` 变成 `RecordResponseStore<MemoryRecordStore>`。条目数和总字节的 LRU 预算移进 `MemoryRecordStore`，只对终态记录生效，活动记录不被驱逐。保留旧名作为类型别名，CLI 行为不变。
+原来的 `InMemoryResponseStore` 拆成 `RecordResponseStore` + `MemoryRecordStore`。条目数和总字节的预算移进 `MemoryRecordStore`，它只认保留等级：适配层把活动响应写成 `Pinned`、终态响应写成 `Disposable(ttl)`，于是"活动记录不被驱逐"不需要记录存储懂任何 Responses 语义。旧名删除而不是保留为别名：在泛型适配之上，一个叫"内存 Responses store"的别名表达不出它实际是两层组合；仓库内的使用方（CLI 与测试）已改为直接构造。默认限制与行为不变。
 
 ### `StateArchive`（新增）
 
@@ -203,7 +214,6 @@ pub trait StateArchive: Send + Sync {
 |---|---|---|
 | `Tiered<Upper, Lower>` | Blob | 读先查上层，未命中读下层并按策略回填；写入策略为 write-through 或只写上层，由领域需要声明。只用于不可变对象，没有一致性问题 |
 | `ReadOnly<S>` | Blob、Record | 只读种子层，比如随部署分发的系统提示前缀目录；写入返回 unsupported |
-| `Namespaced<S>` | Record、Blob | 多个领域或租户共用一个后端实例时隔离 key 空间 |
 | `Instrumented<S>` | 两者 | 每个操作一个 tracing event（操作、命名空间、字节数、耗时、结果），延迟直方图进 observability；不在逐字节路径上分配 |
 | `Encrypted<S>` | 两者 | 静态加密，密钥由部署提供；value 和 blob 整体加密，key 与元数据保持明文以便检索 |
 
@@ -253,9 +263,9 @@ SQL 家族的表结构是通用的 `records(namespace, id, version, state, expir
 
 ## 一致性测试
 
-`storage-conformance` 提供：
+`infer-storage-conformance` 提供：
 
-- `record_store_suite`：
+- `records::suite`（已实施）：
   - 条件写的每种 `Precondition`；
   - 版本单调；
   - 状态谓词与 CAS 退化路径结果一致；
@@ -263,14 +273,14 @@ SQL 家族的表结构是通用的 `records(namespace, id, version, state, expir
   - 日志的顺序、上限、替换保留与删除清除；
   - 过期不可见；
   - 超限值与非法 key。
-- `blob_store_suite`：
+- `blobs::suite`（ST4）：
   - 未提交不可见；
   - 丢弃 writer 不留下对象；
   - 范围读与校验和；
   - 读 future 被丢弃后缓冲区仍在 IO 结束时归还；
   - 在途字节上限。
-- `response_store_suite`：现有 #313 用例，跑在 `RecordResponseStore<各后端>` 上，再加直接实现 `ResponseStore` 的参考 store。
-- `state_archive_suite`：
+- `responses::suite` 与 `responses::expiry`（已实施）：#313 的用例，接受任何 `ResponseStore`，无论是记录适配还是直接实现。
+- `archive::suite`（ST5）：
   - 身份不匹配不返回；
   - 最长兼容前缀；
   - 崩溃在段与 manifest 之间时清扫正确；
@@ -292,10 +302,10 @@ SQL 家族的表结构是通用的 `records(namespace, id, version, state, expir
 
 | 步骤 | 内容 | 验收 |
 |---|---|---|
-| ST1 | `infer-spi` 加 `RecordStore`/`BlobStore` 原语与能力类型；`infer-storage` 加 `RecordResponseStore`、`MemoryRecordStore`、memory blob；`storage-conformance` 套件；`InMemoryResponseStore` 改为别名 | 现有 Responses 与 agentic 测试不改动通过；三套原语/领域测试在 memory 上通过 |
+| ST1 | `infer-spi` 加 `RecordStore` 原语；`infer-storage` 加 `RecordResponseStore`、`MemoryRecordStore`；`infer-storage-conformance` 记录与 Responses 套件；`InMemoryResponseStore` 拆为两层 | **已完成**：现有 Responses、agentic、frontdoor 测试通过（只改 store 的构造）；两套一致性测试与内存后端的淘汰规则测试通过 |
 | ST2 | #313 重组为 `infer-storage-sql`：通用表、迁移、SQLite actor、PostgreSQL 连接池加 TLS | 一致性测试在 SQLite 与 PostgreSQL 17 上通过；端到端重启取回与链式续接 |
 | ST3 | `StorageProfile`、scheme 注册、`--storage` 与旧参数别名、能力校验、生效配置读回 | 错误配置启动失败并给出原因；凭据不出现在任何输出 |
-| ST4 | file 后端（Record + Blob）与 `Tiered`/`ReadOnly` 组合 | 一致性测试与崩溃测试通过 |
+| ST4 | `BlobStore` 原语进入 SPI；file 后端（Record + Blob）与 `Tiered`/`ReadOnly` 组合 | 一致性测试与崩溃测试通过 |
 | ST5 | `StateArchive` 与 `BlobStateArchive`；engine 接入（IO 池、PrefixCache 归档层、恢复/重算决策），与 agentic E2 一起做 | 恢复与重算的完整 token 序列一致；归档命中的 TTFT 低于重算；spill 不使 decode TPOT 回退；需要设备窗口 |
 | ST6 | MySQL；对象存储与 Redis 按需求排期 | 同一套一致性测试 |
 
@@ -316,6 +326,5 @@ ST1–ST3 只在 CPU 侧，可以先合；ST5 是唯一需要设备验收的步�
 
 ## 待定
 
-- **记录信封的元数据编码**：serde JSON（可读）或 postcard（紧凑）。倾向 JSON，因为元数据只有几百字节，可读性有利于排查。
 - **file 记录后端的快照周期**：从 WAL 长度和写入速率推导，还是固定为条目数阈值。
 - **归档层的 pinned 缓冲**：是否需要独立于主机镜像的预算。取决于 E2 的 parked 会话是否与归档同时占用主机内存，在 ST5 设计时用实测回答。

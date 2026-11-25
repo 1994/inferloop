@@ -13,14 +13,12 @@ mod constants;
 mod document;
 mod persist;
 mod responses;
-mod store;
 mod tools;
 mod turn;
 mod upstream;
 pub use document::{DocumentMetadata, FailedDocument, ResponseDocument, Retention};
 pub use persist::StoreLease;
 pub use responses::{BackgroundStart, Responses};
-pub use store::{InMemoryResponseStore, InMemoryResponseStoreConfig};
 pub use tools::ToolSet;
 pub use turn::{IncompleteCause, ToolLoop, Turn, TurnEnd, TurnLimits};
 pub use upstream::{

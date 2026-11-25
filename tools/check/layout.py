@@ -7,6 +7,8 @@ from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[2]
 GROUPS = {"foundation", "backend", "model", "engine", "diagnostics", "service", "testing"}
+# Dev-only crates: CPU reference backends, and the shared suites storage backends run.
+TESTING_KINDS = {"cpu", "storage"}
 # Development tools live outside the responsibility groups: they are members so they share the
 # workspace's lock, versions and lints, but they are not part of the product crate layout.
 TOOL_MEMBERS = {"tools/bench/cpu"}
@@ -126,10 +128,13 @@ def check_crates():
         require(len(parts) >= 3 and parts[1] in GROUPS, f"{member}: choose a responsibility group")
         require(
             len(parts) == (4 if parts[1] == "testing" else 3),
-            f"{member}: use group/crate, or testing/cpu/crate",
+            f"{member}: use group/crate, or testing/<kind>/crate",
         )
         if parts[1] == "testing":
-            require(parts[2] == "cpu", f"{member}: CPU reference backends belong in testing/cpu")
+            require(
+                parts[2] in TESTING_KINDS,
+                f"{member}: testing crates belong in testing/{{{','.join(sorted(TESTING_KINDS))}}}",
+            )
         manifest = tomllib.loads((directory / "Cargo.toml").read_text())
         check_ownership(member, production_dependencies(manifest))
         dependencies = set()
