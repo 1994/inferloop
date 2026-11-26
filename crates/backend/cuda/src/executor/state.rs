@@ -1,8 +1,11 @@
+use super::execution::{SnapshotPositions, cacheable_prefix, slot_prefix};
 use super::{CudaExecutor, Sequence};
+use crate::constants::MTP_KV_OFFSET;
+use crate::device::asynchronous::block_on;
 use crate::resident::DeviceProgram;
 use crate::resident::dflash2::Engine;
 use infer_core::{Error, ErrorCode, Result, StateId};
-use infer_ir::OutputReadout;
+use infer_ir::{FinishedState, OutputReadout};
 use std::collections::BTreeSet;
 
 impl CudaExecutor {
@@ -440,6 +443,84 @@ impl CudaExecutor {
         state.poisoned = false;
         Ok(())
     }
+    /// Release a sequence whose request finished on its own, first keeping its whole history
+    /// as a reusable prefix when the request asked for it. Keeping is best effort: an
+    /// ineligible sequence, a failed capture or a cache that declines the snapshot still
+    /// releases normally.
+    pub(super) fn finish(&mut self, id: StateId, kept: FinishedState) -> Result<()> {
+        if kept == FinishedState::PublishPrefix {
+            self.idle()?;
+            self.publish_finished(id);
+        }
+        self.release(id)
+    }
+
+    /// Snapshot a finished sequence at the exact position it reached, generated tokens
+    /// included, so the conversation's next turn recomputes only what follows. The recurrent
+    /// state exists only at that position, which is why the snapshot is not rounded to a block.
+    fn publish_finished(&mut self, id: StateId) {
+        let Some(state) = self.states.get_mut(&id) else {
+            return;
+        };
+        let covered = state.history.len();
+        // A slot-resident sequence decodes in its slot, so its prompt program stops at the
+        // prompt; the slot holds the state after the last forwarded token, which `history`
+        // counts. A private sequence's program is its state.
+        // A speculating sequence's draft only shapes proposals; verification keeps the output
+        // the target's either way, so a draft snapshot needs consistent positions, not more.
+        let position_agrees = state.home.is_some()
+            || (covered == state.program.position()
+                && state.speculation.as_ref().is_none_or(|speculation| {
+                    speculation.program.position() == covered.saturating_sub(MTP_KV_OFFSET)
+                }));
+        if state.poisoned
+            || state.media.is_some()
+            || state.draft.is_some()
+            || state.readout != OutputReadout::Logits
+            || covered == 0
+            || covered > state.capacity
+            || !position_agrees
+        {
+            tracing::debug!(
+                target: "infer::cuda",
+                covered,
+                position = state.program.position(),
+                slot_resident = state.home.is_some(),
+                speculating = state.speculation.is_some(),
+                poisoned = state.poisoned,
+                "finished turn is not eligible for a prefix snapshot"
+            );
+            return;
+        }
+        let device = self.loaded.device();
+        let snapshot = match state.home {
+            Some(slot) => slot_prefix(
+                device,
+                &self.loaded,
+                (self.slots.as_mut(), self.drafter.pool()),
+                state,
+                (slot, covered, SnapshotPositions::after(covered)),
+            ),
+            None => Ok(block_on(cacheable_prefix(
+                device,
+                &self.loaded,
+                state,
+                covered,
+            ))),
+        };
+        let published = snapshot.and_then(|snapshot| {
+            snapshot.map_or(Ok(()), |snapshot| self.prefix.publish(snapshot).map(drop))
+        });
+        match published {
+            Ok(()) => {
+                tracing::debug!(target: "infer::cuda", covered, "kept a finished turn's prefix");
+            }
+            Err(error) => {
+                tracing::warn!(target: "infer::cuda", %error, covered, "finished-turn prefix was not kept");
+            }
+        }
+    }
+
     pub(super) fn release(&mut self, id: StateId) -> Result<()> {
         self.idle()?;
         self.loaded.device().drain()?;

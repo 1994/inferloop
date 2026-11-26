@@ -2,8 +2,8 @@ use super::*;
 use crate::{NativeWorkloads, softmax};
 use infer_core::{ErrorCode, ModelId, RequestId};
 use infer_ir::{
-    BackboneKind, DecisionQuestion, DecisionReadout, DecisionSchema, FeedForward, Head, Mixer,
-    Modality, Pooling, PositionSpec, Qos, RequestInput, Sampling,
+    BackboneKind, DecisionQuestion, DecisionReadout, DecisionSchema, FeedForward, FinishedState,
+    Head, Mixer, Modality, Pooling, PositionSpec, Qos, RequestInput, Sampling,
 };
 use std::f64::consts::E;
 use std::slice::from_ref;
@@ -80,6 +80,7 @@ fn request(workload: Workload) -> CanonicalRequest {
         qos: Qos::default(),
         sampling: Sampling::default(),
         prefix_boundary: None,
+        on_finish: FinishedState::Release,
         extensions: BTreeMap::new(),
     }
 }

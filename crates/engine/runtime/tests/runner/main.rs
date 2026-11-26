@@ -5,8 +5,8 @@ mod queue_deadline;
 mod reservation;
 use infer_core::{Error, ErrorCode, FinishReason, ModelId, Result, StateId};
 use infer_ir::{
-    CanonicalRequest, DeviceCapabilities, ExecutionProgram, ExecutionTask, ModelIr, ModelOutput,
-    OutputReadout, PrecisionPlan, StepPlan, TaskOutput,
+    CanonicalRequest, DeviceCapabilities, ExecutionProgram, ExecutionTask, FinishedState, ModelIr,
+    ModelOutput, OutputReadout, PrecisionPlan, StepPlan, TaskOutput,
 };
 use infer_kernel_api::KernelRegistry;
 use infer_runtime::{Engine, RuntimeConfig, runner::ThreadedBackend};
@@ -1158,6 +1158,7 @@ fn media_request_requires_a_multimodal_backend() -> Result<()> {
         qos: infer_ir::Qos::default(),
         sampling: infer_ir::Sampling::default(),
         prefix_boundary: None,
+        on_finish: FinishedState::Release,
         extensions: BTreeMap::new(),
     };
     let error = engine.submit(request).unwrap_err();
@@ -1211,6 +1212,7 @@ fn media_request_under_speculation_is_rejected_and_leaves_the_engine_ready() -> 
         qos: infer_ir::Qos::default(),
         sampling: infer_ir::Sampling::default(),
         prefix_boundary: None,
+        on_finish: FinishedState::Release,
         extensions: BTreeMap::new(),
     };
     let error = engine.submit(image_request).unwrap_err();
@@ -1232,6 +1234,7 @@ fn media_request_under_speculation_is_rejected_and_leaves_the_engine_ready() -> 
         qos: infer_ir::Qos::default(),
         sampling: infer_ir::Sampling::default(),
         prefix_boundary: None,
+        on_finish: FinishedState::Release,
         extensions: BTreeMap::new(),
     };
     engine.submit(text_request)?;
@@ -1285,6 +1288,7 @@ fn prepared_media_reaches_the_scheduler_and_backend() -> Result<()> {
         qos: infer_ir::Qos::default(),
         sampling: infer_ir::Sampling::default(),
         prefix_boundary: None,
+        on_finish: FinishedState::Release,
         extensions: BTreeMap::new(),
     };
     engine.submit(request)?;
@@ -1343,6 +1347,7 @@ fn automatic_mtp_is_disabled_for_media_instead_of_rejecting_it() -> Result<()> {
         qos: infer_ir::Qos::default(),
         sampling: infer_ir::Sampling::default(),
         prefix_boundary: None,
+        on_finish: FinishedState::Release,
         extensions: BTreeMap::new(),
     };
     engine.submit(request)?;
@@ -1407,6 +1412,7 @@ fn threaded_media_request_uses_the_media_quote_command() -> Result<()> {
         qos: infer_ir::Qos::default(),
         sampling: infer_ir::Sampling::default(),
         prefix_boundary: None,
+        on_finish: FinishedState::Release,
         extensions: BTreeMap::new(),
     };
     // The normal path must still quote its own price; only the media request uses 4096.

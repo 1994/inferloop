@@ -159,6 +159,36 @@ agent 的每一轮都是"上一轮的全部上下文 + 一点新内容"。体验
   - 并发：8 路并发下首轮与后续轮 TTFT 都不回退于 C2，decode TPOT 不回退；
   - 先在 2B 上验收，27B 只做抽查。
 
+### E1 第一版的实施与实测
+
+- **已实施**：
+  - `FinishedState` 请求意图与 SPI `finish_state`（默认就是释放，Metal 不变）；
+  - runtime 只在正常结束时传递意图，线程化 runner 的释放队列也携带它；
+  - 前缀缓存的整块规则改为策略属性；
+  - CUDA 在释放前捕获精确位置的快照，复用现有导出路径。
+- **槽位常驻序列**：decode 在槽位里进行，prompt 程序的位置停在 prompt 末尾；实际状态在槽位里，与 `history` 一致。所以快照的位置由调用方给出，不能读 prompt 程序。第一版漏掉这一点时，快照被判为不合格，诊断事件给出了 `covered=318 position=290`。
+- **推测中的序列（MTP）也保留**：草稿只影响提议，验证保证输出与 target 等价；草稿快照只需位置与导出的行数一致（`covered - MTP_KV_OFFSET`），由调用方显式给出。2B 开 `--num-speculative-tokens 2` 实测：保留成功、无恢复错误，thinking 关时续接与冷启动逐字相同。
+- **还没做**：
+  - 异步捕获。释放本来就会先 idle、再 drain 整个设备，所以同步捕获只增加拷贝本身，8 路并发下测不出开销；
+  - "整页共享 + 尾块"省去整段拷贝。
+
+  两者都留作后续优化。
+
+实测（RTX 5090，Qwen3.5-2B，基线为 C2，两组交替，各一个新进程，只取第一次重复）：
+
+| 场景 | 重复 prefill / 输入 | 后续轮 TTFT |
+|---|---|---|
+| 生成历史，thinking 开 | 16% → 0%（3 个 token） | 均值 97 → 68 ms；第 4 轮 142 → 61 ms |
+| 生成历史，thinking 关 | 14% → 6% | 两边轨迹不同（见下），不可直接比较 |
+| 录制历史长会话（E1 不命中，测开销） | 不变 | 不变 |
+| 8 路并发录制历史（测开销） | — | 后续轮 p50 1476 → 1426 ms；首轮 p50 616 → 615 ms；decode 3.61 → 3.62 ms/token |
+
+**数值性质与验收的修订。** 之前的前缀缓存（4096 对齐点与 C2 的 prompt 末断点）复用的都是 prefill 算出的状态，与冷启动在 bit 级上一致。E1 是第一个复用 decode 算出的状态的机制：上一轮生成的 token 的 KV 与 recurrent 状态来自 decode kernel，冷启动时则由 prefill kernel 重算，两者在 BF16 下累加顺序不同。
+
+实测：工具对话的第二轮在 thinking 关闭时逐字相同；thinking 开启时，热缓存与冷启动各自完全可复现，但在 1461 个字符的第 117 个字符处分叉（"as a parameter" / "as input"）。所以 E1 下续接的输出是确定的，但不保证与冷启动重算逐 token 相同；vLLM、SGLang 的前缀缓存也有同样的性质。
+
+"续接与冷启动逐 token 一致"对 C1、C2 仍然是验收条件，对 E1 改为：同一快照上的续接确定可复现，质量按准确率门槛验收。这是对输出语义的改变，合并前需要明确同意。
+
 ### 会话提示与保留（E2/E3）
 
 - **`previous_response_id` 链** 把"这一轮很可能马上续接"告诉引擎。引擎据此提高这条前缀的保留优先级；在 E2 中，长时间等待（审批、慢工具）的会话转到主机内存，续接时预取，不必淘汰重算。
@@ -210,7 +240,7 @@ agentic crate 只依赖下面这些能力的契约，实现分别归各自的层
 | A0 | agent 回放基准：`tools/bench/` 下回放录制的多轮 trace，工具用固定延迟的 mock | **已完成**：[agent-replay.py](../../../tools/bench/agent-replay.py) 与两条 trace，2B 上全部模式不到 3 分钟；首轮结果见下文 |
 | A1 | 建立 `infer-agentic`，迁移 Responses 编排，行为不变 | **已完成**：租约、链式校验、后台任务与取消移入 agentic，`Upstream` 首版只含 `complete`/`cancel`；frontdoor 现有 HTTP 测试不改动全部通过，agentic 用脚本化 upstream 覆盖生命周期；payload 字节不变 |
 | A2 | engine 工具 loop：`ToolExecutor` SPI、`RoundDecision`、上限、混合轮次、单一 SSE 生命周期、账本与 background 流式回放 | mock executor 覆盖：调用顺序回填、上限触发 `incomplete`、取消与断连回收、终态在持久化之后、未知工具拒绝、慢读者不影响 loop；OpenAI SDK 端到端跑通。拆为三步：**A2a 已完成**（`infer-spi` 的 `ToolExecutor`/`ToolSpec`，`infer-agentic` 的 `ToolLoop` 与 `RoundUpstream`：参数闭合即派发、进程级有界并发、调用顺序回填、轮数/工具次数/输出预算上限、超时与输出超限作为失败输出回传、drop 即取消）；A2b frontdoor 实现 `RoundUpstream` 并接入单一 SSE 生命周期；A2c 账本与 background 流式回放 |
-| A3 | 连续性：C1、C2（**已完成**，结果见下文），E1，然后 E2、E3 | C1/C2：A0 生成历史模式（thinking 开启）每轮重复 prefill 下降、单轮 TTFT 不回退；E1：重复 prefill 接近 0；全程续接与冷启动输出逐 token 一致；2B 上 C1 每轮 TTFT 与 C16 agent 吞吐提升 |
+| A3 | 连续性：C1、C2（**已完成**，结果见下文），E1（第一版已实施，数值性质待确认，见上文），然后 E2、E3 | C1/C2：A0 生成历史模式（thinking 开启）每轮重复 prefill 下降、单轮 TTFT 不回退；E1：重复 prefill 接近 0；全程续接与冷启动输出逐 token 一致；2B 上 C1 每轮 TTFT 与 C16 agent 吞吐提升 |
 | A4 | 审批流程、Conversations API（新增 `ConversationStore` SPI）、上下文策略 | 审批前后状态续接无重算；压缩只在策略触发时发生 |
 | A5 | MCP executor、记忆检索、E5 | 各自另立方案与验收 |
 

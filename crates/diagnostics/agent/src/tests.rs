@@ -7,8 +7,8 @@ use infer_test_support::fixtures as support;
 
 use infer_core::{Error, ModelId, RequestId, Result};
 use infer_ir::{
-    CanonicalRequest, ExecutionStats, LayerProbe, OpTrace, PrecisionPlan, Qos, RequestInput,
-    Sampling, Workload, WorkloadOutput,
+    CanonicalRequest, ExecutionStats, FinishedState, LayerProbe, OpTrace, PrecisionPlan, Qos,
+    RequestInput, Sampling, Workload, WorkloadOutput,
 };
 use infer_kernel_api::KernelRegistry;
 use infer_runtime::{Engine, RuntimeConfig};
@@ -77,6 +77,7 @@ fn request() -> CanonicalRequest {
             ..Sampling::default()
         },
         prefix_boundary: None,
+        on_finish: FinishedState::Release,
         extensions: BTreeMap::new(),
     }
 }

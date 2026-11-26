@@ -4,7 +4,7 @@ use infer_core::{
     CancelSource, Error, ErrorCode, FinishReason, RequestId, RequestStage, RequestStatus, Result,
     event::EventKind, event::ObjectKind, event::SemanticEvent,
 };
-use infer_ir::WorkloadOutput;
+use infer_ir::{FinishedState, WorkloadOutput};
 use infer_observe::DiagnosticCode;
 use infer_quality::RequestMeasurement;
 use infer_spi::{BackendProvider, SchedulingPolicy};
@@ -239,7 +239,8 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         let state = r
             .state
             .ok_or_else(|| Error::invariant("active request missing state"))?;
-        self.backend.release_state(state)?;
+        self.backend
+            .finish_state(state, kept_on_finish(&reason, r.request.on_finish))?;
         if let Some(
             infer_scheduler::QueueState::Running { step }
             | infer_scheduler::QueueState::CancelPending { step },
@@ -459,5 +460,16 @@ fn log_finish(line: &TerminalLine<'_>) {
             last_token_age_us = line.last_token_age_us,
             "request finished unsuccessfully"
         );
+    }
+}
+
+/// What a request keeps of its state: only one that finished on its own leaves a reusable
+/// snapshot behind; a cancelled, expired or failed request releases everything.
+const fn kept_on_finish(reason: &FinishReason, requested: FinishedState) -> FinishedState {
+    match reason {
+        FinishReason::Length | FinishReason::Eos | FinishReason::Completed => requested,
+        FinishReason::Cancelled | FinishReason::Deadline | FinishReason::Failed(_) => {
+            FinishedState::Release
+        }
     }
 }

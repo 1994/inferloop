@@ -22,6 +22,10 @@ name = "cpu_storage"
 path = "tests/cpu_storage.rs"
 
 [[test]]
+name = "finish_state"
+path = "tests/finish_state.rs"
+
+[[test]]
 name = "providers"
 path = "tests/providers.rs"
 

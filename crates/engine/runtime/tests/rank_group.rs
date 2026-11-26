@@ -1,5 +1,6 @@
 //! The group protocol a tensor-parallel backend owes the engine, pinned on host doubles before any
 //! device code exists (`docs/plans/engineering/parallelism.md`, P0.4).
+use infer_ir::FinishedState;
 use infer_test_support::fixtures as support;
 
 use infer_core::*;
@@ -48,6 +49,7 @@ mod fixtures {
             qos: Qos::default(),
             sampling: Sampling::default(),
             prefix_boundary: None,
+            on_finish: FinishedState::Release,
             extensions: BTreeMap::new(),
         }
     }

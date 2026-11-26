@@ -8,8 +8,8 @@ use infer_core::placement::ThreadPlacement;
 use infer_core::set::BoundedSet;
 use infer_core::{Error, ErrorCode, Result, StateId, StepId};
 use infer_ir::{
-    DeviceCapabilities, ExecutionProgram, ExecutionTiming, KvCacheInspection, ModelIr, PageGrowth,
-    TaskOutput,
+    DeviceCapabilities, ExecutionProgram, ExecutionTiming, FinishedState, KvCacheInspection,
+    ModelIr, PageGrowth, TaskOutput,
 };
 use infer_spi::BackendProvider;
 use std::collections::VecDeque;
@@ -217,7 +217,7 @@ pub struct ThreadedBackend<B: BackendProvider> {
     checkpoint: bool,
     active: Option<StepId>,
     state_ids: BoundedSet<StateId>,
-    pending_releases: VecDeque<StateId>,
+    pending_releases: VecDeque<(StateId, FinishedState)>,
 }
 impl<B: BackendProvider + Send + 'static> ThreadedBackend<B>
 where

@@ -86,9 +86,26 @@ pub struct CanonicalRequest {
     /// many follow-up questions share names the end of that block.
     #[serde(default)]
     pub prefix_boundary: Option<usize>,
+    /// What the engine keeps when the request finishes on its own.
+    #[serde(default)]
+    pub on_finish: FinishedState,
     #[serde(default)]
     pub extensions: BTreeMap<String, Vec<u8>>,
 }
+/// What the engine keeps of a request's state when it finishes on its own.
+///
+/// Cancelled, failed and expired requests always release their state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FinishedState {
+    /// Release the state.
+    #[default]
+    Release,
+    /// Keep the state at its final position, generated tokens included, as a reusable prefix,
+    /// then release it. The next turn of a conversation repeats this sequence and recomputes
+    /// only what follows it. A backend that cannot keep it releases as usual.
+    PublishPrefix,
+}
+
 impl CanonicalRequest {
     /// # Errors
     /// Returns an invalid-input or invariant error if dimensions, identities, ranges, or ownership are inconsistent.

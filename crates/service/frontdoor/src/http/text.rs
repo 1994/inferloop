@@ -12,7 +12,7 @@ use axum::{
 };
 use infer_agentic::Responses;
 use infer_core::{Error, ErrorCode, RequestId, Result};
-use infer_ir::{CanonicalRequest, WorkloadOutput};
+use infer_ir::{CanonicalRequest, FinishedState, WorkloadOutput};
 use infer_runtime::EngineOutput;
 use infer_spi::ResponsesExtensions;
 use std::collections::BTreeMap;
@@ -149,6 +149,7 @@ pub(super) async fn text_infer(
                     qos: request.qos,
                     sampling: resolved.sampling,
                     prefix_boundary: None,
+                    on_finish: FinishedState::Release,
                     extensions: BTreeMap::new(),
                 })
             },

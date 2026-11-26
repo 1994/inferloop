@@ -18,8 +18,8 @@ use axum::http::HeaderMap;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use infer_core::{Error, ErrorCode, ModelId, RequestId};
 use infer_ir::{
-    CanonicalRequest, DecisionQuestion, DecisionReadout, DecisionSchema, RequestInput, Workload,
-    WorkloadOutput,
+    CanonicalRequest, DecisionQuestion, DecisionReadout, DecisionSchema, FinishedState,
+    RequestInput, Workload, WorkloadOutput,
 };
 use infer_models::{ChatMessage, ChatOptions, TextAssets};
 use infer_observe::trace::TraceContext;
@@ -452,6 +452,7 @@ fn decision_request(
         qos: infer_ir::Qos::default(),
         sampling: infer_ir::Sampling::default(),
         prefix_boundary,
+        on_finish: FinishedState::Release,
         extensions: BTreeMap::new(),
     }
 }

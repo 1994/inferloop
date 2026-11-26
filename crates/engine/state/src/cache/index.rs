@@ -59,6 +59,10 @@ pub enum PrefixIdentity {
 /// equality/compatibility guards, resource reuse, accounting and LRU stay in the shared cache.
 pub trait PrefixPolicy {
     const IDENTITY: PrefixIdentity;
+    /// Whether snapshots must end on a token block. A block index keys snapshots by block,
+    /// so it needs whole blocks; a scan compares whole token prefixes, so a snapshot may end
+    /// at the exact position a backend reached (a turn's last generated token, for example).
+    const COMPLETE_BLOCKS: bool;
     type Recency: PrefixRecency;
     fn longest<'a, V: 'a, F: Fn(&[u32], &V) -> bool>(
         &self,
@@ -70,6 +74,7 @@ pub trait PrefixPolicy {
 pub struct BlockHash;
 impl PrefixPolicy for BlockHash {
     const IDENTITY: PrefixIdentity = PrefixIdentity::ContentHash;
+    const COMPLETE_BLOCKS: bool = true;
     type Recency = TreeRecency;
     fn longest<'a, V: 'a, F: Fn(&[u32], &V) -> bool>(
         &self,
@@ -83,6 +88,7 @@ impl PrefixPolicy for BlockHash {
 pub struct SnapshotScan;
 impl PrefixPolicy for SnapshotScan {
     const IDENTITY: PrefixIdentity = PrefixIdentity::LocalId;
+    const COMPLETE_BLOCKS: bool = false;
     type Recency = SnapshotRecency;
     fn longest<'a, V: 'a, F: Fn(&[u32], &V) -> bool>(
         &self,

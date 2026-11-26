@@ -60,7 +60,7 @@ fn reusable_prefix(state: &Sequence, task: &ExecutionTask) -> Option<usize> {
 
 /// Snapshot a private sequence's covered prefix: head-major KV rows and complete recurrent and
 /// draft state, so restoration resumes the same inference trajectory.
-async fn cacheable_prefix(
+pub(super) async fn cacheable_prefix(
     device: &CudaDevice,
     loaded: &LoadedModel,
     state: &mut Sequence,
@@ -91,18 +91,47 @@ async fn cacheable_prefix(
 /// slots. The copies are settled before the next chunk advances that state, and before any
 /// destination is dropped: a snapshot that cannot be built is skipped, but a device fault while
 /// settling it is reported.
-fn slot_prefix(
+/// The positions a slot snapshot records for its target and draft programs.
+#[derive(Clone, Copy)]
+pub(super) struct SnapshotPositions {
+    pub target: usize,
+    pub draft: usize,
+}
+
+impl SnapshotPositions {
+    /// The programs' own positions, right for a snapshot taken as a prompt chunk ends.
+    pub fn programs(state: &Sequence) -> Self {
+        Self {
+            target: state.program.position(),
+            draft: state
+                .speculation
+                .as_ref()
+                .map_or(0, |speculation| speculation.program.position()),
+        }
+    }
+
+    /// The positions after `covered` forwarded tokens. A slot-resident sequence decodes in its
+    /// slot, where its prompt programs do not follow, so a finished turn states them.
+    pub const fn after(covered: usize) -> Self {
+        Self {
+            target: covered,
+            draft: covered.saturating_sub(MTP_KV_OFFSET),
+        }
+    }
+}
+
+pub(super) fn slot_prefix(
     device: &CudaDevice,
     loaded: &LoadedModel,
     (target_pool, draft_pool): (Option<&mut SlotPool>, Option<&SlotPool>),
     state: &Sequence,
-    (slot, covered): (usize, usize),
+    (slot, covered, positions): (usize, usize, SnapshotPositions),
 ) -> Result<Option<prefix::CachedPrefix>> {
+    let position = positions.target;
     let built = (|| -> Result<Option<(ProgramSnapshot, Option<DraftSnapshot>)>> {
         let Some(target_pool) = target_pool else {
             return Ok(None);
         };
-        let position = state.program.position();
         // A paged pool keeps the prefix's KV in its pages; only unpaged state is copied out.
         let target = if target_pool.publish_pages(slot, &state.history[..covered])? {
             let states = target_pool.export_unpaged(slot, covered, device)?;
@@ -120,7 +149,7 @@ fn slot_prefix(
                         states,
                         fp8,
                         draft_graph,
-                        spec.program.position(),
+                        positions.draft,
                     )?,
                     hidden: spec.last_hidden.clone(),
                 })
@@ -832,7 +861,7 @@ impl CudaExecutor {
                     &self.loaded,
                     (self.slots.as_mut(), self.drafter.pool()),
                     state,
-                    (slot, covered),
+                    (slot, covered, SnapshotPositions::programs(state)),
                 )?
             {
                 snapshots.push(snapshot);
@@ -1090,7 +1119,7 @@ impl CudaExecutor {
                 &self.loaded,
                 (self.slots.as_mut(), self.drafter.pool()),
                 state,
-                (slot, covered),
+                (slot, covered, SnapshotPositions::programs(state)),
             )?,
             (Some(covered), None) => {
                 cacheable_prefix(self.loaded.device(), &self.loaded, state, covered).await
