@@ -1,6 +1,6 @@
 # Agentic 服务层方案
 
-状态：A1 已实施（crate 建立与 Responses 生命周期迁移），A0 基准已建立并完成首轮测量，A2a（工具 SPI 与 loop 核心）已实施，A2b 起未开始。源码基点 `44b5a257`，日期 2026 年 11 月 24 日。参考 [vllm-project/agentic-api](https://github.com/vllm-project/agentic-api/tree/41a0fc23275883786fc512e6192dbf1f8b3d1f01)（固定 `41a0fc2`，PyPI `0.10.0` 同期），只借鉴机制，不照搬参数集合与默认值。排期见[路线图](../README.md) S4；现有 Responses 状态契约见 [Responses 状态与扩展 SPI](../../architecture/responses-state.md)，工具协议与严格约束见 [Agent 工具调用与服务配置方案](agent-api.md)。
+状态：A1 已实施（crate 建立与 Responses 生命周期迁移），A0 基准已建立并完成首轮测量，A2a（工具 SPI 与 loop 核心）已实施，A2b 起未开始；上下文策略（X0–X3）为方案，未实施。源码基点 `44b5a257`，日期 2026 年 11 月 24 日。参考 [vllm-project/agentic-api](https://github.com/vllm-project/agentic-api/tree/41a0fc23275883786fc512e6192dbf1f8b3d1f01)（固定 `41a0fc2`，PyPI `0.10.0` 同期），只借鉴机制，不照搬参数集合与默认值。排期见[路线图](../README.md) S4；现有 Responses 状态契约见 [Responses 状态与扩展 SPI](../../architecture/responses-state.md)，工具协议与严格约束见 [Agent 工具调用与服务配置方案](agent-api.md)。
 
 ## 目标
 
@@ -29,9 +29,9 @@ agentic-api 是位于 vLLM 前面的独立 Rust 网关：`agentic-server-core` �
 | 存储后端 | 内置 sqlx（SQLite/Postgres） | 不内置数据库；沿用 `ResponseStore` SPI，后端由外部实现 |
 | 上游接口 | HTTP 调用无状态 Responses | **不同**：进程内 typed 接口，携带会话提示与 token 账本 |
 | background | 拒绝（其 #357） | 已有非流式 background；本方案补齐流式回放 |
-| 压缩 | `POST /v1/responses/compact`，上游重新 prefill 整段历史 | 后期：从已有 KV fork 生成摘要，不重新 prefill |
+| 压缩 | `POST /v1/responses/compact`，上游重新 prefill 整段历史 | **不同**：不压缩，记录无损保留，每轮渲染持久化的视图；用 decision 打分剪枝、`recall` 取回原文，打分与重算在后台进行，见[上下文策略](#上下文策略) |
 
-本质区别在于上游接口。网关只能看到 HTTP 请求和文本，以下几项只有进程内才做得到：在精确位置保留混合模型的 recurrent 状态、知道会话即将返回从而转移到主机内存而不是淘汰、按 token ID 检测 CallEnd、提高续接轮次的调度优先级、基于现有 KV fork。这些是本方案相对 agentic-api 的主要收益来源。
+本质区别在于上游接口。网关只能看到 HTTP 请求和文本，以下几项只有进程内才做得到：在精确位置保留混合模型的 recurrent 状态、知道会话即将返回从而转移到主机内存而不是淘汰、按 token ID 检测 CallEnd、提高续接轮次的调度优先级、基于现有 KV fork、在会话快照上廉价打分并在后台切换上下文视图。这些是本方案相对 agentic-api 的主要收益来源。
 
 ## 分层
 
@@ -60,7 +60,7 @@ engine（ir / state / scheduler / runtime / backend）
 | `tools` | 工具目录、归属分类、有界调度、调用顺序回填、审批 |
 | `ledger` | 只追加的执行记录与游标读取，供异步展示和事件回放 |
 | `persist` | 基于 `ResponseStore` 的快照、条件写和每轮 item 写入；迁移现有 `StoreSink`/`StoreLease` |
-| `context` | 压缩触发与摘要请求；后期实现 |
+| `context` | `ContextView` 记录与渲染、剪枝水位、decision 打分、`recall`；见[上下文策略](#上下文策略) |
 
 ## 执行路径
 
@@ -215,6 +215,111 @@ pub trait ToolExecutor: Send + Sync {
 - 资源：executor 并发受一个有界池约束；单个调用超时和输出字节上限由 capabilities 声明，服务端再加一个上限。超时、错误和超限都作为 tool 输出 item 回传给模型，带明确错误文本，不伪造成功。
 - 首期只提供 SDK 安装接口和测试 executor。MCP（streamable HTTP）客户端和记忆检索放在后期，新依赖按[依赖方案](../engineering/build-and-dependencies.md)评估。
 
+## 上下文策略
+
+长会话的上下文迟早超出模型的有效长度：窗口还没满，质量就开始下降，中间的内容最先被忽略。传统 harness 的做法是让模型把旧历史改写成摘要、丢弃原文。这种压缩有三层损失：
+
+- 改写会丢掉细节，还可能编出原文没有的内容；
+- 丢弃不可逆，之后才发现需要的细节已经找不回来；
+- 判断"哪些重要"要再调用一次模型并重新 prefill 全文，所以只能在快溢出时做一次大压缩。
+
+本方案不压缩历史，而是为每一轮选择一个**视图**：对话记录保持完整，模型看到的是记录中经过挑选的原文，被省略的部分留下可召回的占位。这一层的收益几乎都来自前面已经建立的引擎能力，传统 harness 拿不到。
+
+### 原则
+
+1. **记录无损，视图有损且可逆。** store 中的 item 仍是唯一事实来源，任何时候都不删除、不改写。视图只决定这一轮渲染哪些 item 的原文。
+2. **选择，不改写。** 保留的内容逐字来自记录；被省略的 item 换成机械生成的占位。首期不生成摘要。
+3. **视图是持久化的数据，不是每次重算的函数。** 一次剪枝的结果写成 `ContextView` 记录，之后的请求按记录渲染，同一会话的每一轮、续接请求和其他副本看到相同的视图，于是前缀缓存在剪枝之间持续命中。E1 之后同一状态上的 decision 只保证确定可复现，不保证与冷启动相同，所以视图不能依赖"重新打分得到同样结果"。
+4. **视图一旦在位置 p 改变，就从 p 重算，不在 KV 上挖洞。** attention 层中 p 之后的 KV 是在被删内容可见的条件下算出的，位置编码也属于原来的位置；混合模型的 GDN recurrent 状态本身就是整段历史的压缩结果，不能减去一段。挖洞得到的状态不对应任何文本 prompt，违反"语义无状态"，因此不做。从 p 重算后，状态与按新视图冷启动一致（C2 断点）或确定可复现（E1 快照），没有被删内容的残留。
+
+### 视图模型
+
+```rust
+/// One persisted pruning decision for a session; rendering applies it to the transcript.
+pub struct ContextView {
+    epoch: ViewEpoch,              // increases at every pruning pass; never reused
+    covered: ItemCursor,           // items after this cursor are new and always kept
+    entries: Box<[ViewEntry]>,     // only items whose treatment is not Keep
+}
+
+pub enum ViewTreatment { Keep, Elide { stub: ElisionStub }, Pinned }
+```
+
+- **单位是 item。** 超过一个分段上限的工具输出（整文件、长日志）按自然边界切成段：文件按块，日志按行区间，每段单独决定。分段上限是文档化常量，由 A0 trace 中工具输出的长度分布确定。
+- **占位合法且有信息量。** 被省略的 `function_call_output` 仍然保留，满足模板"调用后必须有输出"的约束，内容换成占位：item 编号、原始 token 数、工具名与参数、首行，以及 `recall` 的调用方式。被省略的旧 reasoning 直接不渲染，与模板在新 user 轮剥掉 thinking 的规则一致。
+- **不可剪的区域**：system 与工具声明、第一条 user 消息（任务陈述）、最近 K 轮、尚未回填的调用、`Pinned` item。K 是文档化常量，由质量评测确定。
+- **视图之后的新 item 一律保留。** 两次剪枝之间渲染只追加，C2 和 E1 的断点照常命中。
+- 视图挂在响应记录上，通过 `previous_response_id` 继承；它只影响服务端渲染，不改变返回给客户端的 item。只发完整历史、不带 `previous_response_id` 的无状态客户端没有视图，行为与现在相同。
+
+### 召回：把需要的内容搬到生成位置旁边
+
+`recall` 是 engine 归属的只读 `ToolExecutor`，参数是占位中的编号，返回记录中的原文（受输出字节上限约束，超限则按段返回）。
+
+- **召回把内容追加到尾部，不恢复原位置。** 恢复原位置会改变视图中靠前的位置，触发大段重算；追加到尾部只 prefill 召回的内容本身，前缀照常命中。
+- **这正好对注意力丢失有利。** 模型主动找回的内容出现在离生成位置最近的地方，而不是埋在长上下文中间。"动态关注窗口"由模型自己的动作驱动，引擎不需要猜测注意力。
+- 被召回的 item 在之后若干轮内受保护，不被下一次剪枝立即省略。
+- 召回次数是策略质量的直接信号：召回频繁说明剪得太狠，几乎为零可能说明剪得太保守，也可能说明模型没有学会使用占位。两种情况都由评测判断，不静默调整。
+
+### 剪枝：用 decision 打分，成本由 E1 快照承担
+
+触发条件按水位：视图 token 数超过高水位 H 时进行一次剪枝，剪到低水位 L。H、L 由模型声明的上下文长度与质量评测测得的有效长度推导，不做成配置项。
+
+1. **候选**：可剪区域内的 item 与段。
+2. **打分**：每个候选是一个 predicate 问题，例如"继续完成当前任务还需要这次 `read_file(src/turn.rs)` 的输出吗"。问题引用工具名与参数来指认 item，不需要在渲染中加编号，prompt 格式不变。
+3. **打分几乎免费。** 问题接在本轮结束时的 E1 快照之后，每个问题只 prefill 自己的几十个 token，全部问题共享整段上下文的状态。这正是 decisions 路由已有的共享前缀机制（27B、约 2.5k token 的输入问 64 个问题，60 s → 2.5 s），这里的共享前缀换成整段会话。harness 要做同样的判断，每个问题都得重新 prefill 全文，或者另外部署一个打分模型。
+4. **选择**：按"保留概率 / token 数"从低到高省略，直到视图降到 L 以下；不可剪区域与受保护 item 不参与。阈值不按单个问题的绝对概率设定：`confidence` 未经校准，只用相对排序。
+5. **一次剪一批。** 重算从第一个变化的位置开始，所以一次剪枝的重算量约为 L 减去该位置；分多次小剪会重复付这笔成本。两个水位之间的差距决定剪枝间隔：每轮增长 g 个 token 时，大约每 (H − L) / g 轮剪一次。
+
+被否决的打分信号：直接读取 attention 分数。生产 attention kernel 不物化分数，GDN 层没有分数可读，而且"被注意到"不等于"后面还需要"。
+
+### 让剪枝不进入关键路径
+
+剪枝真正的代价是新视图的重算，不是打分。长前缀之后的 prefill 吞吐现在约 3k token/s，20k token 的视图要重算约 7 s，不能放在某一轮的 TTFT 里。引擎侧可以把它完全移出关键路径：
+
+- **与工具执行重叠。** 打分在本轮结束、工具执行期间提交。A0 中工具等待占墙钟的 22–34%，这段时间里 slot 本来就空闲。
+- **双缓冲切换视图。** 决定新视图后，后台以 prefill-only 请求按新视图渲染到当前位置并留下快照，复用 decisions 的 prefill-only 读取与 `FinishedState` 保留。在此期间 loop 继续在旧视图上运行，旧视图仍低于上下文上限（H 低于上限的余量就是为此预留的）。新快照就绪后，在下一个轮次边界切换：渲染"新视图 + 之后新增的 item"，只 prefill 这段增量。切换不改变语义，因为渲染只由记录与视图记录决定。
+- **后台工作不抢前台。** 打分与预 prefill 在 scheduler 中属于低于新请求的后台类别，与 E3 的续接优先级同属 scheduler 的策略；资源报价同时覆盖两个视图的 KV。显存紧张时放弃双缓冲，退回在边界处同步重算，结果相同，只是那一轮变慢。
+
+harness 做不到这一点：它看不到工具等待时的空闲 slot，没有 prefill-only 接口，也无法让同一会话同时持有两份状态。
+
+### 与传统 harness 的对照
+
+| | 传统 harness 压缩 | 本方案 |
+|---|---|---|
+| 被移出的内容 | 丢弃，只留摘要 | 记录中完整保留，`recall` 逐字取回 |
+| 内容可信度 | 生成式摘要，可能改写或编造 | 保留部分逐字来自记录 |
+| 判断成本 | 每次判断重新 prefill 全文 | 从 E1 快照起每个问题几十 token |
+| 时机 | 快溢出时一次大压缩，在关键路径上 | 按水位批量剪枝，打分与重算在后台 |
+| 误判的代价 | 永久丢失 | 一次 `recall` |
+| 关注位置 | 摘要在开头，最新内容在末尾 | 召回内容追加到生成位置旁边 |
+| 跨请求与副本 | 每个客户端各自决定 | 视图持久化，全部命中同一前缀 |
+
+### 能证明什么，还不能证明什么
+
+模型怎样分配注意力是模型自身的性质，这一层改变不了。它能做的是：缩短上下文、提高信噪比、让相关内容靠近生成位置，并让剪枝可逆、便宜到可以每隔若干轮做一次。这些是否转化为任务成功率，必须用质量评测证明；在 X1 的评测结果出来之前，"优于传统压缩"只是假设。
+
+### 评测
+
+- **可控任务**：mock 工具的多跳任务，早期工具输出中的某个细节在多轮之后才被需要，中间插入大量干扰输出，正确答案确定，可自动判分。
+- **真实 trace**：A0 的生成历史模式，扩展到超过 H 的长会话。
+- **对照组**，在相同的视图 token 预算下比较：
+  1. 全量上下文（预算不限，作为上限）；
+  2. 截断最旧的内容；
+  3. 生成式摘要（模拟传统 harness）；
+  4. decision 剪枝 + recall。
+- **指标**：任务成功率、召回次数、每次剪枝的重算 token 数与打分 token 数、后续轮 TTFT、墙钟。先在 2B 上跑；若 2B 不会使用 `recall`，只能证明机制成本，质量结论需要 27B 抽查。
+
+### 分期
+
+| 阶段 | 内容 | 完成标准 |
+|---|---|---|
+| X0 | 评测：可控多跳任务与对照组 1–3，接入 A0 | 对照组 1–3 的成功率曲线随预算变化可复现 |
+| X1 | `ContextView` 记录与渲染、占位、`recall`；剪枝在边界处同步进行 | 对照组 4 在相同预算下成功率不低于摘要组；视图在续接与重启后一致；剪枝之间前缀命中不下降 |
+| X2 | 打分移到工具等待期间，双缓冲切换视图，后台调度类别 | 剪枝发生的那一轮 TTFT 不回退于不剪枝的轮次；8 路并发下其他请求的 TPOT 不回退 |
+| X3 | 可选的段落摘要：从快照分叉生成，放进占位，作为召回的线索 | 仅当 X1 评测显示模型因占位信息不足而漏召回时才做 |
+
+依赖：X1 依赖 A2b（服务端 loop）与 E1；X2 依赖 E3 的调度类别，并受益于长前缀 prefill 吞吐的优化。
+
 ## 引擎侧加速
 
 agentic crate 只依赖下面这些能力的契约，实现分别归各自的层，按收益排序：
@@ -229,7 +334,7 @@ agentic crate 只依赖下面这些能力的契约，实现分别归各自的层
 | E4 | 按 token ID 检测 CallStart / CallEnd，只在 CallEnd 时解码参数 | frontdoor upstream + models | 增量 detokenize 移出关键路径 |
 
 按体验收益排序：C1 与 C2 只在服务侧，先做并用 A0 测量；E1 需要引擎与设备验收，紧随其后；服务端工具 loop（A2b）复用同一机制，不依赖 E1。
-| E5 | 基于现有 KV fork 生成摘要；面向 agent 的推测解码（从上下文复制起草）；并行 COW 分支 | state + workloads + backend | 后期；各自另立方案 |
+| E5 | 上下文视图的后台预 prefill 与双缓冲切换（见[上下文策略](#上下文策略)）；面向 agent 的推测解码（从上下文复制起草）；并行 COW 分支 | state + workloads + backend | 后期；各自另立方案 |
 
 工具耗时很短时序列可以不 park，直接留在 slot 里。是否 park 的阈值根据加载时测得的快照导出与绑定成本推导，不做成配置项。
 
@@ -241,7 +346,7 @@ agentic crate 只依赖下面这些能力的契约，实现分别归各自的层
 | A1 | 建立 `infer-agentic`，迁移 Responses 编排，行为不变 | **已完成**：租约、链式校验、后台任务与取消移入 agentic，`Upstream` 首版只含 `complete`/`cancel`；frontdoor 现有 HTTP 测试不改动全部通过，agentic 用脚本化 upstream 覆盖生命周期；payload 字节不变 |
 | A2 | engine 工具 loop：`ToolExecutor` SPI、`RoundDecision`、上限、混合轮次、单一 SSE 生命周期、账本与 background 流式回放 | mock executor 覆盖：调用顺序回填、上限触发 `incomplete`、取消与断连回收、终态在持久化之后、未知工具拒绝、慢读者不影响 loop；OpenAI SDK 端到端跑通。拆为三步：**A2a 已完成**（`infer-spi` 的 `ToolExecutor`/`ToolSpec`，`infer-agentic` 的 `ToolLoop` 与 `RoundUpstream`：参数闭合即派发、进程级有界并发、调用顺序回填、轮数/工具次数/输出预算上限、超时与输出超限作为失败输出回传、drop 即取消）；A2b frontdoor 实现 `RoundUpstream` 并接入单一 SSE 生命周期；A2c 账本与 background 流式回放 |
 | A3 | 连续性：C1、C2（**已完成**，结果见下文），E1（第一版已实施，数值性质待确认，见上文），然后 E2、E3 | C1/C2：A0 生成历史模式（thinking 开启）每轮重复 prefill 下降、单轮 TTFT 不回退；E1：重复 prefill 接近 0；全程续接与冷启动输出逐 token 一致；2B 上 C1 每轮 TTFT 与 C16 agent 吞吐提升 |
-| A4 | 审批流程、Conversations API（新增 `ConversationStore` SPI）、上下文策略 | 审批前后状态续接无重算；压缩只在策略触发时发生 |
+| A4 | 审批流程、Conversations API（新增 `ConversationStore` SPI）、上下文策略（X0–X3，见[上下文策略](#上下文策略)） | 审批前后状态续接无重算；上下文策略按 X 系列各自的完成标准验收 |
 | A5 | MCP executor、记忆检索、E5 | 各自另立方案与验收 |
 
 A0 首轮结果（2026 年 11 月 25 日，RTX 5090，Qwen3.5-2B，`6ebde549`，每条 trace 重复 3 次，温度 0，thinking 关闭）：
@@ -288,4 +393,6 @@ A1 是纯迁移，A2 只在 CPU 侧，可以先于 A3 合并。A3 需要设备�
 | 迁移破坏现有 Responses 行为 | A1 只迁移不改行为，以现有测试和 payload 字节一致作为门槛 |
 | 有副作用的工具无人审批 | 默认需要审批；只有部署方显式授权才自动执行 |
 | 多轮共用 SSE 生命周期时序号或终态乱序 | 序号由账本统一分配；终态事件只在 terminal 快照写入后发出 |
+| 剪枝误删关键内容 | 记录不删，占位可召回；评测以召回次数与成功率监控；不可剪区域保护任务陈述与最近若干轮 |
+| 视图切换造成 TTFT 尖峰 | 一次剪一批并按水位触发；打分与重算放在后台（X2），显存不足时退回同步重算，结果不变 |
 | 多副本 | 共享 store 时历史可以跨副本读取，引擎状态只在本进程；未命中按冷启动处理，结果一致 |
