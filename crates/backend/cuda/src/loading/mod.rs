@@ -523,12 +523,7 @@ impl LoadedModel {
             // The arena is the real bound; this is only a cap for the ladder below. Quantized
             // recurrent graphs stay at the established width, dense ones may take the wide rung
             // when the arena has room for it.
-            let quantized_recurrent = package
-                .graph
-                .nodes
-                .iter()
-                .any(|node| matches!(node.op, infer_ir::TensorOp::Delta { .. }))
-                && (!weights.input_scales.is_empty() || !weights.fp8_inputs.is_empty());
+            let quantized_recurrent = quantized_recurrent(&package.graph, &weights);
             // One request owns one arena, so the width decision is bounded by the profiled
             // activation-arena budget, not by a fixed share of total memory.
             select_prompt_width(
@@ -538,6 +533,9 @@ impl LoadedModel {
                 &mut weights,
             )?;
             geometry_phase.finish();
+        }
+        if !automatic_prefill {
+            require_prompt_width_fits(&package.graph, &weights, profile.arena_budget_bytes())?;
         }
         // Newly supported wide explicit buckets need the same tail and draft geometry as
         // automatic wide prompts. The token cap is still enforced by the scheduler.
@@ -945,6 +943,54 @@ fn bind_dflash2(
 /// fewer replays, which is where the measured gains come from. The 256-lane rung is only offered
 /// to quantized recurrent models, where it measured -4.4% long-prompt TTFT with identical tokens;
 /// on the dense models it measured neutral on the long case and 1.3% worse on the short one.
+/// Whether the graph has recurrent (Delta) layers fed by quantized projections.
+fn quantized_recurrent(graph: &DataflowGraph, weights: &ProgramWeights) -> bool {
+    graph
+        .nodes
+        .iter()
+        .any(|node| matches!(node.op, infer_ir::TensorOp::Delta { .. }))
+        && (!weights.input_scales.is_empty() || !weights.fp8_inputs.is_empty())
+}
+
+/// An explicit prompt width must fit the activation arena a request is funded with; otherwise
+/// every prompt would fail when its arena is planned, long after the server reported ready.
+fn require_prompt_width_fits(
+    graph: &DataflowGraph,
+    weights: &ProgramWeights,
+    arena_budget: u64,
+) -> Result<()> {
+    let width = weights.prefill_width;
+    let needed = prompt_logits::required_bytes(graph, weights, width)? as u64;
+    if needed <= arena_budget {
+        return Ok(());
+    }
+    let mut fitting = None;
+    for candidate in [
+        WIDEST_PREFILL_LANES,
+        WIDER_PREFILL_LANES,
+        EXTRA_WIDE_PREFILL_LANES,
+        WIDE_PREFILL_LANES,
+        MAX_PREFILL_LANES,
+        MID_PREFILL_LANES,
+        PREFILL_LANES,
+    ] {
+        if candidate < width
+            && prompt_logits::required_bytes(graph, weights, candidate)? as u64 <= arena_budget
+        {
+            fitting = Some(candidate);
+            break;
+        }
+    }
+    let advice = fitting.map_or_else(
+        || "no supported prompt width fits".to_owned(),
+        |fitting| format!("the widest that fits is {fitting}"),
+    );
+    Err(Error::invalid(format!(
+        "a {width}-token prompt step needs {needed} bytes of activation arena but the device \
+         funds {arena_budget}; {advice}"
+    )))
+}
+
 fn select_prompt_width(
     graph: &DataflowGraph,
     quantized_recurrent: bool,
