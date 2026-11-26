@@ -16,8 +16,8 @@ pub mod kernels {
         BroadcastScalar, ElementType, LoadTileLike, Reshape, Shape_0, Shape_1, Shape_2, Shape_3,
         StoreTileAtCurrentBlock, Tensor_1, Tensor_2, Tensor_3, Tile_1, Tile_2, Tile_3, bf16,
         constant, convert_scalar, convert_tile, eq_tile, exp, extract, ftz, ge_tile,
-        get_tile_block_id, gt_tile, iota, log, lt_tile, mmaf, reduce_sum, reverse, rsqrt, scan_sum,
-        select, tf32, tile_to_scalar,
+        get_tile_block_id, gt_tile, iota, log, lt_tile, mmaf, reduce_sum, rsqrt, select, tf32,
+        tile_to_scalar,
     };
 
     /// `left * right + acc` from one TF32 product.
@@ -40,6 +40,21 @@ pub mod kernels {
         let lh: Tile<bf16, { [M, K] }> = convert_tile(left);
         let rh: Tile<bf16, { [K, N] }> = convert_tile(right);
         mmaf(lh, rh, acc)
+    }
+
+    /// `out[i] = step[0] + ... + step[i]` over one 64-row chunk, as a masked row sum.
+    ///
+    /// The scan primitive this replaced emits Tile IR that the CUDA 13.5 `tileiras` rejects for
+    /// every target, which kept the chunked prefill from compiling at all. The masked sum uses
+    /// only operations the other chunk kernels already compile, and 64x64 additions are
+    /// negligible next to the chunk's products.
+    fn inclusive_prefix_sum(step: Tile<f32, { [64] }>) -> Tile<f32, { [64] }> {
+        let indices: Tile<i32, { [64] }> = iota(shape![64]);
+        let rows = indices.reshape(shape![64, 1]).broadcast(shape![64, 64]);
+        let columns = indices.reshape(shape![1, 64]).broadcast(shape![64, 64]);
+        let terms = step.reshape(shape![1, 64]).broadcast(shape![64, 64]);
+        let zero: Tile<f32, { [64, 64] }> = constant(0.0f32, shape![64, 64]);
+        reduce_sum(select(ge_tile(rows, columns), terms, zero), 1i32)
     }
 
     /// Rows of a chunk that hold a real prompt token at a non-negative state position.
@@ -193,7 +208,7 @@ pub mod kernels {
                 .reshape(shape![64])),
             zero64,
         );
-        let g = scan_sum(step, 0i32, reverse::Forward, 0.0f32);
+        let g = inclusive_prefix_sum(step);
         let indices: Tile<i32, { [64] }> = iota(shape![64]);
         let row_index = indices.reshape(shape![64, 1]).broadcast(shape![64, 64]);
         let column_index = indices.reshape(shape![1, 64]).broadcast(shape![64, 64]);
