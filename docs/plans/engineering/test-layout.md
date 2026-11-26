@@ -33,7 +33,7 @@
 | `crates/backend/kernel-api` | 2 | 2 | 187 |
 | `crates/diagnostics/observe` | 2 | 2 | 414 |
 | `crates/foundation/spi` | 2 | 2 | 264 |
-| `crates/service/agent` | 2 | 0 | 1069 |
+| `crates/diagnostics/agent` | 2 | 0 | 1069 |
 | `crates/diagnostics/quality` | 1 | 1 | 45 |
 | `crates/model/compiler` | 1 | 1 | 226 |
 | `crates/model/recipes` | 1 | 1 | 179 |

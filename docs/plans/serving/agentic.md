@@ -46,7 +46,7 @@ engine（ir / state / scheduler / runtime / backend）
 ```
 
 - 依赖方向：frontdoor 依赖 agentic，agentic 不依赖 frontdoor。agentic 通过自己定义的 `Upstream` trait 提交生成，frontdoor 用现有 `RuntimeHandle`、`TextAssets` 和 parser 实现它。测试用 mock upstream 替代，这是 trait 的实际第二个实现。
-- 位置为 `crates/service/agentic`，crate 名 `infer-agentic`，属于 `service` 分组，实现层 crate 不能依赖它。已有的 `crates/service/agent`（`infer-agent`）是引擎诊断控制面，和本 crate 无关，[Agent 控制面](../../architecture/agent.md) 需要写明两者区别。
+- 位置为 `crates/service/agentic`，crate 名 `infer-agentic`，属于 `service` 分组，实现层 crate 不能依赖它。引擎诊断控制面 `infer-agent` 位于 `crates/diagnostics/agent`，和本 crate 无关，[Agent 控制面](../../architecture/agent.md) 需要写明两者区别。
 - agentic 不持有 KV、页或设备状态，只通过 `SessionHint` 表达意图；逻辑分配仍归 state，生命周期协调仍归 runtime，物理状态仍归 backend。
 - Responses 编排从 `frontdoor/src/http/openai/responses/` 的 `mod.rs`、`execute.rs`、`state.rs` **迁移**到 agentic，不在两处各保留一份；frontdoor 保留 `request.rs`（线格式解析）、`events.rs`、`stream.rs`、`output.rs`（线格式编码）。持久化 payload 的格式仍归 frontdoor：agentic 只通过 `ResponseDocument` 读取类型化元数据并保存编码后的字节，不知道 JSON 形态；迁移后 payload 字节不变，`payload_version` 不升级。参考 store `InMemoryResponseStore` 也移入 agentic，frontdoor 为兼容继续重新导出。
 
