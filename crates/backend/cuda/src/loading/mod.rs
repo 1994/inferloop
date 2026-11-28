@@ -1013,19 +1013,18 @@ fn select_prompt_width(
             break;
         }
     }
-    if selected != 0 && selected < MAX_PREFILL_LANES {
-        let rungs: &[usize] = if quantized_recurrent {
-            &[
-                WIDEST_PREFILL_LANES,
-                WIDER_PREFILL_LANES,
-                EXTRA_WIDE_PREFILL_LANES,
-                WIDE_PREFILL_LANES,
-                MAX_PREFILL_LANES,
-            ]
-        } else {
-            &[MAX_PREFILL_LANES]
-        };
-        for &wide in rungs {
+    // The widest rung the arena funds becomes the wide prompt graph, and the width chosen
+    // above stays as each slot's narrow graph. Dense graphs start from 128 lanes and quantized
+    // recurrent ones from 64, so only rungs above the narrow width are wide.
+    if selected != 0 {
+        let rungs = [
+            WIDEST_PREFILL_LANES,
+            WIDER_PREFILL_LANES,
+            EXTRA_WIDE_PREFILL_LANES,
+            WIDE_PREFILL_LANES,
+            MAX_PREFILL_LANES,
+        ];
+        for wide in rungs.into_iter().filter(|&wide| wide > selected) {
             // Target and draft retain separate prompt workspaces. Keep the automatic
             // fast pair on the joint 1024-row rung so long private states remain fundable.
             if weights.batch_width > 1
